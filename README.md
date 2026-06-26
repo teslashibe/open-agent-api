@@ -187,15 +187,26 @@ small Rust sidecar. Set `"faithful": false` for the minimal plain-chat request.
 
 ## Release Validation Notes
 
-For the `v0.0.1` PR, include these results:
+Observed local validation for the `v0.0.1` cleanup change on 2026-06-26:
 
 ```text
-GOCACHE=$PWD/.gocache go test ./...  # pass
-GOCACHE=$PWD/.gocache go vet ./...   # pass
-GOCACHE=$PWD/.gocache go build ./... # pass
+GOCACHE=$PWD/.gocache go test ./...
+?   	github.com/teslashibe/codex-chat-api/cmd/codex-chat-api	[no test files]
+ok  	github.com/teslashibe/codex-chat-api/internal/auth
+ok  	github.com/teslashibe/codex-chat-api/internal/codex
+ok  	github.com/teslashibe/codex-chat-api/internal/config
+?   	github.com/teslashibe/codex-chat-api/internal/openai	[no test files]
+ok  	github.com/teslashibe/codex-chat-api/internal/server
+ok  	github.com/teslashibe/codex-chat-api/internal/sse
+
+GOCACHE=$PWD/.gocache go vet ./...
+pass, no output
+
+GOCACHE=$PWD/.gocache go build ./...
+pass, no output
 ```
 
-Live curl validation should be run with the Go server and a valid `codex login`:
+Live curl validation must be run with the Go server and a valid `codex login`:
 
 ```bash
 curl -s http://127.0.0.1:8088/health
@@ -209,8 +220,23 @@ curl -N http://127.0.0.1:8088/v1/chat/completions \
   -d '{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"Count to 5"}]}'
 ```
 
-Document the observed `/health`, non-streaming chat, and streaming chat results in
-the PR body.
+Observed live-curl status in this sandbox:
+
+```text
+GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+codex-chat-api: failed to listen: listen tcp4 127.0.0.1:8088: bind: operation not permitted
+
+GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host 127.0.0.1 --port 18088
+codex-chat-api: failed to listen: listen tcp4 127.0.0.1:18088: bind: operation not permitted
+
+GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host localhost --port 18089
+codex-chat-api: failed to listen: listen tcp4 127.0.0.1:18089: bind: operation not permitted
+```
+
+Because this execution sandbox prevents opening a local TCP listener, `/health`,
+non-streaming chat, and streaming chat curl probes could not be completed here.
+Run the three curl commands above from an unrestricted shell and paste the
+observed responses into the PR body before merging.
 
 ## Notes
 
