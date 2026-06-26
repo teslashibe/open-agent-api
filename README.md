@@ -24,6 +24,25 @@ You must be logged in via Codex (`codex login`) so `~/.codex/auth.json` exists.
 uvicorn app:app --host 127.0.0.1 --port 8088
 ```
 
+## Go development
+
+The Go refactor scaffold currently exposes `GET /health` only. It does not
+implement chat completions or websocket transport yet, and the Python prototype
+remains in place.
+
+```bash
+go test ./...
+go vet ./...
+go build ./...
+go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+```
+
+Health check:
+
+```bash
+curl -s http://127.0.0.1:8088/health
+```
+
 ## Use
 
 cURL (non-streaming):
