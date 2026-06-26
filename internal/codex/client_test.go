@@ -81,6 +81,68 @@ func TestCompleteUsesPrewarmThenTurnAndAggregatesEvents(t *testing.T) {
 	}
 }
 
+func TestCompleteReturnsContextErrorFromReadLoop(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = (&recordingDialer{conns: []websocketConn{&fakeWebsocketConn{}}}).dial
+	client.builder.newSessionID = func() string { return "session-123" }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	completion, err := client.Complete(ctx, Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+		Faithful:        false,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Complete() error = %v, want context.Canceled; completion = %#v", err, completion)
+	}
+}
+
+func TestPrewarmTimeoutDoesNotCancelTurn(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	turnConn := &fakeWebsocketConn{readMessages: [][]byte{
+		[]byte(`{"type":"response.output_text.delta","delta":"ok"}`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp-123","model":"gpt-test","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`),
+	}}
+
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.timeout = 5 * time.Millisecond
+	client.builder.newSessionID = func() string { return "session-123" }
+	client.builder.newTurnID = func() string { return "turn-123" }
+	client.builder.installationID = func() string { return "install-123" }
+
+	var calls int
+	client.dial = func(ctx context.Context, url string, headers http.Header) (websocketConn, *http.Response, error) {
+		calls++
+		if calls == 1 {
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("turn context was already canceled: %v", err)
+		}
+		return turnConn, nil, nil
+	}
+
+	completion, err := client.Complete(context.Background(), Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+		Faithful:        true,
+		Prewarm:         true,
+	})
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if completion.Text != "ok" || calls != 2 {
+		t.Fatalf("completion = %#v, calls = %d", completion, calls)
+	}
+}
+
 func TestHeadersDoNotExposeTokenInErrors(t *testing.T) {
 	client := &Client{builder: fixtureBuilder()}
 	headers := client.headers(auth.Credentials{AccessToken: "secret-access-token", AccountID: "acct_123"}, false, "sid", requestKindTurn)

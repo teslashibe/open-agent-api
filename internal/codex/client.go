@@ -110,12 +110,13 @@ func (c *Client) Complete(ctx context.Context, req Request) (Completion, error) 
 }
 
 func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	sessionID := c.builder.newSessionID()
 
 	if req.Faithful && req.Prewarm {
 		c.prewarm(ctx, req, sessionID)
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 
 	var payload map[string]any
 	var kind requestKind = requestKindTurn
@@ -136,12 +137,15 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		return nil, err
 	}
 
-	events := make(chan StreamEvent)
+	events := make(chan StreamEvent, 1)
 	go c.readLoop(ctx, cancel, conn, events)
 	return events, nil
 }
 
 func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
+	ctx, cancel := context.WithTimeout(ctx, minDuration(c.timeout, 2*time.Second))
+	defer cancel()
+
 	payload := c.builder.buildFaithful(nil, req.Model, sessionID, requestKindPrewarm, req.ReasoningEffort, req.Verbosity)
 	conn, err := c.open(ctx, true, sessionID, requestKindPrewarm)
 	if err != nil {
@@ -149,7 +153,7 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 	}
 	defer closeConn(conn)
 
-	if err := writePayload(ctx, conn, payload, c.timeout); err != nil {
+	if err := writePayload(ctx, conn, payload, minDuration(c.timeout, 2*time.Second)); err != nil {
 		return
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(minDuration(c.timeout, 2*time.Second)))
@@ -229,6 +233,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {
+				sendTerminalStreamEvent(events, StreamEvent{Err: ctx.Err()})
 				return
 			}
 			sendStreamEvent(ctx, events, StreamEvent{Err: NewError(ErrorKindUpstream, http.StatusBadGateway, "read codex websocket", err)})
@@ -242,6 +247,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		}
 		if hasStreamEvent(event) {
 			if !sendStreamEvent(ctx, events, event) {
+				sendTerminalStreamEvent(events, StreamEvent{Err: ctx.Err()})
 				return
 			}
 		}
@@ -291,6 +297,13 @@ func sendStreamEvent(ctx context.Context, events chan<- StreamEvent, event Strea
 		return true
 	case <-ctx.Done():
 		return false
+	}
+}
+
+func sendTerminalStreamEvent(events chan<- StreamEvent, event StreamEvent) {
+	select {
+	case events <- event:
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
