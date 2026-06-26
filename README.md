@@ -185,28 +185,28 @@ version, plugins, or captured profile change.
 Matching those transport-layer details requires a TLS-impersonating transport or a
 small Rust sidecar. Set `"faithful": false` for the minimal plain-chat request.
 
-## Release Validation Notes
+## Release Validation
 
-Observed local validation for the `v0.0.1` cleanup change on 2026-06-26:
+Run and record these checks in the PR body before merging a release-readiness
+change. Issue #1 can be closed only after the local checks and live curl checks
+below have passing results in the PR notes.
 
-```text
+Local validation:
+
+```bash
 GOCACHE=$PWD/.gocache go test ./...
-?   	github.com/teslashibe/codex-chat-api/cmd/codex-chat-api	[no test files]
-ok  	github.com/teslashibe/codex-chat-api/internal/auth
-ok  	github.com/teslashibe/codex-chat-api/internal/codex
-ok  	github.com/teslashibe/codex-chat-api/internal/config
-?   	github.com/teslashibe/codex-chat-api/internal/openai	[no test files]
-ok  	github.com/teslashibe/codex-chat-api/internal/server
-ok  	github.com/teslashibe/codex-chat-api/internal/sse
-
 GOCACHE=$PWD/.gocache go vet ./...
-pass, no output
-
 GOCACHE=$PWD/.gocache go build ./...
-pass, no output
 ```
 
-Live curl validation must be run with the Go server and a valid `codex login`:
+Live curl validation must be run with the Go server and a valid `codex login`.
+Start the server:
+
+```bash
+GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+```
+
+Then run and record these probes:
 
 ```bash
 curl -s http://127.0.0.1:8088/health
@@ -220,23 +220,14 @@ curl -N http://127.0.0.1:8088/v1/chat/completions \
   -d '{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"Count to 5"}]}'
 ```
 
-Observed live-curl status in this sandbox:
+The PR notes should include:
 
-```text
-GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
-codex-chat-api: failed to listen: listen tcp4 127.0.0.1:8088: bind: operation not permitted
-
-GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host 127.0.0.1 --port 18088
-codex-chat-api: failed to listen: listen tcp4 127.0.0.1:18088: bind: operation not permitted
-
-GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host localhost --port 18089
-codex-chat-api: failed to listen: listen tcp4 127.0.0.1:18089: bind: operation not permitted
-```
-
-Because this execution sandbox prevents opening a local TCP listener, `/health`,
-non-streaming chat, and streaming chat curl probes could not be completed here.
-Run the three curl commands above from an unrestricted shell and paste the
-observed responses into the PR body before merging.
+- `go test ./...`: passing output.
+- `go vet ./...`: passing output or "pass, no output".
+- `go build ./...`: passing output or "pass, no output".
+- `/health`: observed `{"status":"ok"}` response.
+- Non-streaming chat: observed `chat.completion` response with assistant content.
+- Streaming chat: observed SSE chunks ending in `data: [DONE]`.
 
 ## Notes
 
