@@ -3,6 +3,8 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -28,6 +30,8 @@ type ClientConfig struct {
 	ScaffoldPath string
 	WebsocketURL string
 	Timeout      time.Duration
+	LogOutput    io.Writer
+	LogBodyShape bool
 }
 
 type Client struct {
@@ -37,6 +41,8 @@ type Client struct {
 	timeout      time.Duration
 	dial         websocketDialFunc
 	builder      requestBuilder
+	logOutput    io.Writer
+	logBodyShape bool
 }
 
 type websocketConn interface {
@@ -79,6 +85,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		timeout:      cfg.Timeout,
 		dial:         defaultDial(websocket.DefaultDialer),
 		builder:      builder,
+		logOutput:    cfg.LogOutput,
+		logBodyShape: cfg.LogBodyShape,
 	}, nil
 }
 
@@ -129,7 +137,12 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 	if req.Faithful {
 		payload = c.builder.buildFaithful(req.Messages, req.Model, sessionID, kind, req.ReasoningEffort, req.Verbosity)
 	} else {
-		payload = c.builder.buildMinimal(req.Messages, req.Model, req.ReasoningEffort, req.Verbosity)
+		var err error
+		payload, err = c.builder.buildMinimal(req)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
 	}
 
 	conn, err := c.open(ctx, req.Faithful, sessionID, kind)
@@ -246,6 +259,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 			return
 		}
 
+		c.logCodexToolEvent(raw)
 		event, terminal, err := parseStreamEvent(raw)
 		if err != nil {
 			sendStreamEvent(ctx, events, StreamEvent{Err: err})
@@ -261,6 +275,13 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 			return
 		}
 	}
+}
+
+func (c *Client) logCodexToolEvent(raw []byte) {
+	if !c.logBodyShape || c.logOutput == nil || !isCodexToolEvent(raw) {
+		return
+	}
+	_, _ = fmt.Fprintf(c.logOutput, "codex_tool_event %s\n", redactedCodexToolEventShape(raw))
 }
 
 func writePayload(ctx context.Context, conn websocketConn, payload map[string]any, timeout time.Duration) error {

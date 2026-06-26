@@ -116,23 +116,42 @@ func (b requestBuilder) buildFaithful(messages []openai.ChatMessage, model, sess
 	return payload
 }
 
-func (b requestBuilder) buildMinimal(messages []openai.ChatMessage, model, reasoningEffort, verbosity string) map[string]any {
+func (b requestBuilder) buildMinimal(req Request) (map[string]any, error) {
+	messages := req.Messages
 	systemTexts, conversation := splitMessages(messages)
 	instructions := strings.Join(systemTexts, "\n\n")
 	if instructions == "" {
 		instructions = "You are a helpful assistant."
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"type":             "response.create",
-		"model":            firstNonEmpty(model, defaultModel),
+		"model":            firstNonEmpty(req.Model, defaultModel),
 		"instructions":     instructions,
 		"input":            conversation,
 		"stream":           true,
 		"store":            false,
-		"reasoning":        map[string]any{"effort": reasoningEffort},
-		"text":             map[string]any{"verbosity": verbosity},
+		"reasoning":        map[string]any{"effort": req.ReasoningEffort},
+		"text":             map[string]any{"verbosity": req.Verbosity},
 		"prompt_cache_key": b.newPromptCache(),
 	}
+	if rawJSONPresent(req.Tools) {
+		tools, err := decodeRawJSON(req.Tools)
+		if err != nil {
+			return nil, NewError(ErrorKindClient, 400, "invalid tools JSON", err)
+		}
+		payload["tools"] = tools
+	}
+	if rawJSONPresent(req.ToolChoice) {
+		toolChoice, err := decodeRawJSON(req.ToolChoice)
+		if err != nil {
+			return nil, NewError(ErrorKindClient, 400, "invalid tool_choice JSON", err)
+		}
+		payload["tool_choice"] = toolChoice
+	}
+	if req.ParallelToolCalls != nil {
+		payload["parallel_tool_calls"] = *req.ParallelToolCalls
+	}
+	return payload, nil
 }
 
 func (b requestBuilder) environmentContext() string {
@@ -226,6 +245,19 @@ func firstNonNil(values ...any) any {
 		}
 	}
 	return nil
+}
+
+func rawJSONPresent(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
+}
+
+func decodeRawJSON(raw json.RawMessage) (any, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 func milliseconds(t time.Time) string {

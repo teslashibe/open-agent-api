@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -14,12 +15,15 @@ type Service interface {
 }
 
 type Request struct {
-	Model           string
-	Messages        []openai.ChatMessage
-	ReasoningEffort string
-	Verbosity       string
-	Faithful        bool
-	Prewarm         bool
+	Model             string
+	Messages          []openai.ChatMessage
+	Tools             json.RawMessage
+	ToolChoice        json.RawMessage
+	ParallelToolCalls *bool
+	ReasoningEffort   string
+	Verbosity         string
+	Faithful          bool
+	Prewarm           bool
 }
 
 type Completion struct {
