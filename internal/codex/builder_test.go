@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -104,11 +105,19 @@ func TestBuildFaithfulPrewarmRequestHasGenerateFalseAndEmptyInput(t *testing.T) 
 
 func TestBuildMinimalRequest(t *testing.T) {
 	builder := fixtureBuilder()
-	payload := builder.buildMinimal([]openai.ChatMessage{
-		{Role: "system", Content: openai.TextContent("one")},
-		{Role: "system", Content: openai.TextContent("two")},
-		{Role: "user", Content: []byte(`[{"type":"text","text":"hello "},{"type":"text","text":"there"}]`)},
-	}, "plain-model", "low", "high")
+	payload, err := builder.buildMinimal(Request{
+		Model:           "plain-model",
+		ReasoningEffort: "low",
+		Verbosity:       "high",
+		Messages: []openai.ChatMessage{
+			{Role: "system", Content: openai.TextContent("one")},
+			{Role: "system", Content: openai.TextContent("two")},
+			{Role: "user", Content: []byte(`[{"type":"text","text":"hello "},{"type":"text","text":"there"}]`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMinimal() error = %v", err)
+	}
 
 	if payload["model"] != "plain-model" {
 		t.Fatalf("model = %v", payload["model"])
@@ -125,6 +134,46 @@ func TestBuildMinimalRequest(t *testing.T) {
 	input := payload["input"].([]any)
 	if got := input[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]; got != "hello there" {
 		t.Fatalf("message text = %v", got)
+	}
+}
+
+func TestBuildMinimalRequestIncludesClientTools(t *testing.T) {
+	builder := fixtureBuilder()
+	parallel := false
+	payload, err := builder.buildMinimal(Request{
+		Model:             "plain-model",
+		ReasoningEffort:   "medium",
+		Verbosity:         "medium",
+		Messages:          []openai.ChatMessage{{Role: "user", Content: openai.TextContent("use a tool")}},
+		Tools:             json.RawMessage(`[{"type":"function","function":{"name":"lookup","description":"Look up a term","parameters":{"type":"object","properties":{"q":{"type":"string","description":"query"}},"required":["q"]}}}]`),
+		ToolChoice:        json.RawMessage(`{"type":"function","function":{"name":"lookup"}}`),
+		ParallelToolCalls: &parallel,
+	})
+	if err != nil {
+		t.Fatalf("buildMinimal() error = %v", err)
+	}
+
+	tools := payload["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	function := tool["function"].(map[string]any)
+	if tool["type"] != "function" ||
+		function["name"] != "lookup" ||
+		function["description"] != "Look up a term" {
+		t.Fatalf("tool schema = %#v", tool)
+	}
+	parameters := function["parameters"].(map[string]any)
+	properties := parameters["properties"].(map[string]any)
+	q := properties["q"].(map[string]any)
+	if parameters["type"] != "object" || q["type"] != "string" || q["description"] != "query" {
+		t.Fatalf("parameters = %#v", parameters)
+	}
+	toolChoice := payload["tool_choice"].(map[string]any)
+	choiceFunction := toolChoice["function"].(map[string]any)
+	if toolChoice["type"] != "function" || choiceFunction["name"] != "lookup" {
+		t.Fatalf("tool_choice = %#v", toolChoice)
+	}
+	if payload["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %v, want false", payload["parallel_tool_calls"])
 	}
 }
 

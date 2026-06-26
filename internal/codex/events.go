@@ -4,18 +4,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
 
 type codexEvent struct {
-	Type          string          `json:"type"`
-	Delta         string          `json:"delta"`
-	ToolCalls     []ToolCall      `json:"tool_calls"`
-	ToolCallDelta *ToolCallDelta  `json:"tool_call_delta"`
-	Status        int             `json:"status"`
-	Error         json.RawMessage `json:"error"`
-	Response      *codexResponse  `json:"response"`
+	Type           string          `json:"type"`
+	Delta          string          `json:"delta"`
+	Arguments      string          `json:"arguments"`
+	ArgumentsDelta string          `json:"arguments_delta"`
+	ItemID         string          `json:"item_id"`
+	OutputIndex    int             `json:"output_index"`
+	ToolCalls      []ToolCall      `json:"tool_calls"`
+	ToolCallDelta  *ToolCallDelta  `json:"tool_call_delta"`
+	Item           *codexToolItem  `json:"item"`
+	Output         *codexToolItem  `json:"output"`
+	ToolCall       *codexToolItem  `json:"tool_call"`
+	Function       *codexFunction  `json:"function"`
+	Status         int             `json:"status"`
+	Error          json.RawMessage `json:"error"`
+	Response       *codexResponse  `json:"response"`
 }
 
 type codexResponse struct {
@@ -30,6 +40,21 @@ type codexUsage struct {
 	TotalTokens  int `json:"total_tokens"`
 }
 
+type codexToolItem struct {
+	ID        string          `json:"id"`
+	Type      string          `json:"type"`
+	CallID    string          `json:"call_id"`
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments"`
+	Function  *codexFunction  `json:"function"`
+	Raw       json.RawMessage `json:"-"`
+}
+
+type codexFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 	var event codexEvent
 	if err := json.Unmarshal(raw, &event); err != nil {
@@ -39,6 +64,32 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 	switch event.Type {
 	case "response.output_text.delta":
 		return StreamEvent{Delta: event.Delta}, false, nil
+	case "response.output_item.added", "response.tool_call.created", "response.tool_call.start", "response.function_call.started":
+		if delta, ok := event.toolCallStartDelta(); ok {
+			return StreamEvent{ToolCallDelta: &delta}, false, nil
+		}
+		return StreamEvent{}, false, nil
+	case "response.function_call_arguments.delta", "response.tool_call.arguments.delta", "response.tool_call.delta":
+		if event.ToolCallDelta != nil {
+			return StreamEvent{ToolCallDelta: event.ToolCallDelta}, false, nil
+		}
+		if len(event.ToolCalls) > 0 {
+			return StreamEvent{ToolCalls: event.ToolCalls}, false, nil
+		}
+		if delta, ok := event.toolCallArgumentsDelta(); ok {
+			return StreamEvent{ToolCallDelta: &delta}, false, nil
+		}
+		return StreamEvent{}, false, nil
+	case "response.tool_call.completed", "response.tool_call.done", "response.function_call.completed":
+		if len(event.ToolCalls) > 0 {
+			return StreamEvent{ToolCalls: event.ToolCalls}, false, nil
+		}
+		if toolCall, ok := event.fullToolCall(); ok {
+			return StreamEvent{ToolCalls: []ToolCall{toolCall}}, false, nil
+		}
+		return StreamEvent{}, false, nil
+	case "response.function_call_arguments.done", "response.output_item.done":
+		return StreamEvent{}, false, nil
 	case "response.completed":
 		done := StreamEvent{Done: true}
 		if event.Response != nil {
@@ -56,6 +107,191 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 	default:
 		return StreamEvent{}, false, nil
 	}
+}
+
+func (e codexEvent) toolCallStartDelta() (ToolCallDelta, bool) {
+	item := e.toolItem()
+	if item == nil || !item.isToolCall() {
+		return ToolCallDelta{}, false
+	}
+	id := firstNonEmpty(item.CallID, item.ID, e.ItemID)
+	name := item.toolName()
+	if id == "" && name == "" {
+		return ToolCallDelta{}, false
+	}
+	return ToolCallDelta{
+		Index: e.OutputIndex,
+		ID:    id,
+		Type:  "function",
+		Function: ToolCallFunctionDelta{
+			Name: name,
+		},
+	}, true
+}
+
+func (e codexEvent) toolCallArgumentsDelta() (ToolCallDelta, bool) {
+	arguments := firstNonEmpty(e.Delta, e.ArgumentsDelta, e.Arguments)
+	if arguments == "" {
+		return ToolCallDelta{}, false
+	}
+	item := e.toolItem()
+	id := ""
+	name := ""
+	if item != nil {
+		id = firstNonEmpty(item.CallID, item.ID)
+		name = item.toolName()
+	}
+	return ToolCallDelta{
+		Index: e.OutputIndex,
+		ID:    id,
+		Type:  "function",
+		Function: ToolCallFunctionDelta{
+			Name:      name,
+			Arguments: arguments,
+		},
+	}, true
+}
+
+func (e codexEvent) fullToolCall() (ToolCall, bool) {
+	item := e.toolItem()
+	if item == nil || !item.isToolCall() {
+		return ToolCall{}, false
+	}
+	id := firstNonEmpty(item.CallID, item.ID, e.ItemID)
+	name := item.toolName()
+	arguments := item.toolArguments()
+	if id == "" && name == "" && arguments == "" {
+		return ToolCall{}, false
+	}
+	return ToolCall{
+		ID:   id,
+		Type: "function",
+		Function: ToolCallFunction{
+			Name:      name,
+			Arguments: arguments,
+		},
+	}, true
+}
+
+func (e codexEvent) toolItem() *codexToolItem {
+	for _, item := range []*codexToolItem{e.Item, e.Output, e.ToolCall} {
+		if item != nil {
+			return item
+		}
+	}
+	if e.Function != nil {
+		return &codexToolItem{Type: "function_call", ID: e.ItemID, Function: e.Function}
+	}
+	return nil
+}
+
+func (i codexToolItem) isToolCall() bool {
+	switch i.Type {
+	case "", "function_call", "tool_call", "function":
+		return true
+	default:
+		return strings.Contains(i.Type, "function") || strings.Contains(i.Type, "tool")
+	}
+}
+
+func (i codexToolItem) toolName() string {
+	if i.Name != "" {
+		return i.Name
+	}
+	if i.Function != nil {
+		return i.Function.Name
+	}
+	return ""
+}
+
+func (i codexToolItem) toolArguments() string {
+	if i.Arguments != "" {
+		return i.Arguments
+	}
+	if i.Function != nil {
+		return i.Function.Arguments
+	}
+	return ""
+}
+
+func isCodexToolEvent(raw []byte) bool {
+	var event struct {
+		Type          string          `json:"type"`
+		ToolCalls     json.RawMessage `json:"tool_calls"`
+		ToolCallDelta json.RawMessage `json:"tool_call_delta"`
+		Item          json.RawMessage `json:"item"`
+		Output        json.RawMessage `json:"output"`
+		ToolCall      json.RawMessage `json:"tool_call"`
+		Function      json.RawMessage `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return false
+	}
+	if strings.Contains(event.Type, "tool_call") || strings.Contains(event.Type, "function_call") {
+		return true
+	}
+	return len(event.ToolCalls) > 0 ||
+		len(event.ToolCallDelta) > 0 ||
+		toolJSONLooksLikeToolCall(event.Item) ||
+		toolJSONLooksLikeToolCall(event.Output) ||
+		toolJSONLooksLikeToolCall(event.ToolCall) ||
+		len(event.Function) > 0
+}
+
+func redactedCodexToolEventShape(raw []byte) string {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return "valid_json=false"
+	}
+	eventType := jsonString(body["type"])
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	toolCallsCount := 0
+	if rawToolCalls, ok := body["tool_calls"]; ok {
+		var toolCalls []json.RawMessage
+		if err := json.Unmarshal(rawToolCalls, &toolCalls); err == nil {
+			toolCallsCount = len(toolCalls)
+		}
+	}
+	return fmt.Sprintf(
+		"valid_json=true type=%s fields=%s has_item=%t has_tool_call_delta=%t tool_calls_count=%d",
+		eventType,
+		strings.Join(keys, ","),
+		rawJSONPresent(body["item"]) || rawJSONPresent(body["output"]) || rawJSONPresent(body["tool_call"]),
+		rawJSONPresent(body["tool_call_delta"]),
+		toolCallsCount,
+	)
+}
+
+func jsonString(raw json.RawMessage) string {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return value
+}
+
+func toolJSONLooksLikeToolCall(raw json.RawMessage) bool {
+	if !rawJSONPresent(raw) {
+		return false
+	}
+	var item struct {
+		Type     string          `json:"type"`
+		CallID   string          `json:"call_id"`
+		Name     string          `json:"name"`
+		Function json.RawMessage `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return false
+	}
+	return strings.Contains(item.Type, "function") ||
+		strings.Contains(item.Type, "tool") ||
+		item.CallID != "" ||
+		item.Name != "" ||
+		rawJSONPresent(item.Function)
 }
 
 func mapUsage(usage codexUsage) openai.Usage {
