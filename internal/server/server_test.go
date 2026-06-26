@@ -117,6 +117,53 @@ func TestChatCompletionsNonStreamingSuccess(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsNonStreamingToolCalls(t *testing.T) {
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			return codex.Completion{
+				ID:    "chatcmpl-tool",
+				Model: req.Model,
+				ToolCalls: []codex.ToolCall{
+					{
+						ID:   "call_123",
+						Type: "function",
+						Function: codex.ToolCallFunction{
+							Name:      "lookup",
+							Arguments: `{"q":"codex"}`,
+						},
+					},
+				},
+			}, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}],"tool_choice":"auto","parallel_tool_calls":true}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body openai.ChatCompletionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	choice := body.Choices[0]
+	if choice.FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", choice.FinishReason)
+	}
+	if got := string(choice.Message.Content); got != "null" {
+		t.Fatalf("message content = %s, want null", got)
+	}
+	if len(choice.Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls len = %d, want 1", len(choice.Message.ToolCalls))
+	}
+	toolCall := choice.Message.ToolCalls[0]
+	if toolCall.ID != "call_123" || toolCall.Type != "function" || toolCall.Function.Name != "lookup" || toolCall.Function.Arguments != `{"q":"codex"}` {
+		t.Fatalf("tool call = %#v", toolCall)
+	}
+}
+
 func TestChatCompletionsAcceptsArbitraryAuthorization(t *testing.T) {
 	var called bool
 	service := fakeCodexService{
@@ -194,6 +241,56 @@ func TestChatCompletionsStreamingSuccess(t *testing.T) {
 	}
 	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
 		t.Fatalf("stream = %q, want terminal DONE event", body)
+	}
+}
+
+func TestChatCompletionsStreamingToolCalls(t *testing.T) {
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			events := make(chan codex.StreamEvent, 4)
+			events <- codex.StreamEvent{
+				ToolCallDelta: &codex.ToolCallDelta{
+					Index: 0,
+					ID:    "call_123",
+					Type:  "function",
+					Function: codex.ToolCallFunctionDelta{
+						Name:      "lookup",
+						Arguments: `{"q":`,
+					},
+				},
+			}
+			events <- codex.StreamEvent{
+				ToolCallDelta: &codex.ToolCallDelta{
+					Index: 0,
+					Function: codex.ToolCallFunctionDelta{
+						Arguments: `"codex"}`,
+					},
+				},
+			}
+			events <- codex.StreamEvent{Done: true}
+			close(events)
+			return events, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body := readString(t, resp.Body)
+	for _, want := range []string{
+		`"role":"assistant"`,
+		`"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]`,
+		`"tool_calls":[{"index":0,"function":{"arguments":"\"codex\"}"}}]`,
+		`"finish_reason":"tool_calls"`,
+		"data: [DONE]\n\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream = %q, want %q", body, want)
+		}
 	}
 }
 
