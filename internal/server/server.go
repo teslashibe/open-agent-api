@@ -116,16 +116,21 @@ func chatCompletions(opts options) fiber.Handler {
 		if model == "" {
 			model = openai.DefaultModel
 		}
-		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, rawJSONPresent(req.Tools))
+		toolsPresent := rawJSONPresent(req.Tools)
+		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, toolsPresent)
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
+		// Cursor and other OpenAI clients send their own tools. Faithful Codex mode
+		// injects the captured CLI profile/tools and often makes those requests fail upstream.
+		faithful := defaultBool(req.Faithful, !toolsPresent)
+		prewarm := defaultBool(req.Prewarm, faithful)
 		serviceReq := codex.Request{
 			Model:           model,
 			Messages:        req.Messages,
 			ReasoningEffort: defaultString(req.ReasoningEffort, "medium"),
 			Verbosity:       defaultString(req.Verbosity, "medium"),
-			Faithful:        defaultBool(req.Faithful, true),
-			Prewarm:         defaultBool(req.Prewarm, true),
+			Faithful:        faithful,
+			Prewarm:         prewarm,
 		}
 
 		if req.Stream {
