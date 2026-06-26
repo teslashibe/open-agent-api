@@ -262,6 +262,73 @@ credentials still come from `~/.codex/auth.json`.
 - If Cursor reports an OpenAI API key authorization error and no request appears
   in these server logs, the failure occurred before reaching this API.
 
+### Issue 11 Validation Results
+
+Recorded on 2026-06-26 in the issue #11 worktree.
+
+Automated validation:
+
+```text
+GOCACHE=$PWD/.gocache go test ./...
+?   	github.com/teslashibe/codex-chat-api/cmd/codex-chat-api	[no test files]
+ok  	github.com/teslashibe/codex-chat-api/internal/auth
+ok  	github.com/teslashibe/codex-chat-api/internal/codex
+ok  	github.com/teslashibe/codex-chat-api/internal/config
+?   	github.com/teslashibe/codex-chat-api/internal/openai	[no test files]
+ok  	github.com/teslashibe/codex-chat-api/internal/server
+ok  	github.com/teslashibe/codex-chat-api/internal/sse
+
+GOCACHE=$PWD/.gocache go vet ./...
+pass, no output
+
+GOCACHE=$PWD/.gocache go build ./...
+pass, no output
+```
+
+Handler-level coverage added in `internal/server/server_test.go` verifies:
+
+- `GET /v1/models` returns a model list containing `gpt-5.5`.
+- `POST /v1/chat/completions` accepts an arbitrary
+  `Authorization: Bearer local-codex-chat-api` header and reaches the Codex
+  service layer.
+- Request diagnostics include method, path, status, 404 visibility, auth
+  presence, chat model, stream mode, and tool presence without logging bearer
+  values or message content.
+
+Live curl validation could not be completed in the automated sandbox because the
+environment rejects listening on the local test port:
+
+```text
+GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+codex-chat-api: failed to listen: listen tcp4 127.0.0.1:8088: bind: operation not permitted
+```
+
+Run these live checks in a developer environment with port binding enabled and a
+valid `codex login`:
+
+```bash
+curl -s http://127.0.0.1:8088/v1/models | jq .
+
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'authorization: Bearer local-codex-chat-api' \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Say hi"}]}' | jq .
+```
+
+Cursor validation status for this automated run:
+
+| Cursor base URL | Result | Observed server probes |
+| --- | --- | --- |
+| `http://127.0.0.1:8088/v1` | Not runnable in sandbox because the server could not bind to `127.0.0.1:8088`. | Not observed in sandbox. |
+| `http://localhost:8088/v1` | Not runnable in sandbox because the server could not bind to `127.0.0.1:8088`. | Not observed in sandbox. |
+| `https://<tunnel-host>/v1` | Not runnable in sandbox because a local listener is required before starting a tunnel. | Not observed in sandbox. |
+
+For manual Cursor sign-off, record whether Cursor hits `GET /v1/models`,
+`POST /v1/chat/completions`, and any unexpected endpoint such as
+`/v1/responses`. If direct localhost produces no request logs, expose the same
+local process with one tunnel command from the tunnel section above and record
+the exact command and Cursor base URL that worked.
+
 ## Fingerprint: codex-exact by default
 
 By default (`faithful: true`) the API reproduces the real Codex CLI request at the
