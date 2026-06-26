@@ -44,6 +44,35 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestModels(t *testing.T) {
+	app := New(config.Defaults(), WithLogOutput(io.Discard))
+
+	req, err := http.NewRequest(http.MethodGet, "/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body openai.ModelListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Object != "list" || len(body.Data) != 1 {
+		t.Fatalf("unexpected model list: %#v", body)
+	}
+	model := body.Data[0]
+	if model.ID != openai.DefaultModel || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
+		t.Fatalf("unexpected model: %#v", model)
+	}
+}
+
 func TestChatCompletionsNonStreamingSuccess(t *testing.T) {
 	service := fakeCodexService{
 		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
@@ -88,6 +117,43 @@ func TestChatCompletionsNonStreamingSuccess(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsAcceptsArbitraryAuthorization(t *testing.T) {
+	var called bool
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			called = true
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
+
+	req, err := http.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer local-codex-chat-api")
+	resp, err := app.Test(req, 2000)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if !called {
+		t.Fatal("codex service was not called")
+	}
+	logBody := logs.String()
+	if !strings.Contains(logBody, "authorization_present=true") {
+		t.Fatalf("logs = %q, want authorization presence", logBody)
+	}
+	if strings.Contains(logBody, "local-codex-chat-api") {
+		t.Fatalf("logs leaked authorization value: %q", logBody)
+	}
+}
+
 func TestChatCompletionsStreamingSuccess(t *testing.T) {
 	service := fakeCodexService{
 		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
@@ -128,6 +194,90 @@ func TestChatCompletionsStreamingSuccess(t *testing.T) {
 	}
 	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
 		t.Fatalf("stream = %q, want terminal DONE event", body)
+	}
+}
+
+func TestRequestLogsAreRedacted(t *testing.T) {
+	const secret = "secret-access-token"
+	const prompt = "do not log this prompt"
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			events := make(chan codex.StreamEvent, 1)
+			events <- codex.StreamEvent{Done: true}
+			close(events)
+			return events, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.LogBodyShape = true
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		bytes.NewBufferString(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"`+prompt+`"}],"tools":[{"type":"function"}]}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := app.Test(req, 2000)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body := logs.String()
+	for _, leaked := range []string{secret, prompt, "Bearer"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("logs leaked %q: %q", leaked, body)
+		}
+	}
+	for _, want := range []string{
+		"body_shape path=/v1/chat/completions valid_json=true",
+		"fields=messages,model,stream,tools",
+		"messages=1",
+		"message_roles=user",
+		"tools_present=true",
+		"tools_count=1",
+		"chat_completion model=gpt-test stream=true tools_present=true",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("logs = %q, want %q", body, want)
+		}
+	}
+}
+
+func TestRequestLogs404s(t *testing.T) {
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithLogOutput(&logs))
+
+	req, err := http.NewRequest(http.MethodGet, "/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+
+	body := logs.String()
+	for _, want := range []string{"status=404", "method=GET", "path=/v1/responses", "authorization_present=false", "not_found=true"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("logs = %q, want %q", body, want)
+		}
 	}
 }
 

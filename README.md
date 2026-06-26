@@ -60,12 +60,36 @@ GOCACHE=$PWD/.gocache go build ./...
 The server implements:
 
 - `GET /health`
+- `GET /v1/models`
 - `POST /v1/chat/completions`
+
+### Model Discovery
+
+```bash
+curl -s http://127.0.0.1:8088/v1/models | jq .
+```
+
+Expected response:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "gpt-5.5",
+      "object": "model",
+      "created": 0,
+      "owned_by": "codex-chat-api"
+    }
+  ]
+}
+```
 
 ### Non-Streaming Chat
 
 ```bash
 curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'authorization: Bearer local-codex-chat-api' \
   -H 'content-type: application/json' \
   -d '{
     "model": "gpt-5.5",
@@ -145,6 +169,7 @@ Flags override environment values.
 | Codex scaffold JSON | `CODEX_SCAFFOLD_PATH` | `--codex-scaffold` | `codex_scaffold.json` |
 | Codex websocket URL | `CODEX_WEBSOCKET_URL` | `--codex-websocket-url` | `wss://chatgpt.com/backend-api/codex/responses` |
 | Codex request timeout | `CODEX_TIMEOUT` | `--codex-timeout` | `120s` |
+| Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 
 Request body options beyond the core OpenAI chat schema:
 
@@ -154,6 +179,88 @@ Request body options beyond the core OpenAI chat schema:
 | `verbosity` | `low`, `medium`, `high` | `medium` |
 | `faithful` | `true`, `false` | `true` |
 | `prewarm` | `true`, `false` | `true` |
+
+## Cursor Local-Model Setup
+
+Cursor can be pointed at this API the same way it is pointed at local
+OpenAI-compatible servers such as Ollama, LM Studio, or LiteLLM. The local HTTP
+API ignores the client `Authorization` value, but Cursor generally requires a
+non-empty OpenAI API key field.
+
+Direct localhost settings to try first:
+
+```text
+OpenAI API Key: local-codex-chat-api
+Override OpenAI Base URL: http://127.0.0.1:8088/v1
+Model: gpt-5.5
+```
+
+Also test this base URL if Cursor does not hit the API:
+
+```text
+http://localhost:8088/v1
+```
+
+The model ID is exact and case-sensitive: use `gpt-5.5`. Confirm Cursor reaches
+the local API by watching server logs. Successful probes should show entries for
+`GET /v1/models` and `POST /v1/chat/completions`, with
+`authorization_present=true` when Cursor sends the dummy key. Chat request logs
+also include the selected model, `stream` flag, and whether `tools` were present.
+The bearer token value and message content are never printed.
+
+For extra diagnostics, enable redacted body-shape logging:
+
+```bash
+CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+```
+
+This prints field names, message count, message roles, and tool count, but not
+message content or authorization values.
+
+### Cursor Through HTTPS Tunnel
+
+Some Cursor paths may construct requests through Cursor-managed servers. In that
+case `localhost` and `127.0.0.1` are not reachable from Cursor's route, and a
+public HTTPS tunnel is required. Bind the API locally, then expose port `8088`
+with one of these:
+
+```bash
+ngrok http 8088
+```
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8088
+```
+
+```bash
+tailscale funnel 8088
+```
+
+Use the tunnel host as the Cursor base URL:
+
+```text
+OpenAI API Key: local-codex-chat-api
+Override OpenAI Base URL: https://<tunnel-host>/v1
+Model: gpt-5.5
+```
+
+Keep the API bound to `127.0.0.1` unless your tunnel tool requires otherwise.
+The dummy Cursor key is not used for upstream Codex authentication; upstream
+credentials still come from `~/.codex/auth.json`.
+
+### Cursor Compatibility Notes
+
+- Cursor Chat, Cmd+K, and Agent mode are the expected local/custom endpoint
+  surfaces when Cursor routes them to the configured OpenAI-compatible endpoint.
+- Cursor Tab autocomplete is not expected to use local/custom endpoints.
+- Some Cursor modes or BYOK paths may still use Cursor-managed routes and may
+  require HTTPS tunneling.
+- Cursor may probe `GET /v1/models`, `POST /v1/chat/completions`, or other
+  endpoints such as `/v1/responses`. This service currently implements
+  `/v1/models` and `/v1/chat/completions`; `/v1/responses` and full tool-call
+  support are follow-up work tracked separately.
+- If Cursor reports an OpenAI API key authorization error and no request appears
+  in these server logs, the failure occurred before reaching this API.
 
 ## Fingerprint: codex-exact by default
 
@@ -211,7 +318,10 @@ Then run and record these probes:
 ```bash
 curl -s http://127.0.0.1:8088/health
 
+curl -s http://127.0.0.1:8088/v1/models | jq .
+
 curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'authorization: Bearer local-codex-chat-api' \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Say hi in 5 words"}]}' | jq .
 
@@ -226,6 +336,7 @@ The PR notes should include:
 - `go vet ./...`: passing output or "pass, no output".
 - `go build ./...`: passing output or "pass, no output".
 - `/health`: observed `{"status":"ok"}` response.
+- `/v1/models`: observed OpenAI-compatible model list containing `gpt-5.5`.
 - Non-streaming chat: observed `chat.completion` response with assistant content.
 - Streaming chat: observed SSE chunks ending in `data: [DONE]`.
 
