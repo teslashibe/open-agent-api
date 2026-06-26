@@ -101,6 +101,43 @@ func TestCompleteReturnsContextErrorFromReadLoop(t *testing.T) {
 	}
 }
 
+func TestStreamDeliversContextErrorAfterBufferedDelta(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	conn := &cancelAfterFirstReadConn{
+		first: []byte(`{"type":"response.output_text.delta","delta":"partial"}`),
+	}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = (&recordingDialer{conns: []websocketConn{conn}}).dial
+	client.builder.newSessionID = func() string { return "session-123" }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	conn.cancel = cancel
+	events, err := client.Stream(ctx, Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+		Faithful:        false,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+
+	var got []StreamEvent
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want delta and context error", got)
+	}
+	if got[0].Delta != "partial" {
+		t.Fatalf("first event = %#v", got[0])
+	}
+	if !errors.Is(got[1].Err, context.Canceled) {
+		t.Fatalf("second event error = %v, want context.Canceled", got[1].Err)
+	}
+}
+
 func TestPrewarmTimeoutDoesNotCancelTurn(t *testing.T) {
 	authPath, codexHome := writeAuthFixture(t)
 	turnConn := &fakeWebsocketConn{readMessages: [][]byte{
@@ -267,6 +304,22 @@ func (c *fakeWebsocketConn) Close() error {
 	defer c.mu.Unlock()
 	c.closed = true
 	return nil
+}
+
+type cancelAfterFirstReadConn struct {
+	fakeWebsocketConn
+	first  []byte
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (c *cancelAfterFirstReadConn) ReadMessage() (int, []byte, error) {
+	c.reads++
+	if c.reads == 1 {
+		return 1, c.first, nil
+	}
+	c.cancel()
+	return 0, nil, io.EOF
 }
 
 func decodeWrittenPayload(t *testing.T, conn *fakeWebsocketConn) map[string]any {

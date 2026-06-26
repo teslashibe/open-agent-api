@@ -137,7 +137,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		return nil, err
 	}
 
-	events := make(chan StreamEvent, 1)
+	events := make(chan StreamEvent, 2)
 	go c.readLoop(ctx, cancel, conn, events)
 	return events, nil
 }
@@ -233,7 +233,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {
-				sendTerminalStreamEvent(events, StreamEvent{Err: ctx.Err()})
+				sendStreamEvent(context.Background(), events, StreamEvent{Err: ctx.Err()})
 				return
 			}
 			sendStreamEvent(ctx, events, StreamEvent{Err: NewError(ErrorKindUpstream, http.StatusBadGateway, "read codex websocket", err)})
@@ -247,7 +247,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		}
 		if hasStreamEvent(event) {
 			if !sendStreamEvent(ctx, events, event) {
-				sendTerminalStreamEvent(events, StreamEvent{Err: ctx.Err()})
+				sendStreamEvent(context.Background(), events, StreamEvent{Err: ctx.Err()})
 				return
 			}
 		}
@@ -297,13 +297,6 @@ func sendStreamEvent(ctx context.Context, events chan<- StreamEvent, event Strea
 		return true
 	case <-ctx.Done():
 		return false
-	}
-}
-
-func sendTerminalStreamEvent(events chan<- StreamEvent, event StreamEvent) {
-	select {
-	case events <- event:
-	case <-time.After(100 * time.Millisecond):
 	}
 }
 
