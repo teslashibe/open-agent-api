@@ -18,7 +18,7 @@ pip install -r requirements.txt
 
 You must be logged in via Codex (`codex login`) so `~/.codex/auth.json` exists.
 
-## Run
+## Run Python prototype
 
 ```bash
 uvicorn app:app --host 127.0.0.1 --port 8088
@@ -26,9 +26,8 @@ uvicorn app:app --host 127.0.0.1 --port 8088
 
 ## Go development
 
-The Go refactor scaffold currently exposes `GET /health` only. It does not
-implement chat completions or websocket transport yet, and the Python prototype
-remains in place.
+The Go server implements `GET /health` and `POST /v1/chat/completions`, including
+the Codex websocket transport and SSE streaming.
 
 ```bash
 go test ./...
@@ -89,13 +88,13 @@ These come from `codex_profile.json` (instructions + tools) and
 `codex_scaffold.json` (developer + environment_context), snapshotted from a real
 session. Re-snapshot them if your Codex version/plugins change.
 
-### What still differs (cannot be matched from pure Python)
-- **TLS fingerprint (JA3/JA4):** this client is Python/OpenSSL; Codex is Rust/rustls.
+### What still differs
+- **TLS fingerprint (JA3/JA4):** this client uses Go's standard TLS stack; Codex is Rust/rustls.
 - **WebSocket upgrade header order/casing:** `Host/Connection/Upgrade/Sec-WebSocket-*`
-  are emitted by the `websockets` library, not in tungstenite's exact byte order.
+  are emitted by the Go websocket stack, not in tungstenite's exact byte order.
 
-Matching those needs a TLS-impersonating transport (e.g. `curl_cffi`) or a small
-Rust sidecar. Set `"faithful": false` for the minimal plain-chat request instead.
+Matching those needs a TLS-impersonating transport or a small Rust sidecar. Set
+`"faithful": false` for the minimal plain-chat request instead.
 
 ## Notes / limitations
 

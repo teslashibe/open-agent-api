@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -13,6 +14,10 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "PORT")
 	unsetenv(t, "CODEX_HOME")
 	unsetenv(t, "CODEX_AUTH_PATH")
+	unsetenv(t, "CODEX_PROFILE_PATH")
+	unsetenv(t, "CODEX_SCAFFOLD_PATH")
+	unsetenv(t, "CODEX_WEBSOCKET_URL")
+	unsetenv(t, "CODEX_TIMEOUT")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -32,6 +37,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AuthPath != filepath.Join(cfg.CodexHome, "auth.json") {
 		t.Fatalf("AuthPath = %q, want auth.json under CodexHome", cfg.AuthPath)
 	}
+	if cfg.CodexProfilePath != "codex_profile.json" {
+		t.Fatalf("CodexProfilePath = %q", cfg.CodexProfilePath)
+	}
+	if cfg.CodexScaffoldPath != "codex_scaffold.json" {
+		t.Fatalf("CodexScaffoldPath = %q", cfg.CodexScaffoldPath)
+	}
+	if cfg.CodexWebsocketURL != DefaultCodexWebsocketURL {
+		t.Fatalf("CodexWebsocketURL = %q", cfg.CodexWebsocketURL)
+	}
+	if cfg.CodexTimeout != DefaultCodexTimeout {
+		t.Fatalf("CodexTimeout = %s", cfg.CodexTimeout)
+	}
 }
 
 func TestLoadEnvironment(t *testing.T) {
@@ -39,6 +56,10 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_CHAT_API_PORT", "9090")
 	t.Setenv("CODEX_HOME", "/tmp/codex-home")
 	t.Setenv("CODEX_AUTH_PATH", "/tmp/auth.json")
+	t.Setenv("CODEX_PROFILE_PATH", "/tmp/profile.json")
+	t.Setenv("CODEX_SCAFFOLD_PATH", "/tmp/scaffold.json")
+	t.Setenv("CODEX_WEBSOCKET_URL", "wss://example.test/codex")
+	t.Setenv("CODEX_TIMEOUT", "3s")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -55,6 +76,12 @@ func TestLoadEnvironment(t *testing.T) {
 	if cfg.AuthPath != "/tmp/auth.json" {
 		t.Fatalf("AuthPath = %q", cfg.AuthPath)
 	}
+	if cfg.CodexProfilePath != "/tmp/profile.json" || cfg.CodexScaffoldPath != "/tmp/scaffold.json" {
+		t.Fatalf("codex fixture paths = %q %q", cfg.CodexProfilePath, cfg.CodexScaffoldPath)
+	}
+	if cfg.CodexWebsocketURL != "wss://example.test/codex" || cfg.CodexTimeout != 3*time.Second {
+		t.Fatalf("codex network config = %q %s", cfg.CodexWebsocketURL, cfg.CodexTimeout)
+	}
 }
 
 func TestLoadFlagsOverrideEnvironment(t *testing.T) {
@@ -69,6 +96,10 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--port", "8089",
 		"--codex-home", "/tmp/flag-codex",
 		"--auth-path", "/tmp/flag-auth.json",
+		"--codex-profile", "/tmp/flag-profile.json",
+		"--codex-scaffold", "/tmp/flag-scaffold.json",
+		"--codex-websocket-url", "wss://flag.test/codex",
+		"--codex-timeout", "4s",
 	})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -82,6 +113,12 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if cfg.AuthPath != "/tmp/flag-auth.json" {
 		t.Fatalf("AuthPath = %q", cfg.AuthPath)
+	}
+	if cfg.CodexProfilePath != "/tmp/flag-profile.json" || cfg.CodexScaffoldPath != "/tmp/flag-scaffold.json" {
+		t.Fatalf("codex fixture paths = %q %q", cfg.CodexProfilePath, cfg.CodexScaffoldPath)
+	}
+	if cfg.CodexWebsocketURL != "wss://flag.test/codex" || cfg.CodexTimeout != 4*time.Second {
+		t.Fatalf("codex network config = %q %s", cfg.CodexWebsocketURL, cfg.CodexTimeout)
 	}
 }
 
