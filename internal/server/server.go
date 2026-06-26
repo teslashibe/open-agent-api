@@ -3,12 +3,16 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/google/uuid"
 
@@ -25,6 +29,8 @@ type options struct {
 	requestContext func(*fiber.Ctx) context.Context
 	now            func() time.Time
 	newID          func() string
+	logOutput      io.Writer
+	logBodyShape   bool
 }
 
 func WithCodexService(service codex.Service) Option {
@@ -33,8 +39,13 @@ func WithCodexService(service codex.Service) Option {
 	}
 }
 
+func WithLogOutput(output io.Writer) Option {
+	return func(opts *options) {
+		opts.logOutput = output
+	}
+}
+
 func New(cfg config.Config, setters ...Option) *fiber.App {
-	_ = cfg
 	opts := options{
 		codexService: codex.UnavailableService{},
 		requestContext: func(c *fiber.Ctx) context.Context {
@@ -44,6 +55,8 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		newID: func() string {
 			return "chatcmpl-" + uuid.NewString()
 		},
+		logOutput:    os.Stdout,
+		logBodyShape: cfg.LogBodyShape,
 	}
 	for _, setter := range setters {
 		setter(&opts)
@@ -55,23 +68,42 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	})
 
 	app.Use(recover.New())
-	app.Use(logger.New(logger.Config{
-		Format:     "${time} ${status} ${method} ${path} ${latency}\n",
-		TimeFormat: "2006-01-02T15:04:05Z07:00",
-	}))
+	app.Use(requestLogger(opts))
 
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status": "ok",
 		})
 	})
+	app.Get("/v1/models", models)
 	app.Post("/v1/chat/completions", chatCompletions(opts))
+	app.Use(func(c *fiber.Ctx) error {
+		return writeError(c, fiber.StatusNotFound, "invalid_request_error", "not found")
+	})
 
 	return app
 }
 
+func models(c *fiber.Ctx) error {
+	return c.JSON(openai.ModelListResponse{
+		Object: "list",
+		Data: []openai.Model{
+			{
+				ID:      openai.DefaultModel,
+				Object:  "model",
+				Created: 0,
+				OwnedBy: "codex-chat-api",
+			},
+		},
+	})
+}
+
 func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if opts.logBodyShape {
+			logLine(opts, "body_shape path=%s %s\n", c.Path(), redactedBodyShape(c.Body()))
+		}
+
 		var req openai.ChatCompletionRequest
 		if err := c.BodyParser(&req); err != nil {
 			return writeError(c, fiber.StatusBadRequest, "invalid_request_error", "invalid JSON request body")
@@ -84,6 +116,8 @@ func chatCompletions(opts options) fiber.Handler {
 		if model == "" {
 			model = openai.DefaultModel
 		}
+		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, rawJSONPresent(req.Tools))
+
 		ctx, cancel := requestContext(c, opts.requestContext(c))
 		serviceReq := codex.Request{
 			Model:           model,
@@ -197,6 +231,89 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		_ = w.Flush()
 	})
 	return nil
+}
+
+func requestLogger(opts options) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		start := time.Now()
+		err := c.Next()
+		status := c.Response().StatusCode()
+		if status == 0 {
+			status = fiber.StatusOK
+		}
+		notFound := ""
+		if status == fiber.StatusNotFound {
+			notFound = " not_found=true"
+		}
+		logLine(
+			opts,
+			"%s status=%d method=%s path=%s latency=%s authorization_present=%t%s\n",
+			time.Now().Format(time.RFC3339),
+			status,
+			c.Method(),
+			c.Path(),
+			time.Since(start),
+			c.Get(fiber.HeaderAuthorization) != "",
+			notFound,
+		)
+		return err
+	}
+}
+
+func logLine(opts options, format string, args ...any) {
+	if opts.logOutput == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(opts.logOutput, format, args...)
+}
+
+func redactedBodyShape(raw []byte) string {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return "valid_json=false"
+	}
+
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	roles := []string{}
+	if rawMessages, ok := body["messages"]; ok {
+		var messages []struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(rawMessages, &messages); err == nil {
+			for _, message := range messages {
+				roles = append(roles, message.Role)
+			}
+		}
+	}
+
+	toolsPresent := false
+	toolsCount := 0
+	if rawTools, ok := body["tools"]; ok {
+		toolsPresent = rawJSONPresent(rawTools)
+		var tools []json.RawMessage
+		if err := json.Unmarshal(rawTools, &tools); err == nil {
+			toolsCount = len(tools)
+		}
+	}
+
+	return fmt.Sprintf(
+		"valid_json=true fields=%s messages=%d message_roles=%s tools_present=%t tools_count=%d",
+		strings.Join(keys, ","),
+		len(roles),
+		strings.Join(roles, ","),
+		toolsPresent,
+		toolsCount,
+	)
+}
+
+func rawJSONPresent(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
 }
 
 func validateChatRequest(req openai.ChatCompletionRequest) error {
