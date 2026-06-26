@@ -23,19 +23,45 @@ type Request struct {
 }
 
 type Completion struct {
-	Text  string
-	Model string
-	ID    string
-	Usage openai.Usage
+	Text      string
+	ToolCalls []ToolCall
+	Model     string
+	ID        string
+	Usage     openai.Usage
 }
 
 type StreamEvent struct {
-	Delta string
-	Done  bool
-	Model string
-	ID    string
-	Usage openai.Usage
-	Err   error
+	Delta         string
+	ToolCalls     []ToolCall
+	ToolCallDelta *ToolCallDelta
+	Done          bool
+	Model         string
+	ID            string
+	Usage         openai.Usage
+	Err           error
+}
+
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ToolCallDelta struct {
+	Index    int                   `json:"index"`
+	ID       string                `json:"id,omitempty"`
+	Type     string                `json:"type,omitempty"`
+	Function ToolCallFunctionDelta `json:"function,omitempty"`
+}
+
+type ToolCallFunctionDelta struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type ErrorKind string

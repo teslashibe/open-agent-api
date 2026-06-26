@@ -9,11 +9,13 @@ import (
 )
 
 type codexEvent struct {
-	Type     string          `json:"type"`
-	Delta    string          `json:"delta"`
-	Status   int             `json:"status"`
-	Error    json.RawMessage `json:"error"`
-	Response *codexResponse  `json:"response"`
+	Type          string          `json:"type"`
+	Delta         string          `json:"delta"`
+	ToolCalls     []ToolCall      `json:"tool_calls"`
+	ToolCallDelta *ToolCallDelta  `json:"tool_call_delta"`
+	Status        int             `json:"status"`
+	Error         json.RawMessage `json:"error"`
+	Response      *codexResponse  `json:"response"`
 }
 
 type codexResponse struct {

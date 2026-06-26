@@ -143,6 +143,17 @@ func chatCompletions(opts options) fiber.Handler {
 			return mapServiceError(c, err)
 		}
 
+		message := openai.ChatMessage{
+			Role:    "assistant",
+			Content: openai.TextContent(completion.Text),
+		}
+		finishReason := "stop"
+		if len(completion.ToolCalls) > 0 {
+			message.Content = json.RawMessage("null")
+			message.ToolCalls = openAIToolCalls(completion.ToolCalls)
+			finishReason = "tool_calls"
+		}
+
 		return c.JSON(openai.ChatCompletionResponse{
 			ID:      completionID(completion.ID, opts.newID),
 			Object:  "chat.completion",
@@ -150,12 +161,9 @@ func chatCompletions(opts options) fiber.Handler {
 			Model:   defaultString(completion.Model, model),
 			Choices: []openai.ChatCompletionChoice{
 				{
-					Index: 0,
-					Message: openai.ChatMessage{
-						Role:    "assistant",
-						Content: openai.TextContent(completion.Text),
-					},
-					FinishReason: "stop",
+					Index:        0,
+					Message:      message,
+					FinishReason: finishReason,
 				},
 			},
 			Usage: completion.Usage,
@@ -179,6 +187,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 	c.Set(fiber.HeaderConnection, "keep-alive")
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer cancel()
+		toolCallEmitted := false
 		if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 			ID:      id,
 			Object:  "chat.completion.chunk",
@@ -215,12 +224,43 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 					return
 				}
 			}
+			for i, toolCall := range event.ToolCalls {
+				toolCallEmitted = true
+				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
+					ID:      id,
+					Object:  "chat.completion.chunk",
+					Created: created,
+					Model:   model,
+					Choices: []openai.ChatCompletionChunkChoice{
+						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{openAIToolCallFullDelta(i, toolCall)}}},
+					},
+				}) {
+					return
+				}
+			}
+			if event.ToolCallDelta != nil {
+				toolCallEmitted = true
+				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
+					ID:      id,
+					Object:  "chat.completion.chunk",
+					Created: created,
+					Model:   model,
+					Choices: []openai.ChatCompletionChunkChoice{
+						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{openAIToolCallDelta(*event.ToolCallDelta)}}},
+					},
+				}) {
+					return
+				}
+			}
 			if event.Done {
 				break
 			}
 		}
 
 		finish := "stop"
+		if toolCallEmitted {
+			finish = "tool_calls"
+		}
 		if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 			ID:      id,
 			Object:  "chat.completion.chunk",
@@ -236,6 +276,48 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		_ = w.Flush()
 	})
 	return nil
+}
+
+func openAIToolCalls(toolCalls []codex.ToolCall) []openai.ToolCall {
+	out := make([]openai.ToolCall, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		out = append(out, openai.ToolCall{
+			ID:   toolCall.ID,
+			Type: defaultString(toolCall.Type, "function"),
+			Function: openai.ToolCallFunction{
+				Name:      toolCall.Function.Name,
+				Arguments: toolCall.Function.Arguments,
+			},
+		})
+	}
+	return out
+}
+
+func openAIToolCallDelta(delta codex.ToolCallDelta) openai.ToolCallDelta {
+	out := openai.ToolCallDelta{
+		Index: delta.Index,
+		ID:    delta.ID,
+		Type:  delta.Type,
+	}
+	if delta.Function.Name != "" || delta.Function.Arguments != "" {
+		out.Function = &openai.ToolCallFunctionDelta{
+			Name:      delta.Function.Name,
+			Arguments: delta.Function.Arguments,
+		}
+	}
+	return out
+}
+
+func openAIToolCallFullDelta(index int, toolCall codex.ToolCall) openai.ToolCallDelta {
+	return openai.ToolCallDelta{
+		Index: index,
+		ID:    toolCall.ID,
+		Type:  defaultString(toolCall.Type, "function"),
+		Function: &openai.ToolCallFunctionDelta{
+			Name:      toolCall.Function.Name,
+			Arguments: toolCall.Function.Arguments,
+		},
+	}
 }
 
 func requestLogger(opts options) fiber.Handler {
