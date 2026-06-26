@@ -28,6 +28,7 @@ type Config struct {
 	CodexScaffoldPath string
 	CodexWebsocketURL string
 	CodexTimeout      time.Duration
+	LogBodyShape      bool
 }
 
 func Load(args []string) (Config, error) {
@@ -80,6 +81,13 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.CodexTimeout = timeout
 	}
+	if value := os.Getenv("CODEX_LOG_BODY_SHAPE"); value != "" {
+		logBodyShape, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_LOG_BODY_SHAPE: %w", err)
+		}
+		cfg.LogBodyShape = logBodyShape
+	}
 
 	fs := flag.NewFlagSet("codex-chat-api", flag.ContinueOnError)
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "host address to bind")
@@ -90,6 +98,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.CodexScaffoldPath, "codex-scaffold", cfg.CodexScaffoldPath, "Codex scaffold JSON path")
 	fs.StringVar(&cfg.CodexWebsocketURL, "codex-websocket-url", cfg.CodexWebsocketURL, "Codex websocket URL")
 	fs.DurationVar(&cfg.CodexTimeout, "codex-timeout", cfg.CodexTimeout, "Codex websocket request timeout")
+	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}

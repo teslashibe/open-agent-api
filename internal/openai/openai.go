@@ -7,13 +7,14 @@ const (
 )
 
 type ChatCompletionRequest struct {
-	Model           string        `json:"model"`
-	Messages        []ChatMessage `json:"messages"`
-	Stream          bool          `json:"stream,omitempty"`
-	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
-	Verbosity       string        `json:"verbosity,omitempty"`
-	Faithful        *bool         `json:"faithful,omitempty"`
-	Prewarm         *bool         `json:"prewarm,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []ChatMessage   `json:"messages"`
+	Stream          bool            `json:"stream,omitempty"`
+	Tools           json.RawMessage `json:"tools,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	Verbosity       string          `json:"verbosity,omitempty"`
+	Faithful        *bool           `json:"faithful,omitempty"`
+	Prewarm         *bool           `json:"prewarm,omitempty"`
 }
 
 type ChatMessage struct {
@@ -69,6 +70,18 @@ type ErrorBody struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
 	Code    string `json:"code,omitempty"`
+}
+
+type ModelListResponse struct {
+	Object string  `json:"object"`
+	Data   []Model `json:"data"`
+}
+
+type Model struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
 }
 
 func TextContent(text string) json.RawMessage {

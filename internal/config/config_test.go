@@ -18,6 +18,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_SCAFFOLD_PATH")
 	unsetenv(t, "CODEX_WEBSOCKET_URL")
 	unsetenv(t, "CODEX_TIMEOUT")
+	unsetenv(t, "CODEX_LOG_BODY_SHAPE")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -49,6 +50,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.CodexTimeout != DefaultCodexTimeout {
 		t.Fatalf("CodexTimeout = %s", cfg.CodexTimeout)
 	}
+	if cfg.LogBodyShape {
+		t.Fatal("LogBodyShape = true, want false")
+	}
 }
 
 func TestLoadEnvironment(t *testing.T) {
@@ -60,6 +64,7 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_SCAFFOLD_PATH", "/tmp/scaffold.json")
 	t.Setenv("CODEX_WEBSOCKET_URL", "wss://example.test/codex")
 	t.Setenv("CODEX_TIMEOUT", "3s")
+	t.Setenv("CODEX_LOG_BODY_SHAPE", "true")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -82,6 +87,9 @@ func TestLoadEnvironment(t *testing.T) {
 	if cfg.CodexWebsocketURL != "wss://example.test/codex" || cfg.CodexTimeout != 3*time.Second {
 		t.Fatalf("codex network config = %q %s", cfg.CodexWebsocketURL, cfg.CodexTimeout)
 	}
+	if !cfg.LogBodyShape {
+		t.Fatal("LogBodyShape = false, want true")
+	}
 }
 
 func TestLoadFlagsOverrideEnvironment(t *testing.T) {
@@ -100,6 +108,7 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--codex-scaffold", "/tmp/flag-scaffold.json",
 		"--codex-websocket-url", "wss://flag.test/codex",
 		"--codex-timeout", "4s",
+		"--log-body-shape",
 	})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -119,6 +128,9 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if cfg.CodexWebsocketURL != "wss://flag.test/codex" || cfg.CodexTimeout != 4*time.Second {
 		t.Fatalf("codex network config = %q %s", cfg.CodexWebsocketURL, cfg.CodexTimeout)
+	}
+	if !cfg.LogBodyShape {
+		t.Fatal("LogBodyShape = false, want true")
 	}
 }
 
@@ -154,6 +166,15 @@ func TestLoadInvalidPort(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid port error")
+	}
+}
+
+func TestLoadInvalidLogBodyShape(t *testing.T) {
+	t.Setenv("CODEX_LOG_BODY_SHAPE", "definitely")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid log body shape error")
 	}
 }
 
