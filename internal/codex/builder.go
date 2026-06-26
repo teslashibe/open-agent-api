@@ -160,9 +160,18 @@ func splitMessages(messages []openai.ChatMessage) ([]string, []any) {
 		if role == "" {
 			role = "user"
 		}
+		if role == "tool" {
+			continue
+		}
 		text := messageText(message.Content)
+		if role == "developer" {
+			role = "system"
+		}
 		if role == "system" {
 			systemTexts = append(systemTexts, text)
+			continue
+		}
+		if text == "" {
 			continue
 		}
 		partType := "input_text"
