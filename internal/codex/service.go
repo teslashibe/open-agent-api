@@ -42,26 +42,26 @@ type StreamEvent struct {
 }
 
 type ToolCall struct {
-	ID       string
-	Type     string
-	Function ToolCallFunction
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
 }
 
 type ToolCallFunction struct {
-	Name      string
-	Arguments string
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type ToolCallDelta struct {
-	Index    int
-	ID       string
-	Type     string
-	Function ToolCallFunctionDelta
+	Index    int                   `json:"index"`
+	ID       string                `json:"id,omitempty"`
+	Type     string                `json:"type,omitempty"`
+	Function ToolCallFunctionDelta `json:"function,omitempty"`
 }
 
 type ToolCallFunctionDelta struct {
-	Name      string
-	Arguments string
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type ErrorKind string

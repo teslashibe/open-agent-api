@@ -205,6 +205,32 @@ func TestParseStreamEventFailureIsSanitized(t *testing.T) {
 	}
 }
 
+func TestCodexEventToolCallScaffoldingUnmarshalsJSON(t *testing.T) {
+	var event codexEvent
+	raw := []byte(`{
+		"type":"response.tool_call.delta",
+		"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"codex\"}"}}],
+		"tool_call_delta":{"index":0,"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}
+	}`)
+	if err := json.Unmarshal(raw, &event); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(event.ToolCalls) != 1 {
+		t.Fatalf("tool_calls len = %d, want 1", len(event.ToolCalls))
+	}
+	toolCall := event.ToolCalls[0]
+	if toolCall.ID != "call_123" || toolCall.Type != "function" || toolCall.Function.Name != "lookup" || toolCall.Function.Arguments != `{"q":"codex"}` {
+		t.Fatalf("tool call = %#v", toolCall)
+	}
+	if event.ToolCallDelta == nil {
+		t.Fatal("tool_call_delta = nil")
+	}
+	delta := event.ToolCallDelta
+	if delta.Index != 0 || delta.ID != "call_123" || delta.Type != "function" || delta.Function.Name != "lookup" || delta.Function.Arguments != `{"q":` {
+		t.Fatalf("tool call delta = %#v", delta)
+	}
+}
+
 type recordedCodexRequest struct {
 	url     string
 	headers http.Header
