@@ -96,6 +96,12 @@ func (c *Client) Complete(ctx context.Context, req Request) (Completion, error) 
 		if event.Delta != "" {
 			completion.Text += event.Delta
 		}
+		if len(event.ToolCalls) > 0 {
+			completion.ToolCalls = append(completion.ToolCalls, event.ToolCalls...)
+		}
+		if event.ToolCallDelta != nil {
+			applyToolCallDelta(&completion.ToolCalls, *event.ToolCallDelta)
+		}
 		if event.ID != "" {
 			completion.ID = event.ID
 		}
@@ -288,7 +294,34 @@ func minDuration(a, b time.Duration) time.Duration {
 }
 
 func hasStreamEvent(event StreamEvent) bool {
-	return event.Delta != "" || event.Done || event.Model != "" || event.ID != "" || event.Usage != (openai.Usage{}) || event.Err != nil
+	return event.Delta != "" ||
+		len(event.ToolCalls) > 0 ||
+		event.ToolCallDelta != nil ||
+		event.Done ||
+		event.Model != "" ||
+		event.ID != "" ||
+		event.Usage != (openai.Usage{}) ||
+		event.Err != nil
+}
+
+func applyToolCallDelta(toolCalls *[]ToolCall, delta ToolCallDelta) {
+	for len(*toolCalls) <= delta.Index {
+		*toolCalls = append(*toolCalls, ToolCall{Type: "function"})
+	}
+
+	toolCall := &(*toolCalls)[delta.Index]
+	if delta.ID != "" {
+		toolCall.ID = delta.ID
+	}
+	if delta.Type != "" {
+		toolCall.Type = delta.Type
+	}
+	if delta.Function.Name != "" {
+		toolCall.Function.Name = delta.Function.Name
+	}
+	if delta.Function.Arguments != "" {
+		toolCall.Function.Arguments += delta.Function.Arguments
+	}
 }
 
 func sendStreamEvent(ctx context.Context, events chan<- StreamEvent, event StreamEvent) bool {

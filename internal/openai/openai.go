@@ -7,19 +7,34 @@ const (
 )
 
 type ChatCompletionRequest struct {
-	Model           string          `json:"model"`
-	Messages        []ChatMessage   `json:"messages"`
-	Stream          bool            `json:"stream,omitempty"`
-	Tools           json.RawMessage `json:"tools,omitempty"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-	Verbosity       string          `json:"verbosity,omitempty"`
-	Faithful        *bool           `json:"faithful,omitempty"`
-	Prewarm         *bool           `json:"prewarm,omitempty"`
+	Model             string          `json:"model"`
+	Messages          []ChatMessage   `json:"messages"`
+	Stream            bool            `json:"stream,omitempty"`
+	Tools             json.RawMessage `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string          `json:"reasoning_effort,omitempty"`
+	Verbosity         string          `json:"verbosity,omitempty"`
+	Faithful          *bool           `json:"faithful,omitempty"`
+	Prewarm           *bool           `json:"prewarm,omitempty"`
 }
 
 type ChatMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type ChatCompletionResponse struct {
@@ -52,8 +67,21 @@ type ChatCompletionChunkChoice struct {
 }
 
 type ChatDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+type ToolCallDelta struct {
+	Index    int                    `json:"index"`
+	ID       string                 `json:"id,omitempty"`
+	Type     string                 `json:"type,omitempty"`
+	Function *ToolCallFunctionDelta `json:"function,omitempty"`
+}
+
+type ToolCallFunctionDelta struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type Usage struct {
