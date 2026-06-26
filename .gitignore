@@ -1,8 +1,12 @@
-.venv/
-__pycache__/
-*.py[cod]
 .env
 .env.*
 .DS_Store
 .cache/
 .gocache/
+
+# Go build/test artifacts
+codex-chat-api
+bin/
+dist/
+coverage.out
+*.test
