@@ -81,6 +81,38 @@ func TestCompleteUsesPrewarmThenTurnAndAggregatesEvents(t *testing.T) {
 	}
 }
 
+func TestCompleteAggregatesToolCallFrames(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	turnConn := &fakeWebsocketConn{readMessages: [][]byte{
+		[]byte(`{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_123","type":"function_call","call_id":"call_123","name":"lookup","arguments":""}}`),
+		[]byte(`{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_123","delta":"{\"q\":"}`),
+		[]byte(`{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_123","delta":"\"codex\"}"}`),
+		[]byte(`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_123","arguments":"{\"q\":\"codex\"}"}`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp-123","model":"gpt-test","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`),
+	}}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = (&recordingDialer{conns: []websocketConn{turnConn}}).dial
+	client.builder.newSessionID = func() string { return "session-123" }
+
+	completion, err := client.Complete(context.Background(), Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("use a tool")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+		Faithful:        false,
+	})
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if completion.Text != "" || len(completion.ToolCalls) != 1 {
+		t.Fatalf("completion = %#v", completion)
+	}
+	toolCall := completion.ToolCalls[0]
+	if toolCall.ID != "call_123" || toolCall.Type != "function" || toolCall.Function.Name != "lookup" || toolCall.Function.Arguments != `{"q":"codex"}` {
+		t.Fatalf("tool call = %#v", toolCall)
+	}
+}
+
 func TestCompleteReturnsContextErrorFromReadLoop(t *testing.T) {
 	authPath, codexHome := writeAuthFixture(t)
 	client := testClient(t, authPath, codexHome, "ws://example.test/codex")

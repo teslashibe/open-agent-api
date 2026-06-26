@@ -32,6 +32,8 @@ func run(args []string) error {
 		ScaffoldPath: cfg.CodexScaffoldPath,
 		WebsocketURL: cfg.CodexWebsocketURL,
 		Timeout:      cfg.CodexTimeout,
+		LogOutput:    os.Stdout,
+		LogBodyShape: cfg.LogBodyShape,
 	})
 	if err != nil {
 		return err

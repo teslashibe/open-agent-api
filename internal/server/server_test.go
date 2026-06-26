@@ -120,6 +120,18 @@ func TestChatCompletionsNonStreamingSuccess(t *testing.T) {
 func TestChatCompletionsNonStreamingToolCalls(t *testing.T) {
 	service := fakeCodexService{
 		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			if !json.Valid(req.Tools) || !strings.Contains(string(req.Tools), `"name":"lookup"`) || !strings.Contains(string(req.Tools), `"description":"Look up things"`) || !strings.Contains(string(req.Tools), `"parameters"`) {
+				t.Fatalf("Tools = %s", req.Tools)
+			}
+			if !json.Valid(req.ToolChoice) || !strings.Contains(string(req.ToolChoice), `"name":"lookup"`) {
+				t.Fatalf("ToolChoice = %s", req.ToolChoice)
+			}
+			if req.ParallelToolCalls == nil || !*req.ParallelToolCalls {
+				t.Fatalf("ParallelToolCalls = %v, want true", req.ParallelToolCalls)
+			}
+			if req.Faithful {
+				t.Fatal("Faithful = true, want false when client tools are present by default")
+			}
 			return codex.Completion{
 				ID:    "chatcmpl-tool",
 				Model: req.Model,
@@ -138,7 +150,7 @@ func TestChatCompletionsNonStreamingToolCalls(t *testing.T) {
 	}
 	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
 
-	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}],"tool_choice":"auto","parallel_tool_calls":true}`)
+	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Look up things","parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}}],"tool_choice":{"type":"function","function":{"name":"lookup"}},"parallel_tool_calls":true}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)

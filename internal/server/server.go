@@ -125,12 +125,15 @@ func chatCompletions(opts options) fiber.Handler {
 		faithful := defaultBool(req.Faithful, !toolsPresent)
 		prewarm := defaultBool(req.Prewarm, faithful)
 		serviceReq := codex.Request{
-			Model:           model,
-			Messages:        req.Messages,
-			ReasoningEffort: defaultString(req.ReasoningEffort, "medium"),
-			Verbosity:       defaultString(req.Verbosity, "medium"),
-			Faithful:        faithful,
-			Prewarm:         prewarm,
+			Model:             model,
+			Messages:          req.Messages,
+			Tools:             req.Tools,
+			ToolChoice:        req.ToolChoice,
+			ParallelToolCalls: req.ParallelToolCalls,
+			ReasoningEffort:   defaultString(req.ReasoningEffort, "medium"),
+			Verbosity:         defaultString(req.Verbosity, "medium"),
+			Faithful:          faithful,
+			Prewarm:           prewarm,
 		}
 
 		if req.Stream {

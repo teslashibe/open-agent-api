@@ -217,6 +217,11 @@ CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 80
 This prints field names, message count, message roles, and tool count, but not
 message content or authorization values.
 
+Tool-call event parsing and manual tool-call validation examples are documented
+in `docs/codex-tool-events.md`. With body-shape logging enabled, Codex
+tool/function-call websocket events are logged as redacted structural summaries
+without argument content.
+
 ### Cursor Through HTTPS Tunnel
 
 Some Cursor paths may construct requests through Cursor-managed servers. In that
