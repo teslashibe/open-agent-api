@@ -294,6 +294,54 @@ Cursor also probed `GET /v1/models` or any unsupported endpoint.
 - If Cursor reports an OpenAI API key authorization error and no request appears
   in these server logs, the failure occurred before reaching this API.
 
+### Issue 16 Validation Results
+
+Recorded on 2026-06-26 in the issue #16 worktree.
+
+Automated validation:
+
+```text
+GOCACHE=$PWD/.gocache go test ./...
+?   	github.com/teslashibe/codex-chat-api/cmd/codex-chat-api	[no test files]
+ok  	github.com/teslashibe/codex-chat-api/internal/auth	0.874s
+ok  	github.com/teslashibe/codex-chat-api/internal/codex	0.354s
+ok  	github.com/teslashibe/codex-chat-api/internal/config	0.656s
+ok  	github.com/teslashibe/codex-chat-api/internal/openai	0.507s
+ok  	github.com/teslashibe/codex-chat-api/internal/server	1.156s
+ok  	github.com/teslashibe/codex-chat-api/internal/sse	0.890s
+
+GOCACHE=$PWD/.gocache go vet ./...
+pass, no output
+
+GOCACHE=$PWD/.gocache go build ./...
+pass, no output
+```
+
+Continuation coverage added for issue #16 verifies:
+
+- OpenAI request parsing preserves multiple assistant `tool_calls` and matching
+  `role:"tool"` messages with `tool_call_id`.
+- Codex request building emits `function_call` and `function_call_output` input
+  items for tool-result continuation turns, including two sequential call/result
+  pairs.
+- Non-streaming continuation requests return final assistant text with
+  `finish_reason:"stop"`.
+- Streaming continuation requests return final assistant text deltas and a final
+  `finish_reason:"stop"` without emitting another tool-call finish.
+
+Manual Cursor Agent tunnel validation could not be completed in this automated
+worktree because the sandbox rejects binding a local listener, which is required
+before starting `cloudflared` or connecting Cursor:
+
+```text
+GOCACHE=$PWD/.gocache CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 18088
+codex-chat-api: failed to listen: listen tcp4 127.0.0.1:18088: bind: operation not permitted
+```
+
+Run the Cursor Agent validation prompts above in an interactive developer
+environment with port binding enabled and record the observed tool activity,
+final assistant answers, tunnel command, and Cursor base URL in the PR notes.
+
 ### Issue 11 Validation Results
 
 Recorded on 2026-06-26 in the issue #11 worktree.
