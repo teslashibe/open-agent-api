@@ -84,7 +84,7 @@ func chatCompletions(opts options) fiber.Handler {
 		if model == "" {
 			model = openai.DefaultModel
 		}
-		ctx, cancel := context.WithCancel(opts.requestContext(c))
+		ctx, cancel := requestContext(c, opts.requestContext(c))
 		serviceReq := codex.Request{
 			Model:           model,
 			Messages:        req.Messages,
@@ -140,7 +140,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 	c.Set(fiber.HeaderConnection, "keep-alive")
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer cancel()
-		if !writeSSE(w, openai.ChatCompletionChunk{
+		if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 			ID:      id,
 			Object:  "chat.completion.chunk",
 			Created: created,
@@ -154,7 +154,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 
 		for event := range events {
 			if event.Err != nil {
-				_ = writeSSE(w, errorChunk(id, created, defaultString(event.Model, model), sanitizeServiceMessage(event.Err)))
+				_ = writeSSE(ctx, cancel, w, errorChunk(id, created, defaultString(event.Model, model), publicErrorMessage(event.Err)))
 				break
 			}
 			if event.ID != "" {
@@ -164,7 +164,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				model = event.Model
 			}
 			if event.Delta != "" {
-				if !writeSSE(w, openai.ChatCompletionChunk{
+				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 					ID:      id,
 					Object:  "chat.completion.chunk",
 					Created: created,
@@ -182,7 +182,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		}
 
 		finish := "stop"
-		if !writeSSE(w, openai.ChatCompletionChunk{
+		if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 			ID:      id,
 			Object:  "chat.completion.chunk",
 			Created: created,
@@ -228,7 +228,7 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 		default:
 			status = defaultStatus(status, fiber.StatusBadGateway)
 		}
-		return writeError(c, status, errorType, serviceErr.Error())
+		return writeError(c, status, errorType, publicServiceMessage(serviceErr.Kind))
 	}
 	return writeError(c, fiber.StatusInternalServerError, "api_error", "internal server error")
 }
@@ -242,15 +242,42 @@ func writeError(c *fiber.Ctx, status int, errorType string, message string) erro
 	})
 }
 
-func writeSSE(w *bufio.Writer, v any) bool {
+func requestContext(c *fiber.Ctx, parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	done := c.Context().Done()
+	if done != nil {
+		go func() {
+			select {
+			case <-done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return ctx, cancel
+}
+
+func writeSSE(ctx context.Context, cancel context.CancelFunc, w *bufio.Writer, v any) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	default:
+	}
+
 	data, err := sse.Data(v)
 	if err != nil {
+		cancel()
 		return false
 	}
 	if _, err := w.Write(data); err != nil {
+		cancel()
 		return false
 	}
-	return w.Flush() == nil
+	if err := w.Flush(); err != nil {
+		cancel()
+		return false
+	}
+	return true
 }
 
 func errorChunk(id string, created int64, model string, message string) openai.ChatCompletionChunk {
@@ -270,14 +297,25 @@ func errorChunk(id string, created int64, model string, message string) openai.C
 	}
 }
 
-func sanitizeServiceMessage(err error) string {
+func publicErrorMessage(err error) string {
 	if serviceErr, ok := codex.ErrorAs(err); ok {
-		return serviceErr.Error()
+		return publicServiceMessage(serviceErr.Kind)
 	}
 	if errors.Is(err, context.Canceled) {
 		return "request canceled"
 	}
 	return "upstream error"
+}
+
+func publicServiceMessage(kind codex.ErrorKind) string {
+	switch kind {
+	case codex.ErrorKindAuth:
+		return "authentication failed"
+	case codex.ErrorKindClient:
+		return "invalid request"
+	default:
+		return "upstream error"
+	}
 }
 
 func completionID(id string, newID func() string) string {

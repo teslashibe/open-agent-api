@@ -138,7 +138,7 @@ func TestChatCompletionsUpstreamErrorIsSanitized(t *testing.T) {
 			return codex.Completion{}, codex.NewError(
 				codex.ErrorKindUpstream,
 				http.StatusBadGateway,
-				"upstream unavailable",
+				"upstream unavailable "+secret,
 				errors.New("backend included "+secret),
 			)
 		},
@@ -151,11 +151,75 @@ func TestChatCompletionsUpstreamErrorIsSanitized(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
 	}
 	body := readString(t, resp.Body)
-	if !strings.Contains(body, "upstream unavailable") {
+	if !strings.Contains(body, "upstream error") {
 		t.Fatalf("body = %q, want sanitized upstream message", body)
 	}
 	if strings.Contains(body, secret) {
 		t.Fatalf("response leaked secret: %q", body)
+	}
+}
+
+func TestChatCompletionsAuthErrorIsSanitized(t *testing.T) {
+	const secret = "secret-access-token"
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			return codex.Completion{}, codex.NewError(
+				codex.ErrorKindAuth,
+				http.StatusUnauthorized,
+				"bad token "+secret,
+				errors.New("authorization header had "+secret),
+			)
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, "authentication failed") {
+		t.Fatalf("body = %q, want sanitized auth message", body)
+	}
+	if strings.Contains(body, secret) {
+		t.Fatalf("response leaked secret: %q", body)
+	}
+}
+
+func TestChatCompletionsStreamingErrorIsSanitized(t *testing.T) {
+	const secret = "secret-access-token"
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			events := make(chan codex.StreamEvent, 1)
+			events <- codex.StreamEvent{
+				Err: codex.NewError(
+					codex.ErrorKindUpstream,
+					http.StatusBadGateway,
+					"raw upstream "+secret,
+					errors.New("payload contained "+secret),
+				),
+			}
+			close(events)
+			return events, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, "[error: upstream error]") {
+		t.Fatalf("body = %q, want sanitized streaming error", body)
+	}
+	if strings.Contains(body, secret) {
+		t.Fatalf("response leaked secret: %q", body)
+	}
+	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Fatalf("stream = %q, want terminal DONE event", body)
 	}
 }
 
