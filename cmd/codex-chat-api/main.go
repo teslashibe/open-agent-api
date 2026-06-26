@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/config"
 	"github.com/teslashibe/codex-chat-api/internal/server"
 )
@@ -24,7 +25,19 @@ func run(args []string) error {
 		return err
 	}
 
-	app := server.New(cfg)
+	codexClient, err := codex.NewClient(codex.ClientConfig{
+		AuthPath:     cfg.AuthPath,
+		CodexHome:    cfg.CodexHome,
+		ProfilePath:  cfg.CodexProfilePath,
+		ScaffoldPath: cfg.CodexScaffoldPath,
+		WebsocketURL: cfg.CodexWebsocketURL,
+		Timeout:      cfg.CodexTimeout,
+	})
+	if err != nil {
+		return err
+	}
+
+	app := server.New(cfg, server.WithCodexService(codexClient))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
