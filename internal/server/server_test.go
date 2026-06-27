@@ -1448,7 +1448,7 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 	req, err := http.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
-		bytes.NewBufferString(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"`+prompt+`"}],"tools":[{"type":"function"}]}`),
+		bytes.NewBufferString(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"`+prompt+`"}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}`),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1477,6 +1477,8 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 		"message_roles=user",
 		"tools_present=true",
 		"tools_count=1",
+		"tool_wire=flat",
+		"tool_choice=absent",
 		"chat_completion model=gpt-test stream=true tools_present=true turn_class=tool_generating",
 	} {
 		if !strings.Contains(body, want) {
