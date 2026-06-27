@@ -35,8 +35,9 @@ type Completion struct {
 }
 
 type StreamEvent struct {
-	Delta         string
-	ToolCalls     []ToolCall
+	Delta          string
+	ReasoningDelta string
+	ToolCalls      []ToolCall
 	ToolCallDelta *ToolCallDelta
 	Done          bool
 	Model         string

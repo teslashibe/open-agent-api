@@ -19,6 +19,12 @@ import (
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
 
+func agentQueueTestConfig() config.Config {
+	cfg := config.Defaults()
+	cfg.DegenerateTurnRetryEnabled = false
+	return cfg
+}
+
 func TestHealth(t *testing.T) {
 	app := New(config.Defaults())
 
@@ -645,6 +651,49 @@ func TestChatCompletionsStreamingToolCalls(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsStreamingMapsAgentTextToReasoningContent(t *testing.T) {
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			events := make(chan codex.StreamEvent, 5)
+			events <- codex.StreamEvent{Delta: "I'll inspect the repo now."}
+			events <- codex.StreamEvent{
+				ToolCallDelta: &codex.ToolCallDelta{
+					Index: 0,
+					ID:    "call_123",
+					Type:  "function",
+					Function: codex.ToolCallFunctionDelta{
+						Name:      "lookup",
+						Arguments: `{"q":"codex"}`,
+					},
+				},
+			}
+			events <- codex.StreamEvent{Done: true}
+			close(events)
+			return events, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.DegenerateTurnRetryEnabled = false
+	app := New(cfg, WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body := readString(t, resp.Body)
+	if strings.Contains(body, `"content":"I'll inspect the repo now."`) || strings.Contains(body, `"content":"I`) {
+		t.Fatalf("stream leaked agent thinking into content: %q", body)
+	}
+	if !strings.Contains(body, `"reasoning_content":"I'll inspect the repo now."`) {
+		t.Fatalf("stream = %q, want reasoning_content chunk", body)
+	}
+	if !strings.Contains(body, `"tool_calls"`) || !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("stream = %q, want tool_calls finish", body)
+	}
+}
+
 func TestChatCompletionsStreamingSkipsCompletedToolCallAfterDeltas(t *testing.T) {
 	service := fakeCodexService{
 		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
@@ -786,7 +835,7 @@ func TestAgentQueueSerializesToolStreams(t *testing.T) {
 		},
 	}
 	var logs bytes.Buffer
-	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs))
+	app := New(agentQueueTestConfig(), WithCodexService(service), WithLogOutput(&logs))
 
 	firstDone := postJSONAsync(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}]}`)
 	if got := waitStarted(t, started, time.Second); got != 1 {
@@ -837,7 +886,7 @@ func TestAgentQueueSerializesToolStreams(t *testing.T) {
 }
 
 func TestAgentQueueHonorsMaxActive(t *testing.T) {
-	cfg := config.Defaults()
+	cfg := agentQueueTestConfig()
 	cfg.AgentMaxActive = 2
 	cfg.AgentQueueKeyMode = "header:x-cursor-session-id"
 	started := make(chan int, 3)
@@ -893,7 +942,7 @@ func TestAgentQueueHonorsMaxActive(t *testing.T) {
 }
 
 func TestAgentQueueSerializesSameKey(t *testing.T) {
-	cfg := config.Defaults()
+	cfg := agentQueueTestConfig()
 	cfg.AgentMaxActive = 2
 	cfg.AgentQueueKeyMode = "body:session_id"
 	firstRelease := make(chan struct{})
@@ -977,7 +1026,7 @@ func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
 			return events, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(io.Discard))
+	app := New(agentQueueTestConfig(), WithCodexService(service), WithLogOutput(io.Discard))
 
 	toolDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"tool"}],"tools":[{"type":"function"}]}`)
 	select {
@@ -1005,7 +1054,7 @@ func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
 }
 
 func TestAgentQueueFullReturns429(t *testing.T) {
-	cfg := config.Defaults()
+	cfg := agentQueueTestConfig()
 	cfg.AgentQueueLimit = 0
 	events := make(chan codex.StreamEvent)
 	started := make(chan struct{}, 1)
@@ -1046,7 +1095,7 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 }
 
 func TestAgentQueueTimeoutReturns429(t *testing.T) {
-	cfg := config.Defaults()
+	cfg := agentQueueTestConfig()
 	cfg.AgentQueueTimeout = 20 * time.Millisecond
 	events := make(chan codex.StreamEvent)
 	started := make(chan struct{}, 1)
@@ -1105,7 +1154,7 @@ func TestAgentQueueReleasesAfterStreamingUpstreamError(t *testing.T) {
 			return secondEvents, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(io.Discard))
+	app := New(agentQueueTestConfig(), WithCodexService(service), WithLogOutput(io.Discard))
 
 	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
 	if got := waitStarted(t, started, time.Second); got != 1 {

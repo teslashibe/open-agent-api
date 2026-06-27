@@ -64,6 +64,8 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 	switch event.Type {
 	case "response.output_text.delta":
 		return StreamEvent{Delta: event.Delta}, false, nil
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		return StreamEvent{ReasoningDelta: event.Delta}, false, nil
 	case "response.output_item.added", "response.tool_call.created", "response.tool_call.start", "response.function_call.started":
 		if delta, ok := event.toolCallStartDelta(); ok {
 			return StreamEvent{ToolCallDelta: &delta}, false, nil

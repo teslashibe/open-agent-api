@@ -9,8 +9,8 @@ services:
       CODEX_LOG_BODY_SHAPE: "${CODEX_LOG_BODY_SHAPE:-true}"
       CODEX_LOG_REQUEST_IDENTITY: "${CODEX_LOG_REQUEST_IDENTITY:-false}"
       CODEX_AGENT_QUEUE_ENABLED: "${CODEX_AGENT_QUEUE_ENABLED:-true}"
-      CODEX_AGENT_MAX_ACTIVE: "${CODEX_AGENT_MAX_ACTIVE:-2}"
-      CODEX_AGENT_MAX_ACTIVE_PER_KEY: "${CODEX_AGENT_MAX_ACTIVE_PER_KEY:-1}"
+      CODEX_AGENT_MAX_ACTIVE: "${CODEX_AGENT_MAX_ACTIVE:-4}"
+      CODEX_AGENT_MAX_ACTIVE_PER_KEY: "${CODEX_AGENT_MAX_ACTIVE_PER_KEY:-4}"
       CODEX_AGENT_QUEUE_KEY_MODE: "${CODEX_AGENT_QUEUE_KEY_MODE:-header:x-cursor-session-id}"
       CODEX_AGENT_QUEUE_LIMIT: "${CODEX_AGENT_QUEUE_LIMIT:-20}"
       CODEX_AGENT_QUEUE_TIMEOUT: "${CODEX_AGENT_QUEUE_TIMEOUT:-5m}"
@@ -20,6 +20,7 @@ services:
       CODEX_CONTEXT_RECENT_MESSAGES: "${CODEX_CONTEXT_RECENT_MESSAGES:-40}"
       CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES: "${CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES:-65536}"
       CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES: "${CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES:-1024}"
+      CODEX_DEGENERATE_TURN_RETRY: "${CODEX_DEGENERATE_TURN_RETRY:-true}"
     volumes:
       - "${HOME}/.codex:/home/codex/.codex:ro"
     ports:
@@ -30,12 +31,4 @@ services:
       timeout: 3s
       retries: 6
       start_period: 5s
-    restart: unless-stopped
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    command: ["tunnel", "--no-autoupdate", "--url", "http://api:8088"]
-    depends_on:
-      api:
-        condition: service_healthy
     restart: unless-stopped
