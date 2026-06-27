@@ -193,14 +193,10 @@ func chatCompletions(opts options) fiber.Handler {
 			AffinityKeyMode:   queueKey.Mode,
 		})
 
-		releaseQueue := func() {}
-		if toolsPresent {
-			release, err := opts.agentQueue.acquire(ctx, requestID, queueKey)
-			if err != nil {
-				cancel()
-				return mapAgentQueueError(c, err)
-			}
-			releaseQueue = release
+		releaseQueue, err := opts.agentQueue.acquire(ctx, requestID, queueKey)
+		if err != nil {
+			cancel()
+			return mapAgentQueueError(c, err)
 		}
 
 		if req.Stream {

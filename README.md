@@ -94,10 +94,10 @@ NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok
 
 Cursor base URL: `https://icebound-melida-unstoppably.ngrok-free.dev/v1`
 
-The Docker Compose service enables the Agent queue by default. Tool-capable
-Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=cursor`
-with `CODEX_AGENT_MAX_ACTIVE=2` and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while
-Ask/text-only requests bypass the queue.
+The Docker Compose service enables the Agent queue by default. Requests use
+`CODEX_AGENT_QUEUE_KEY_MODE=cursor` with `CODEX_AGENT_MAX_ACTIVE=2` and
+`CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, preserving one active stream per derived
+conversation key.
 
 ## Validate
 
@@ -411,11 +411,9 @@ Agent mode should send `tools` in the first request, receive an assistant
 containing the prior assistant `tool_calls` and matching `role:"tool"` results.
 The final response should be normal assistant text with `finish_reason:"stop"`.
 
-By default, requests that include `tools` enter an Agent queue keyed by
-`CODEX_AGENT_QUEUE_KEY_MODE=cursor`. This allows up to
-`CODEX_AGENT_MAX_ACTIVE` concurrent Agent streams across different Cursor chats
-while keeping one active stream per chat/session key. Requests without
-`tools`, including Ask mode, bypass the queue.
+By default, requests enter a queue keyed by `CODEX_AGENT_QUEUE_KEY_MODE=cursor`.
+This allows up to `CODEX_AGENT_MAX_ACTIVE` concurrent streams across different
+Cursor chats while keeping one active stream per chat/session key.
 
 Tune the queue with:
 
