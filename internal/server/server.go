@@ -75,6 +75,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			cfg.AgentMaxActivePerKey,
 			cfg.AgentQueueLimit,
 			cfg.AgentQueueTimeout,
+			cfg.AgentQueueLockDir,
 			opts.now,
 			func(format string, args ...any) {
 				logLine(opts, format, args...)
@@ -148,6 +149,7 @@ func chatCompletions(opts options) fiber.Handler {
 		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, toolsPresent)
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
+		queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, c, c.Body())
 		// Cursor and other OpenAI clients send their own tools. Faithful Codex mode
 		// injects the captured CLI profile/tools and often makes those requests fail upstream.
 		faithful := defaultBool(req.Faithful, !toolsPresent)
@@ -185,11 +187,14 @@ func chatCompletions(opts options) fiber.Handler {
 			Verbosity:         defaultString(req.Verbosity, modelAlias.Verbosity),
 			Faithful:          faithful,
 			Prewarm:           prewarm,
+			RequestID:         requestID,
+			AffinityKey:       queueKey.Value,
+			AffinityKeyHash:   queueKey.Hash,
+			AffinityKeyMode:   queueKey.Mode,
 		})
 
 		releaseQueue := func() {}
 		if toolsPresent {
-			queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, c, c.Body())
 			release, err := opts.agentQueue.acquire(ctx, requestID, queueKey)
 			if err != nil {
 				cancel()
