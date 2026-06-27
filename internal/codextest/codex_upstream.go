@@ -34,7 +34,7 @@ type Upstream struct {
 	mu       sync.Mutex
 	scripts  []Script
 	requests []Request
-	waiters  []chan struct{}
+	waiters  map[chan struct{}]struct{}
 }
 
 func NewUpstream(scripts ...Script) *Upstream {
@@ -45,6 +45,7 @@ func NewUpstream(scripts ...Script) *Upstream {
 	u := &Upstream{
 		listener: ln,
 		scripts:  scripts,
+		waiters:  map[chan struct{}]struct{}{},
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
@@ -86,7 +87,8 @@ func (u *Upstream) Requests() []Request {
 }
 
 func (u *Upstream) WaitRequests(n int, timeout time.Duration) bool {
-	deadline := time.After(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	for {
 		u.mu.Lock()
 		if len(u.requests) >= n {
@@ -94,12 +96,13 @@ func (u *Upstream) WaitRequests(n int, timeout time.Duration) bool {
 			return true
 		}
 		waiter := make(chan struct{})
-		u.waiters = append(u.waiters, waiter)
+		u.waiters[waiter] = struct{}{}
 		u.mu.Unlock()
 
 		select {
 		case <-waiter:
-		case <-deadline:
+		case <-timer.C:
+			u.removeWaiter(waiter)
 			return false
 		}
 	}
@@ -151,10 +154,19 @@ func (u *Upstream) serve(w http.ResponseWriter, r *http.Request) {
 		Payload: append([]byte(nil), payload...),
 		Closed:  closed,
 	})
+	peerClosed := make(chan struct{})
+	go func() {
+		defer close(peerClosed)
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				return
+			}
+		}
+	}()
 
 	for _, frame := range script {
-		if frame.Delay > 0 {
-			time.Sleep(frame.Delay)
+		if !waitFrameDelay(frame.Delay, peerClosed) {
+			return
 		}
 		if frame.Disconnect {
 			return
@@ -184,10 +196,30 @@ func (u *Upstream) record(req Request) {
 	u.mu.Lock()
 	u.requests = append(u.requests, req)
 	waiters := u.waiters
-	u.waiters = nil
+	u.waiters = map[chan struct{}]struct{}{}
 	u.mu.Unlock()
 
-	for _, waiter := range waiters {
+	for waiter := range waiters {
 		close(waiter)
+	}
+}
+
+func (u *Upstream) removeWaiter(waiter chan struct{}) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	delete(u.waiters, waiter)
+}
+
+func waitFrameDelay(delay time.Duration, closed <-chan struct{}) bool {
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-closed:
+		return false
 	}
 }
