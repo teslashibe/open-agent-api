@@ -189,13 +189,31 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 	id := opts.newID()
 	created := opts.now().Unix()
 	model := req.Model
+	streamID := id
 
 	c.Set(fiber.HeaderContentType, "text/event-stream")
 	c.Set(fiber.HeaderCacheControl, "no-cache")
 	c.Set(fiber.HeaderConnection, "keep-alive")
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer cancel()
+
+		start := opts.now()
+		logLine(opts, "stream_start id=%s model=%s tools_present=%t\n", streamID, model, rawJSONPresent(req.Tools))
+
+		var deltas, toolDeltas, upstreamEvents int
+		outcome := "completed"
 		toolCallEmitted := false
+
+		// finalize logs one stream lifecycle summary regardless of how the
+		// stream ends (normal completion, client disconnect, or upstream error).
+		finalize := func() {
+			logLine(opts,
+				"stream_end id=%s model=%s outcome=%s deltas=%d tool_deltas=%d upstream_events=%d finish=%s ctx_err=%s duration_ms=%d\n",
+				streamID, model, outcome, deltas, toolDeltas, upstreamEvents, streamFinish(outcome, toolCallEmitted),
+				ctxErrString(ctx), opts.now().Sub(start).Milliseconds(),
+			)
+		}
+
 		if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 			ID:      id,
 			Object:  "chat.completion.chunk",
@@ -205,13 +223,17 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				{Index: 0, Delta: openai.ChatDelta{Role: "assistant"}},
 			},
 		}) {
+			outcome = "client_disconnect"
+			finalize()
 			return
 		}
 
 		for event := range events {
+			upstreamEvents++
 			if event.Err != nil {
-				logLine(opts, "stream_error model=%s err=%s\n", defaultString(event.Model, model), detailedError(event.Err))
+				logLine(opts, "stream_error id=%s model=%s err=%s\n", streamID, defaultString(event.Model, model), detailedError(event.Err))
 				_ = writeSSE(ctx, cancel, w, errorChunk(id, created, defaultString(event.Model, model), publicErrorMessage(event.Err)))
+				outcome = "upstream_error"
 				break
 			}
 			if event.ID != "" {
@@ -221,6 +243,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				model = event.Model
 			}
 			if event.Delta != "" {
+				deltas++
 				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 					ID:      id,
 					Object:  "chat.completion.chunk",
@@ -230,11 +253,14 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 						{Index: 0, Delta: openai.ChatDelta{Content: event.Delta}},
 					},
 				}) {
+					outcome = "client_disconnect"
+					finalize()
 					return
 				}
 			}
 			for i, toolCall := range event.ToolCalls {
 				toolCallEmitted = true
+				toolDeltas++
 				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 					ID:      id,
 					Object:  "chat.completion.chunk",
@@ -244,11 +270,14 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{openAIToolCallFullDelta(i, toolCall)}}},
 					},
 				}) {
+					outcome = "client_disconnect"
+					finalize()
 					return
 				}
 			}
 			if event.ToolCallDelta != nil {
 				toolCallEmitted = true
+				toolDeltas++
 				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 					ID:      id,
 					Object:  "chat.completion.chunk",
@@ -258,6 +287,8 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{openAIToolCallDelta(*event.ToolCallDelta)}}},
 					},
 				}) {
+					outcome = "client_disconnect"
+					finalize()
 					return
 				}
 			}
@@ -279,12 +310,32 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				{Index: 0, Delta: openai.ChatDelta{}, FinishReason: &finish},
 			},
 		}) {
+			outcome = "client_disconnect"
+			finalize()
 			return
 		}
 		_, _ = w.Write(sse.Done())
 		_ = w.Flush()
+		finalize()
 	})
 	return nil
+}
+
+func streamFinish(outcome string, toolCallEmitted bool) string {
+	if outcome != "completed" {
+		return "none"
+	}
+	if toolCallEmitted {
+		return "tool_calls"
+	}
+	return "stop"
+}
+
+func ctxErrString(ctx context.Context) string {
+	if err := ctx.Err(); err != nil {
+		return err.Error()
+	}
+	return "none"
 }
 
 func openAIToolCalls(toolCalls []codex.ToolCall) []openai.ToolCall {
