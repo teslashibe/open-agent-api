@@ -125,6 +125,10 @@ curl -s http://127.0.0.1:18088/health
 Cloudflare quick-tunnel URLs are ephemeral. Restarting `cloudflared` may produce
 a new URL, so update Cursor's base URL after a restart.
 
+The Docker Compose service enables the global Agent queue by default. Tool-capable
+Cursor Agent requests are serialized with `CODEX_AGENT_MAX_ACTIVE=1`, while
+Ask/text-only requests bypass the queue.
+
 ## Validate
 
 Run the full local validation suite before release:
@@ -285,6 +289,10 @@ Flags override environment values.
 | Codex websocket URL | `CODEX_WEBSOCKET_URL` | `--codex-websocket-url` | `wss://chatgpt.com/backend-api/codex/responses` |
 | Codex request timeout | `CODEX_TIMEOUT` | `--codex-timeout` | `120s` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
+| Agent queue enabled | `CODEX_AGENT_QUEUE_ENABLED` | `--agent-queue-enabled` | `true` |
+| Agent max active requests | `CODEX_AGENT_MAX_ACTIVE` | `--agent-max-active` | `1` |
+| Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
+| Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
 
 Request body options beyond the core OpenAI chat schema:
 
@@ -421,6 +429,24 @@ Agent mode should send `tools` in the first request, receive an assistant
 containing the prior assistant `tool_calls` and matching `role:"tool"` results.
 The final response should be normal assistant text with `finish_reason:"stop"`.
 
+By default, requests that include `tools` enter a global FIFO Agent queue. This
+keeps one tool-capable Agent stream active at a time because overlapping Cursor
+tool-call streams can stall while Cursor coordinates local tool execution in the
+same workspace. Requests without `tools`, including Ask mode, bypass the queue.
+
+Tune the queue with:
+
+```bash
+CODEX_AGENT_QUEUE_ENABLED=true
+CODEX_AGENT_MAX_ACTIVE=1
+CODEX_AGENT_QUEUE_LIMIT=20
+CODEX_AGENT_QUEUE_TIMEOUT=5m
+```
+
+Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable queueing, or raise
+`CODEX_AGENT_MAX_ACTIVE` after validating that overlapping Agent chats are stable
+in your workspace.
+
 ### Tool-call protocol notes
 
 Cursor sends OpenAI **Chat Completions** tools:
@@ -482,10 +508,26 @@ Successful Cursor probes should log:
 - `GET /v1/models`
 - `POST /v1/chat/completions` with `authorization_present=true`
 - `chat_completion model=gpt-5.5-high stream=... tools_present=...`
+- `agent_queue_acquire request_id=...` before queued Agent stream starts
+- `agent_queue_release request_id=...` after the stream fully ends
 
 Body-shape logs include field names, message count, message roles, and tool count.
 Bearer tokens and message content are never printed. Codex tool websocket events
 are logged as redacted structural summaries when body-shape logging is enabled.
+
+When multiple Agent chats overlap, queue diagnostics show the lifecycle:
+
+```text
+agent_queue_wait request_id=... position=2
+agent_queue_acquire request_id=... wait_ms=1234 active=1
+stream_start id=...
+stream_end id=... outcome=completed finish=tool_calls
+agent_queue_release request_id=... run_ms=8123
+```
+
+If the queue is full or a request waits longer than `CODEX_AGENT_QUEUE_TIMEOUT`,
+the API returns an OpenAI-shaped `429` error and logs `agent_queue_full` or
+`agent_queue_timeout`.
 
 Upstream Codex errors are logged server-side as `stream_error` or
 `complete_error` with the real payload. Clients still receive the sanitized
@@ -500,6 +542,7 @@ Upstream Codex errors are logged server-side as `stream_error` or
 | `[error: upstream error]` on first Agent turn | Old build before `v0.0.4`, or missing `codex login` | Upgrade to `v0.0.4+`, run `codex login`, check `stream_error` logs |
 | `[error: upstream error]` in an **existing** chat | Poisoned history (failed tool turns, long `call_id`s) | Start a **new** Agent chat |
 | Agent describes tools but does not run them | Ask mode, wrong model, or Cursor not using the custom endpoint | Use Agent mode, model `gpt-5.5` or a documented alias, confirm requests hit server logs |
+| Agent chats stall when several run at once | Queue disabled or concurrency set too high for one workspace | Set `CODEX_AGENT_QUEUE_ENABLED=true` and `CODEX_AGENT_MAX_ACTIVE=1`; confirm `agent_queue_wait` and `agent_queue_release` logs |
 | `tools[0].name` missing (in logs) | Pre-`v0.0.4` tool-format bug | Upgrade to `v0.0.4+` |
 | `call_id` string too long (in logs) | Long Cursor IDs in continuation history | Upgrade to `v0.0.4+` and start a fresh chat |
 
