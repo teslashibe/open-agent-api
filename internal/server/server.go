@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -176,7 +175,7 @@ func chatCompletions(opts options) fiber.Handler {
 			}
 			messages = managed.Messages
 		}
-		serviceReq := codex.Request{
+		serviceReq := applyAgentTurnToolChoice(codex.Request{
 			Model:             modelAlias.UpstreamModel,
 			Messages:          messages,
 			Tools:             req.Tools,
@@ -186,7 +185,7 @@ func chatCompletions(opts options) fiber.Handler {
 			Verbosity:         defaultString(req.Verbosity, modelAlias.Verbosity),
 			Faithful:          faithful,
 			Prewarm:           prewarm,
-		}
+		})
 
 		releaseQueue := func() {}
 		if toolsPresent {
@@ -205,7 +204,7 @@ func chatCompletions(opts options) fiber.Handler {
 		defer cancel()
 		defer releaseQueue()
 
-		completion, err := opts.codexService.Complete(ctx, serviceReq)
+		completion, err := completeWithDegenerateRetry(ctx, opts, opts.codexService, serviceReq, toolsPresent, requestID)
 		if err != nil {
 			logLine(opts, "complete_error model=%s err=%s\n", model, detailedError(err))
 			return mapServiceError(c, err)
@@ -220,9 +219,6 @@ func chatCompletions(opts options) fiber.Handler {
 			message.Content = json.RawMessage("null")
 			message.ToolCalls = openAIToolCalls(completion.ToolCalls)
 			finishReason = "tool_calls"
-		}
-		if degenerateAgentTurn(toolsPresent, finishReason, len(completion.Text), len(completion.ToolCalls)) {
-			logDegenerateTurn(opts, requestID, len(completion.Text), len(completion.ToolCalls), detectLoopPhrase(completion.Text), len(messages))
 		}
 
 		return c.JSON(openai.ChatCompletionResponse{
@@ -262,53 +258,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		defer releaseQueue()
 		defer cancel()
 
-		start := opts.now()
 		logLine(opts, "stream_start id=%s model=%s tools_present=%t\n", streamID, model, rawJSONPresent(req.Tools))
-
-		var deltas, toolDeltas, upstreamEvents int
-		var textBytes, toolArgChars int
-		var assistantText strings.Builder
-		outcome := "completed"
-		toolCallEmitted := false
-		streamedToolCallIDs := map[string]bool{}
-		streamedToolCallIndexes := map[int]bool{}
-
-		// Codex output_index counts every output item (including reasoning
-		// items), so a tool call can arrive at index 1+ with no index 0. The
-		// OpenAI streaming contract requires tool_calls[].index to be a
-		// contiguous 0-based sequence; otherwise clients (e.g. Cursor) allocate
-		// a phantom empty tool call for the missing leading index and fail when
-		// finalizing it. normalizeToolCallIndex remaps upstream indexes to a
-		// dense 0-based sequence in order of first appearance.
-		toolCallIndexByKey := map[string]int{}
-		nextToolCallIndex := 0
-		normalizeToolCallIndex := func(key string) int {
-			if mapped, ok := toolCallIndexByKey[key]; ok {
-				return mapped
-			}
-			mapped := nextToolCallIndex
-			toolCallIndexByKey[key] = mapped
-			nextToolCallIndex++
-			return mapped
-		}
-
-		// finalize logs one stream lifecycle summary regardless of how the
-		// stream ends (normal completion, client disconnect, or upstream error).
-		finalize := func() {
-			finish := streamFinish(outcome, toolCallEmitted)
-			toolCallCount := nextToolCallIndex
-			if opts.logBodyShape {
-				logStreamOutput(opts, streamID, textBytes, toolCallCount, toolArgChars, detectLoopPhrase(assistantText.String()))
-			}
-			if degenerateAgentTurn(rawJSONPresent(req.Tools), finish, textBytes, toolCallCount) {
-				logDegenerateTurn(opts, streamID, textBytes, toolCallCount, detectLoopPhrase(assistantText.String()), len(req.Messages))
-			}
-			logLine(opts,
-				"stream_end id=%s model=%s outcome=%s deltas=%d tool_deltas=%d upstream_events=%d finish=%s ctx_err=%s duration_ms=%d\n",
-				streamID, model, outcome, deltas, toolDeltas, upstreamEvents, finish,
-				ctxErrString(ctx), opts.now().Sub(start).Milliseconds(),
-			)
-		}
 
 		if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 			ID:      id,
@@ -319,127 +269,29 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				{Index: 0, Delta: openai.ChatDelta{Role: "assistant"}},
 			},
 		}) {
-			outcome = "client_disconnect"
-			finalize()
+			logLine(opts,
+				"stream_end id=%s model=%s outcome=client_disconnect deltas=0 tool_deltas=0 upstream_events=0 finish=none ctx_err=%s duration_ms=0\n",
+				streamID, model, ctxErrString(ctx),
+			)
 			return
 		}
 
-		for event := range events {
-			upstreamEvents++
-			if event.Err != nil {
-				logLine(opts, "stream_error id=%s model=%s err=%s\n", streamID, defaultString(event.Model, model), detailedError(event.Err))
-				_ = writeSSE(ctx, cancel, w, errorChunk(id, created, defaultString(event.Model, model), publicErrorMessage(event.Err)))
-				outcome = "upstream_error"
-				break
-			}
-			// Do NOT adopt the upstream codex id (e.g. resp_...) for the SSE
-			// chunk id. The OpenAI streaming contract requires every chunk in a
-			// response to share one stable id; codex only sends its id on the
-			// terminal response.completed event, so adopting it would flip the
-			// final finish_reason chunk's id away from the chatcmpl- id used by
-			// all prior chunks. Clients (Cursor) reconcile the assembled
-			// tool_calls/message by chunk id and hang when the closing chunk's
-			// id doesn't match. Keep id == requestID for the whole stream.
-			if event.Model != "" {
-				model = event.Model
-			}
-			if event.Delta != "" {
-				deltas++
-				textBytes += len(event.Delta)
-				assistantText.WriteString(event.Delta)
-				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
-					ID:      id,
-					Object:  "chat.completion.chunk",
-					Created: created,
-					Model:   model,
-					Choices: []openai.ChatCompletionChunkChoice{
-						{Index: 0, Delta: openai.ChatDelta{Content: event.Delta}},
-					},
-				}) {
-					outcome = "client_disconnect"
-					finalize()
-					return
-				}
-			}
-			for i, toolCall := range event.ToolCalls {
-				if skipCompletedToolCallDelta(i, toolCall, streamedToolCallIDs, streamedToolCallIndexes) {
-					continue
-				}
-				toolArgChars += len(toolCall.Function.Arguments)
-				toolCallEmitted = true
-				toolDeltas++
-				fullDelta := openAIToolCallFullDelta(i, toolCall)
-				fullKey := toolCall.ID
-				if fullKey == "" {
-					fullKey = "fslot:" + strconv.Itoa(i)
-				}
-				fullDelta.Index = normalizeToolCallIndex(fullKey)
-				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
-					ID:      id,
-					Object:  "chat.completion.chunk",
-					Created: created,
-					Model:   model,
-					Choices: []openai.ChatCompletionChunkChoice{
-						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{fullDelta}}},
-					},
-				}) {
-					outcome = "client_disconnect"
-					finalize()
-					return
-				}
-			}
-			if event.ToolCallDelta != nil {
-				toolCallEmitted = true
-				toolDeltas++
-				toolArgChars += len(event.ToolCallDelta.Function.Arguments)
-				streamedToolCallIndexes[event.ToolCallDelta.Index] = true
-				if event.ToolCallDelta.ID != "" {
-					streamedToolCallIDs[event.ToolCallDelta.ID] = true
-				}
-				// All chunks of a single tool call share the upstream index but
-				// only the first carries the ID, so key normalization on the
-				// upstream index to keep continuation chunks aligned.
-				outDelta := openAIToolCallDelta(*event.ToolCallDelta)
-				outDelta.Index = normalizeToolCallIndex("idx:" + strconv.Itoa(event.ToolCallDelta.Index))
-				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
-					ID:      id,
-					Object:  "chat.completion.chunk",
-					Created: created,
-					Model:   model,
-					Choices: []openai.ChatCompletionChunkChoice{
-						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{outDelta}}},
-					},
-				}) {
-					outcome = "client_disconnect"
-					finalize()
-					return
-				}
-			}
-			if event.Done {
-				break
-			}
-		}
+		outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount, assistantText, start := deliverToolStream(
+			ctx, opts, w, cancel, req, opts.codexService, events, id, created, model, streamID,
+		)
 
-		finish := "stop"
-		if toolCallEmitted {
-			finish = "tool_calls"
+		finish := streamFinish(outcome, toolCallCount > 0)
+		if opts.logBodyShape {
+			logStreamOutput(opts, streamID, textBytes, toolCallCount, toolArgChars, detectLoopPhrase(assistantText))
 		}
-		if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
-			ID:      id,
-			Object:  "chat.completion.chunk",
-			Created: created,
-			Model:   model,
-			Choices: []openai.ChatCompletionChunkChoice{
-				{Index: 0, Delta: openai.ChatDelta{}, FinishReason: &finish},
-			},
-		}) {
-			outcome = "client_disconnect"
-			finalize()
-			return
+		if degenerateAgentTurn(rawJSONPresent(req.Tools), finish, textBytes, toolCallCount) {
+			logDegenerateTurn(opts, streamID, textBytes, toolCallCount, detectLoopPhrase(assistantText), len(req.Messages))
 		}
-		_, _ = w.Write(sse.Done())
-		_ = w.Flush()
-		finalize()
+		logLine(opts,
+			"stream_end id=%s model=%s outcome=%s deltas=%d tool_deltas=%d upstream_events=%d finish=%s ctx_err=%s duration_ms=%d\n",
+			streamID, model, outcome, deltas, toolDeltas, upstreamEvents, finish,
+			ctxErrString(ctx), opts.now().Sub(start).Milliseconds(),
+		)
 	})
 	return nil
 }

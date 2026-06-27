@@ -32,6 +32,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CONTEXT_RECENT_MESSAGES")
 	unsetenv(t, "CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES")
 	unsetenv(t, "CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES")
+	unsetenv(t, "CODEX_DEGENERATE_TURN_RETRY")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -103,6 +104,9 @@ func TestLoadDefaults(t *testing.T) {
 			cfg.ContextToolOutputMaxBytes,
 			cfg.ContextCompactedToolOutputMaxBytes,
 		)
+	}
+	if cfg.DegenerateTurnRetryEnabled != DefaultDegenerateTurnRetryEnabled {
+		t.Fatalf("DegenerateTurnRetryEnabled = %t, want %t", cfg.DegenerateTurnRetryEnabled, DefaultDegenerateTurnRetryEnabled)
 	}
 }
 

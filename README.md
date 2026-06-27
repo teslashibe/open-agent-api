@@ -28,20 +28,20 @@ codex login
 go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
 ```
 
-2. Expose it with a public HTTPS tunnel (required for most Cursor BYOK paths):
+2. Expose it with ngrok (required for most Cursor BYOK paths):
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8088
+NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 ```
 
-Copy the `https://<random>.trycloudflare.com` URL from the tunnel output.
+Default reserved domain: `YOUR_SUBDOMAIN.ngrok-free.dev` (override with `NGROK_DOMAIN`).
 
 3. In **Cursor → Settings → Models**, enable the OpenAI API key override:
 
 | Field | Value |
 | --- | --- |
 | OpenAI API Key | `local-codex-chat-api` (any non-empty string) |
-| Override OpenAI Base URL | `https://<tunnel-host>/v1` |
+| Override OpenAI Base URL | `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` |
 | Model | `gpt-5.5` or an alias such as `gpt-5.5-high` |
 
 4. Open a **new** Agent chat and try:
@@ -76,54 +76,23 @@ Expected response:
 
 ## Docker Compose
 
-Run the API and a Cloudflare quick tunnel in the background:
+Run the API:
 
 ```bash
 docker compose up --build -d
 ```
 
-The `api` service mounts your host Codex credentials read-only:
-
-```text
-${HOME}/.codex -> /home/codex/.codex
-```
-
-Run `codex login` on the host first so `${HOME}/.codex/auth.json` exists.
-
-Local health check:
+Expose it for Cursor with ngrok (preferred over Cloudflare quick tunnels):
 
 ```bash
-curl -s http://127.0.0.1:8088/health
+# Host ngrok (uses ~/.ngrok/ngrok.yml) — recommended
+ngrok http --url=YOUR_SUBDOMAIN.ngrok-free.dev 8088
+
+# Or docker ngrok overlay (requires NGROK_AUTHTOKEN)
+NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 ```
 
-Get the Cloudflare tunnel URL:
-
-```bash
-docker compose logs cloudflared | grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1
-```
-
-Use that URL in Cursor with `/v1` appended:
-
-```text
-https://<tunnel-host>/v1
-```
-
-Stop the background stack:
-
-```bash
-docker compose down
-```
-
-If port `8088` is already in use, either stop the local API first or publish the
-container on a different host port:
-
-```bash
-CODEX_CHAT_API_PORT=18088 docker compose up --build -d
-curl -s http://127.0.0.1:18088/health
-```
-
-Cloudflare quick-tunnel URLs are ephemeral. Restarting `cloudflared` may produce
-a new URL, so update Cursor's base URL after a restart.
+Cursor base URL: `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1`
 
 The Docker Compose service enables the Agent queue by default. Tool-capable
 Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`

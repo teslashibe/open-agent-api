@@ -142,7 +142,17 @@ func TestParseStreamEventPlainTextStillWorks(t *testing.T) {
 	if err != nil || terminal {
 		t.Fatalf("parse err=%v terminal=%t", err, terminal)
 	}
-	if event.Delta != "hello" || event.ToolCallDelta != nil || len(event.ToolCalls) != 0 {
+	if event.Delta != "hello" || event.ReasoningDelta != "" || event.ToolCallDelta != nil || len(event.ToolCalls) != 0 {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestParseStreamEventReasoningSummaryText(t *testing.T) {
+	event, terminal, err := parseStreamEvent([]byte(`{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`))
+	if err != nil || terminal {
+		t.Fatalf("parse err=%v terminal=%t", err, terminal)
+	}
+	if event.ReasoningDelta != "thinking" || event.Delta != "" {
 		t.Fatalf("event = %#v", event)
 	}
 }

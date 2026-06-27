@@ -335,6 +335,7 @@ func minDuration(a, b time.Duration) time.Duration {
 
 func hasStreamEvent(event StreamEvent) bool {
 	return event.Delta != "" ||
+		event.ReasoningDelta != "" ||
 		len(event.ToolCalls) > 0 ||
 		event.ToolCallDelta != nil ||
 		event.Done ||
