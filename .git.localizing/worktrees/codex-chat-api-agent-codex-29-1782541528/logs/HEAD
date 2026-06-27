@@ -1,5 +1,0 @@
-0000000000000000000000000000000000000000 e3339b7b7c9f3c260016154f751ecc9a4fccbf97 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782541529 -0700
-e3339b7b7c9f3c260016154f751ecc9a4fccbf97 e3339b7b7c9f3c260016154f751ecc9a4fccbf97 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782541529 -0700	reset: moving to HEAD
-e3339b7b7c9f3c260016154f751ecc9a4fccbf97 38bc7b269edcfa112af411b0e9b08ee0b83381db teslashibe <34052452+teslashibe@users.noreply.github.com> 1782542063 -0700	commit: Implement issue #29
-38bc7b269edcfa112af411b0e9b08ee0b83381db db4bc8ed86405369121a6786efbc2a597fb58b5b teslashibe <34052452+teslashibe@users.noreply.github.com> 1782542103 -0700	commit (amend): Implement issue #29 context management for Cursor Agent requests.
-db4bc8ed86405369121a6786efbc2a597fb58b5b f16f6cce0f896d2ad6125557f3a109b97b5369c0 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782542225 -0700	commit: Fix issue #29 review findings
