@@ -44,6 +44,7 @@ type streamProcessor struct {
 	nextToolCallIndex       *int
 	upstreamStart           time.Time
 	firstDeltaLatency       *time.Duration
+	responseShape           streamResponseShape
 }
 
 func agentTurnExpectsToolCalls(messages []openai.ChatMessage, toolsPresent bool) bool {
@@ -134,8 +135,10 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 	switch mode {
 	case deltaTextContent:
 		delta.Content = text
+		p.responseShape.Content = true
 	case deltaTextReasoning:
 		delta.ReasoningContent = text
+		p.responseShape.ReasoningContent = true
 	default:
 		return true
 	}
@@ -189,6 +192,7 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 		if skipCompletedToolCallDelta(i, toolCall, p.streamedToolCallIDs, p.streamedToolCallIndexes) {
 			continue
 		}
+		p.responseShape.ToolCalls = true
 		*p.toolArgChars += len(toolCall.Function.Arguments)
 		*p.toolCallEmitted = true
 		*p.toolDeltas++
@@ -215,6 +219,7 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 		}
 	}
 	if event.ToolCallDelta != nil {
+		p.responseShape.ToolCalls = true
 		*p.toolCallEmitted = true
 		*p.toolDeltas++
 		*p.toolArgChars += len(event.ToolCallDelta.Function.Arguments)
@@ -291,15 +296,35 @@ func (p *streamProcessor) replay(events []codex.StreamEvent, textMode deltaTextM
 }
 
 func (p *streamProcessor) streamEvents(events <-chan codex.StreamEvent, textMode deltaTextMode) bool {
-	for event := range events {
+	for {
+		event, ok := recvStreamEvent(p.ctx, p.cancel, events)
+		if !ok {
+			if p.ctx.Err() != nil {
+				*p.outcome = "client_disconnect"
+				return false
+			}
+			return true
+		}
 		if p.handleEvent(event, true, textMode) {
 			return false
 		}
 		if event.Done {
-			break
+			return true
 		}
 	}
-	return true
+}
+
+func recvStreamEvent(ctx context.Context, cancel context.CancelFunc, events <-chan codex.StreamEvent) (codex.StreamEvent, bool) {
+	select {
+	case <-ctx.Done():
+		cancel()
+		return codex.StreamEvent{}, false
+	case event, ok := <-events:
+		if !ok {
+			return codex.StreamEvent{}, false
+		}
+		return event, true
+	}
 }
 
 func deliverToolStream(
@@ -330,6 +355,9 @@ func deliverToolStream(
 	retryEnabled := opts.contextConfig.DegenerateTurnRetryEnabled && toolsPresent
 
 	finishStream := func() (string, int, int, int, int, int, int, string, time.Time, time.Duration) {
+		if opts.logBodyShape {
+			logLine(opts, "stream_response_shape request_id=%s %s\n", streamID, proc.responseShape.logFields())
+		}
 		if outcome == "completed" {
 			if !proc.writeFinish() {
 				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
@@ -370,7 +398,14 @@ func deliverToolStream(
 		return true
 	}
 
-	for event := range events {
+	for {
+		event, ok := recvStreamEvent(ctx, cancel, events)
+		if !ok {
+			if ctx.Err() != nil {
+				outcome = "client_disconnect"
+			}
+			break
+		}
 		if event.Err != nil {
 			if proc.handleEvent(event, true, deltaTextDrop) {
 				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
