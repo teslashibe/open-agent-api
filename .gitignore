@@ -3,6 +3,8 @@
 .DS_Store
 .cache/
 .gocache/
+.venv/
+__pycache__/
 
 # Go build/test artifacts
 codex-chat-api

@@ -17,7 +17,7 @@ codex login
 ```
 
 The old Python prototype has been removed. The Go server is the supported runtime
-(current release: `v0.0.4`).
+(current release: `v0.0.5`).
 
 ## Quick Start (Cursor)
 
@@ -73,6 +73,57 @@ Expected response:
 ```json
 {"status":"ok"}
 ```
+
+## Docker Compose
+
+Run the API and a Cloudflare quick tunnel in the background:
+
+```bash
+docker compose up --build -d
+```
+
+The `api` service mounts your host Codex credentials read-only:
+
+```text
+${HOME}/.codex -> /home/codex/.codex
+```
+
+Run `codex login` on the host first so `${HOME}/.codex/auth.json` exists.
+
+Local health check:
+
+```bash
+curl -s http://127.0.0.1:8088/health
+```
+
+Get the Cloudflare tunnel URL:
+
+```bash
+docker compose logs cloudflared | grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1
+```
+
+Use that URL in Cursor with `/v1` appended:
+
+```text
+https://<tunnel-host>/v1
+```
+
+Stop the background stack:
+
+```bash
+docker compose down
+```
+
+If port `8088` is already in use, either stop the local API first or publish the
+container on a different host port:
+
+```bash
+CODEX_CHAT_API_PORT=18088 docker compose up --build -d
+curl -s http://127.0.0.1:18088/health
+```
+
+Cloudflare quick-tunnel URLs are ephemeral. Restarting `cloudflared` may produce
+a new URL, so update Cursor's base URL after a restart.
 
 ## Validate
 
