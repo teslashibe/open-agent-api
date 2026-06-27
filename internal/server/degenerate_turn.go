@@ -21,7 +21,8 @@ func shouldRetryDegenerateTurn(enabled bool, toolsPresent bool, messages []opena
 		// Retry only when the model still stalls with planning prose.
 		return detectLoopPhrase(assistantText) != ""
 	case "tool":
-		return detectLoopPhrase(assistantText) != "" || textBytes >= 512
+		// Tool continuations may legitimately finish with a long prose summary.
+		return detectLoopPhrase(assistantText) != ""
 	default:
 		return false
 	}

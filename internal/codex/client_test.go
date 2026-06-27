@@ -170,6 +170,37 @@ func TestStreamDeliversContextErrorAfterBufferedDelta(t *testing.T) {
 	}
 }
 
+func TestStreamWriteRespectsContextCancellation(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	conn := newBlockingWriteConn()
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = (&recordingDialer{conns: []websocketConn{conn}}).dial
+	client.builder.newSessionID = func() string { return "session-123" }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	events, err := client.Stream(ctx, Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+		Faithful:        false,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Stream() error = %v, want context.Canceled", err)
+	}
+	if events != nil {
+		t.Fatalf("Stream() events = %#v, want nil on canceled write", events)
+	}
+	if !conn.closed {
+		t.Fatal("expected websocket to close after canceled write")
+	}
+}
+
 func TestPrewarmTimeoutDoesNotCancelTurn(t *testing.T) {
 	authPath, codexHome := writeAuthFixture(t)
 	turnConn := &fakeWebsocketConn{readMessages: [][]byte{
@@ -362,6 +393,32 @@ func (c *fakeWebsocketConn) Close() error {
 	defer c.mu.Unlock()
 	c.closed = true
 	return nil
+}
+
+type blockingWriteConn struct {
+	fakeWebsocketConn
+	unlocked chan struct{}
+}
+
+func newBlockingWriteConn() *blockingWriteConn {
+	return &blockingWriteConn{unlocked: make(chan struct{})}
+}
+
+func (c *blockingWriteConn) WriteMessage(_ int, data []byte) error {
+	c.mu.Lock()
+	c.writes = append(c.writes, append([]byte(nil), data...))
+	c.mu.Unlock()
+	<-c.unlocked
+	return io.ErrClosedPipe
+}
+
+func (c *blockingWriteConn) Close() error {
+	select {
+	case <-c.unlocked:
+	default:
+		close(c.unlocked)
+	}
+	return c.fakeWebsocketConn.Close()
 }
 
 type cancelAfterFirstReadConn struct {

@@ -311,13 +311,23 @@ func writePayload(ctx context.Context, conn websocketConn, payload map[string]an
 	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
 		return NewError(ErrorKindUpstream, http.StatusBadGateway, "set codex websocket write deadline", err)
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- conn.WriteMessage(websocket.TextMessage, data)
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return NewError(ErrorKindUpstream, http.StatusBadGateway, "write codex websocket", err)
 		}
-		return NewError(ErrorKindUpstream, http.StatusBadGateway, "write codex websocket", err)
+		return nil
+	case <-ctx.Done():
+		_ = conn.Close()
+		return ctx.Err()
 	}
-	return nil
 }
 
 func closeConn(conn websocketConn) {
