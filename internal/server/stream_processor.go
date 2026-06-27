@@ -42,6 +42,7 @@ type streamProcessor struct {
 	streamedToolCallIndexes map[int]bool
 	toolCallIndexByKey      map[string]int
 	nextToolCallIndex       *int
+	responseShape           streamResponseShape
 }
 
 func agentTurnExpectsToolCalls(messages []openai.ChatMessage, toolsPresent bool) bool {
@@ -121,8 +122,10 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 	switch mode {
 	case deltaTextContent:
 		delta.Content = text
+		p.responseShape.Content = true
 	case deltaTextReasoning:
 		delta.ReasoningContent = text
+		p.responseShape.ReasoningContent = true
 	default:
 		return true
 	}
@@ -175,6 +178,7 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 		if skipCompletedToolCallDelta(i, toolCall, p.streamedToolCallIDs, p.streamedToolCallIndexes) {
 			continue
 		}
+		p.responseShape.ToolCalls = true
 		*p.toolArgChars += len(toolCall.Function.Arguments)
 		*p.toolCallEmitted = true
 		*p.toolDeltas++
@@ -198,6 +202,7 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 		}
 	}
 	if event.ToolCallDelta != nil {
+		p.responseShape.ToolCalls = true
 		*p.toolCallEmitted = true
 		*p.toolDeltas++
 		*p.toolArgChars += len(event.ToolCallDelta.Function.Arguments)
@@ -327,6 +332,9 @@ func deliverToolStream(
 	retryEnabled := opts.contextConfig.DegenerateTurnRetryEnabled && toolsPresent
 
 	finishStream := func() (string, int, int, int, int, int, int, string, time.Time) {
+		if opts.logBodyShape {
+			logLine(opts, "stream_response_shape request_id=%s %s\n", streamID, proc.responseShape.logFields())
+		}
 		if outcome == "completed" {
 			if !proc.writeFinish() {
 				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
