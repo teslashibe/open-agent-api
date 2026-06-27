@@ -1,0 +1,24 @@
+# Public HTTPS tunnel for Cursor BYOK (preferred over cloudflared quick tunnels).
+#
+#   NGROK_DOMAIN=icebound-melida-unstoppably.ngrok-free.dev \
+#   NGROK_AUTHTOKEN=... \
+#   docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
+#
+# Cursor base URL: https://${NGROK_DOMAIN}/v1
+# Inspector: http://127.0.0.1:4041
+
+services:
+  ngrok:
+    image: ngrok/ngrok:latest
+    command:
+      - http
+      - api:8088
+      - --url=https://${NGROK_DOMAIN:-icebound-melida-unstoppably.ngrok-free.dev}
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    ports:
+      - "127.0.0.1:4041:4040"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

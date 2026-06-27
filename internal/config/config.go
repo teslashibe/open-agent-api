@@ -29,6 +29,7 @@ const (
 	DefaultContextRecentMessages              = 40
 	DefaultContextToolOutputMaxBytes          = 64 * 1024
 	DefaultContextCompactedToolOutputMaxBytes = 1024
+	DefaultDegenerateTurnRetryEnabled       = true
 )
 
 type Config struct {
@@ -54,6 +55,7 @@ type Config struct {
 	ContextRecentMessages              int
 	ContextToolOutputMaxBytes          int
 	ContextCompactedToolOutputMaxBytes int
+	DegenerateTurnRetryEnabled           bool
 }
 
 func Load(args []string) (Config, error) {
@@ -200,6 +202,13 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.ContextCompactedToolOutputMaxBytes = maxBytes
 	}
+	if value := os.Getenv("CODEX_DEGENERATE_TURN_RETRY"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_DEGENERATE_TURN_RETRY: %w", err)
+		}
+		cfg.DegenerateTurnRetryEnabled = enabled
+	}
 
 	fs := flag.NewFlagSet("codex-chat-api", flag.ContinueOnError)
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "host address to bind")
@@ -224,6 +233,7 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.ContextRecentMessages, "context-recent-messages", cfg.ContextRecentMessages, "recent messages to leave unchanged during compaction")
 	fs.IntVar(&cfg.ContextToolOutputMaxBytes, "context-tool-output-max-bytes", cfg.ContextToolOutputMaxBytes, "maximum bytes to keep from an individual tool output before adding a truncation marker")
 	fs.IntVar(&cfg.ContextCompactedToolOutputMaxBytes, "context-compacted-tool-output-max-bytes", cfg.ContextCompactedToolOutputMaxBytes, "maximum bytes to keep from an older compacted tool output")
+	fs.BoolVar(&cfg.DegenerateTurnRetryEnabled, "degenerate-turn-retry", cfg.DegenerateTurnRetryEnabled, "retry tool-capable turns that finish with text-only stop using tool_choice required")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -266,6 +276,7 @@ func Defaults() Config {
 		ContextRecentMessages:              DefaultContextRecentMessages,
 		ContextToolOutputMaxBytes:          DefaultContextToolOutputMaxBytes,
 		ContextCompactedToolOutputMaxBytes: DefaultContextCompactedToolOutputMaxBytes,
+		DegenerateTurnRetryEnabled:       DefaultDegenerateTurnRetryEnabled,
 	}
 }
 
