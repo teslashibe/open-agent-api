@@ -125,7 +125,7 @@ func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		requestID := opts.newID()
 		if opts.logBodyShape {
-			logLine(opts, "body_shape path=%s %s\n", c.Path(), redactedBodyShape(c.Body()))
+			logLine(opts, "body_shape path=%s %s %s\n", c.Path(), redactedBodyShape(c.Body()), summarizeCursorWire(c.Body()).logFields())
 		}
 		if opts.logRequestIdentity {
 			logLine(opts, "%s\n", redactedRequestIdentity(c, requestID))
