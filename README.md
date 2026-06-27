@@ -269,6 +269,7 @@ Flags override environment values.
 | Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
 | Agent queue shared lock directory | `CODEX_AGENT_QUEUE_LOCK_DIR` | `--agent-queue-lock-dir` | disabled; set explicitly for multi-replica or multi-client pools |
+| Agent queue priority experiment | `CODEX_AGENT_QUEUE_PRIORITY_ENABLED` | `--agent-queue-priority-enabled` | `false` |
 | Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `false` |
 | Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `262144` |
 | Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `150` |
@@ -427,6 +428,7 @@ CODEX_AGENT_QUEUE_KEY_MODE=cursor
 CODEX_AGENT_QUEUE_LIMIT=20
 CODEX_AGENT_QUEUE_TIMEOUT=5m
 CODEX_AGENT_QUEUE_LOCK_DIR=/tmp/codex-chat-api-agent-locks
+CODEX_AGENT_QUEUE_PRIORITY_ENABLED=false
 ```
 
 Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable the in-process wait queue and
@@ -479,6 +481,15 @@ the same queue key is still recommended to reduce lock contention.
 The supplied Docker Compose file mounts this path on a named volume by default
 at `/var/lib/codex-chat-api/agent-locks`, so replicas started from that Compose
 project share locks without extra volume wiring.
+
+The queue classifies request shapes as `tool_generating`,
+`tool_result_continuation`, `final_prose_continuation`, or `simple_no_tool` and
+logs the class as `turn_class=...`. The optional priority experiment can reorder
+eligible waiters across different conversation keys so a
+`tool_result_continuation` can run before a lower-priority tool-generating turn.
+It never bypasses `CODEX_AGENT_MAX_ACTIVE_PER_KEY`; no same-chat priority lane is
+enabled because request shape alone does not prove concurrent upstream streams
+for one conversation are safe.
 
 Long Cursor Agent conversations can accumulate large historical tool outputs.
 Context management is disabled by default. When enabled, it applies only to
@@ -589,7 +600,7 @@ Successful Cursor probes should log:
 - `GET /v1/models`
 - `POST /v1/chat/completions` with `authorization_present=true`
 - `request_identity request_id=... method=POST path=/v1/chat/completions ...`
-- `chat_completion model=gpt-5.5-high stream=... tools_present=...`
+- `chat_completion model=gpt-5.5-high stream=... tools_present=... turn_class=...`
 - `agent_queue_acquire request_id=...` before queued Agent stream starts
 - `agent_queue_release request_id=...` after the stream fully ends
 
@@ -614,6 +625,9 @@ stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
 agent_queue_lock_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=...
 agent_queue_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=... run_ms=8123 active_global=1 active_key=0
+agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... turn_class=tool_generating priority=0 position=2
+agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... turn_class=tool_generating priority=0 wait_ms=1234 active_global=2 active_key=1
+agent_queue_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=... turn_class=tool_generating priority=0 run_ms=8123 active_global=1 active_key=0
 ```
 
 If the queue is full or a request waits longer than `CODEX_AGENT_QUEUE_TIMEOUT`,

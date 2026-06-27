@@ -76,6 +76,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			cfg.AgentQueueLimit,
 			cfg.AgentQueueTimeout,
 			cfg.AgentQueueLockDir,
+			cfg.AgentQueuePriorityEnabled,
 			opts.now,
 			func(format string, args ...any) {
 				logLine(opts, format, args...)
@@ -146,7 +147,8 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 		modelAlias := openai.ResolveModelAlias(model)
 		toolsPresent := rawJSONPresent(req.Tools)
-		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, toolsPresent)
+		turnClass := classifyTurn(req, toolsPresent)
+		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t turn_class=%s\n", model, req.Stream, toolsPresent, turnClass)
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
 		queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, c, c.Body())
@@ -195,7 +197,7 @@ func chatCompletions(opts options) fiber.Handler {
 
 		releaseQueue := func() {}
 		if toolsPresent {
-			release, err := opts.agentQueue.acquire(ctx, requestID, queueKey)
+			release, err := opts.agentQueue.acquire(ctx, requestID, queueKey, turnClass)
 			if err != nil {
 				cancel()
 				return mapAgentQueueError(c, err)
