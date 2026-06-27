@@ -328,6 +328,10 @@ Continuation coverage added for issue #16 verifies:
   `finish_reason:"stop"`.
 - Streaming continuation requests return final assistant text deltas and a final
   `finish_reason:"stop"` without emitting another tool-call finish.
+- Server-level continuation coverage verifies a two-step tool sequence
+  (`list_dir` result followed by `read_file` result) returns final assistant text
+  containing the real tool outputs instead of stalling or ending with another
+  tool-call finish.
 
 Manual Cursor Agent tunnel validation could not be completed in this automated
 worktree because the sandbox rejects binding a local listener, which is required

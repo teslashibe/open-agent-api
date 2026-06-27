@@ -221,6 +221,68 @@ func TestChatCompletionsNonStreamingToolResultContinuation(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsNonStreamingSequentialToolResultContinuation(t *testing.T) {
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			if len(req.Messages) != 5 {
+				t.Fatalf("Messages len = %d, want 5", len(req.Messages))
+			}
+			want := []struct {
+				index  int
+				role   string
+				callID string
+			}{
+				{index: 1, role: "assistant", callID: "call_list"},
+				{index: 2, role: "tool", callID: "call_list"},
+				{index: 3, role: "assistant", callID: "call_read"},
+				{index: 4, role: "tool", callID: "call_read"},
+			}
+			for _, tc := range want {
+				msg := req.Messages[tc.index]
+				if msg.Role != tc.role {
+					t.Fatalf("Messages[%d].Role = %q, want %q", tc.index, msg.Role, tc.role)
+				}
+				if tc.role == "assistant" {
+					if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].ID != tc.callID {
+						t.Fatalf("assistant Messages[%d] = %#v, want call %s", tc.index, msg, tc.callID)
+					}
+					continue
+				}
+				if msg.ToolCallID != tc.callID {
+					t.Fatalf("tool Messages[%d].ToolCallID = %q, want %q", tc.index, msg.ToolCallID, tc.callID)
+				}
+			}
+			return codex.Completion{
+				ID:    "chatcmpl-final",
+				Model: req.Model,
+				Text:  "Found README.md and go.mod; go.mod declares module github.com/teslashibe/codex-chat-api.",
+			}, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"list files then read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_list","type":"function","function":{"name":"list_dir","arguments":"{\"path\":\".\"}"}}]},{"role":"tool","tool_call_id":"call_list","content":"README.md\ngo.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_read","content":"module github.com/teslashibe/codex-chat-api"}],"tools":[{"type":"function","function":{"name":"list_dir"}},{"type":"function","function":{"name":"read_file"}}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body openai.ChatCompletionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	choice := body.Choices[0]
+	if choice.FinishReason != "stop" {
+		t.Fatalf("finish_reason = %q, want stop", choice.FinishReason)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("tool_calls = %#v, want none", choice.Message.ToolCalls)
+	}
+	if got := string(choice.Message.Content); !strings.Contains(got, "README.md") || !strings.Contains(got, "github.com/teslashibe/codex-chat-api") {
+		t.Fatalf("message content = %s, want final answer with real tool outputs", got)
+	}
+}
+
 func TestChatCompletionsAcceptsArbitraryAuthorization(t *testing.T) {
 	var called bool
 	service := fakeCodexService{
