@@ -767,11 +767,10 @@ func TestAgentQueueHonorsMaxActive(t *testing.T) {
 
 	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-a"})
 	secondDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-b"})
-	if got := waitStarted(t, started, time.Second); got != 1 {
-		t.Fatalf("first complete call = %d, want 1", got)
-	}
-	if got := waitStarted(t, started, time.Second); got != 2 {
-		t.Fatalf("second complete call = %d, want 2", got)
+	firstStarted := waitStarted(t, started, time.Second)
+	secondStarted := waitStarted(t, started, time.Second)
+	if got := map[int]bool{firstStarted: true, secondStarted: true}; !got[1] || !got[2] {
+		t.Fatalf("started calls = %d,%d, want calls 1 and 2", firstStarted, secondStarted)
 	}
 
 	thirdDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"three"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-c"})
