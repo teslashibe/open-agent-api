@@ -38,6 +38,36 @@ var modelAliases = []ModelAlias{
 		Verbosity:       "low",
 	},
 	{
+		ID:              "gpt-5.5-mini",
+		UpstreamModel:   DefaultModel,
+		ReasoningEffort: "low",
+		Verbosity:       "low",
+	},
+	{
+		ID:              "gpt-5.5-lite",
+		UpstreamModel:   DefaultModel,
+		ReasoningEffort: "low",
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "gpt-5.5-deep",
+		UpstreamModel:   DefaultModel,
+		ReasoningEffort: "high",
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "gpt-5.5-verbose",
+		UpstreamModel:   DefaultModel,
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       "high",
+	},
+	{
+		ID:              "gpt-5.5-fast-verbose",
+		UpstreamModel:   DefaultModel,
+		ReasoningEffort: "low",
+		Verbosity:       "high",
+	},
+	{
 		ID:              "gpt-5.3-codex-spark",
 		UpstreamModel:   DefaultModel,
 		ReasoningEffort: "low",

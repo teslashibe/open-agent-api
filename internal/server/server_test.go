@@ -71,10 +71,10 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 6 {
+	if body.Object != "list" || len(body.Data) != 11 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
-	wantIDs := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
+	wantIDs := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
 	for i, wantID := range wantIDs {
 		model := body.Data[i]
 		if model.ID != wantID || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
@@ -116,6 +116,46 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 			wantModel:     "gpt-5.5",
 			wantEffort:    "low",
 			wantVerbosity: "low",
+			wantFaithful:  true,
+		},
+		{
+			name:          "mini alias",
+			body:          `{"model":"gpt-5.5-mini","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "low",
+			wantVerbosity: "low",
+			wantFaithful:  true,
+		},
+		{
+			name:          "lite alias",
+			body:          `{"model":"gpt-5.5-lite","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "low",
+			wantVerbosity: "medium",
+			wantFaithful:  true,
+		},
+		{
+			name:          "deep alias",
+			body:          `{"model":"gpt-5.5-deep","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "high",
+			wantVerbosity: "medium",
+			wantFaithful:  true,
+		},
+		{
+			name:          "verbose alias",
+			body:          `{"model":"gpt-5.5-verbose","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "medium",
+			wantVerbosity: "high",
+			wantFaithful:  true,
+		},
+		{
+			name:          "fast verbose alias",
+			body:          `{"model":"gpt-5.5-fast-verbose","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "low",
+			wantVerbosity: "high",
 			wantFaithful:  true,
 		},
 		{

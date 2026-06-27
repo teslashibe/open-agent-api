@@ -13,7 +13,7 @@ func TestModelAliases(t *testing.T) {
 	for _, alias := range aliases {
 		got = append(got, alias.ID)
 	}
-	want := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
+	want := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModelAliases IDs = %#v, want %#v", got, want)
 	}
@@ -55,6 +55,46 @@ func TestResolveModelAlias(t *testing.T) {
 			wantUpstream:  DefaultModel,
 			wantEffort:    "low",
 			wantVerbosity: "low",
+		},
+		{
+			name:          "mini alias",
+			model:         "gpt-5.5-mini",
+			wantID:        "gpt-5.5-mini",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "low",
+			wantVerbosity: "low",
+		},
+		{
+			name:          "lite alias",
+			model:         "gpt-5.5-lite",
+			wantID:        "gpt-5.5-lite",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "low",
+			wantVerbosity: DefaultVerbosity,
+		},
+		{
+			name:          "deep alias",
+			model:         "gpt-5.5-deep",
+			wantID:        "gpt-5.5-deep",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "high",
+			wantVerbosity: DefaultVerbosity,
+		},
+		{
+			name:          "verbose alias",
+			model:         "gpt-5.5-verbose",
+			wantID:        "gpt-5.5-verbose",
+			wantUpstream:  DefaultModel,
+			wantEffort:    DefaultReasoningEffort,
+			wantVerbosity: "high",
+		},
+		{
+			name:          "fast verbose alias",
+			model:         "gpt-5.5-fast-verbose",
+			wantID:        "gpt-5.5-fast-verbose",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "low",
+			wantVerbosity: "high",
 		},
 		{
 			name:          "spark alias",
