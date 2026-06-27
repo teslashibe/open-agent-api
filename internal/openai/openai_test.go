@@ -2,9 +2,82 @@ package openai
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestModelAliases(t *testing.T) {
+	aliases := ModelAliases()
+	got := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		got = append(got, alias.ID)
+	}
+	want := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ModelAliases IDs = %#v, want %#v", got, want)
+	}
+
+	aliases[0].ID = "mutated"
+	if ModelAliases()[0].ID != DefaultModel {
+		t.Fatal("ModelAliases returned mutable package state")
+	}
+}
+
+func TestResolveModelAlias(t *testing.T) {
+	tests := []struct {
+		name          string
+		model         string
+		wantID        string
+		wantUpstream  string
+		wantEffort    string
+		wantVerbosity string
+	}{
+		{
+			name:          "empty model uses default",
+			wantID:        DefaultModel,
+			wantUpstream:  DefaultModel,
+			wantEffort:    DefaultReasoningEffort,
+			wantVerbosity: DefaultVerbosity,
+		},
+		{
+			name:          "high alias",
+			model:         "gpt-5.5-high",
+			wantID:        "gpt-5.5-high",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "high",
+			wantVerbosity: DefaultVerbosity,
+		},
+		{
+			name:          "fast alias",
+			model:         "gpt-5.5-fast",
+			wantID:        "gpt-5.5-fast",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "low",
+			wantVerbosity: "low",
+		},
+		{
+			name:          "unknown model passes through",
+			model:         "gpt-test",
+			wantID:        "gpt-test",
+			wantUpstream:  "gpt-test",
+			wantEffort:    DefaultReasoningEffort,
+			wantVerbosity: DefaultVerbosity,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			alias := ResolveModelAlias(tc.model)
+			if alias.ID != tc.wantID ||
+				alias.UpstreamModel != tc.wantUpstream ||
+				alias.ReasoningEffort != tc.wantEffort ||
+				alias.Verbosity != tc.wantVerbosity {
+				t.Fatalf("ResolveModelAlias(%q) = %#v", tc.model, alias)
+			}
+		})
+	}
+}
 
 func TestChatCompletionRequestParsesToolCallFields(t *testing.T) {
 	var req ChatCompletionRequest

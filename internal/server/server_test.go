@@ -64,12 +64,146 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 1 {
+	if body.Object != "list" || len(body.Data) != 4 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
-	model := body.Data[0]
-	if model.ID != openai.DefaultModel || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
-		t.Fatalf("unexpected model: %#v", model)
+	wantIDs := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast"}
+	for i, wantID := range wantIDs {
+		model := body.Data[i]
+		if model.ID != wantID || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
+			t.Fatalf("model[%d] = %#v, want id %q", i, model, wantID)
+		}
+	}
+}
+
+func TestChatCompletionsModelAliases(t *testing.T) {
+	tests := []struct {
+		name            string
+		body            string
+		wantModel       string
+		wantEffort      string
+		wantVerbosity   string
+		wantTools       bool
+		wantFaithful    bool
+		wantParallelSet bool
+	}{
+		{
+			name:          "high alias",
+			body:          `{"model":"gpt-5.5-high","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "high",
+			wantVerbosity: "medium",
+			wantFaithful:  true,
+		},
+		{
+			name:          "low alias",
+			body:          `{"model":"gpt-5.5-low","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "low",
+			wantVerbosity: "medium",
+			wantFaithful:  true,
+		},
+		{
+			name:          "fast alias",
+			body:          `{"model":"gpt-5.5-fast","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "low",
+			wantVerbosity: "low",
+			wantFaithful:  true,
+		},
+		{
+			name:          "explicit fields override alias defaults",
+			body:          `{"model":"gpt-5.5-fast","reasoning_effort":"high","verbosity":"high","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "high",
+			wantVerbosity: "high",
+			wantFaithful:  true,
+		},
+		{
+			name:          "unknown model passes through",
+			body:          `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-test",
+			wantEffort:    "medium",
+			wantVerbosity: "medium",
+			wantFaithful:  true,
+		},
+		{
+			name:            "alias keeps client tools in minimal mode",
+			body:            `{"model":"gpt-5.5-high","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup"}}],"parallel_tool_calls":true}`,
+			wantModel:       "gpt-5.5",
+			wantEffort:      "high",
+			wantVerbosity:   "medium",
+			wantTools:       true,
+			wantFaithful:    false,
+			wantParallelSet: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := fakeCodexService{
+				complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+					if req.Model != tc.wantModel {
+						t.Fatalf("Model = %q, want %q", req.Model, tc.wantModel)
+					}
+					if req.ReasoningEffort != tc.wantEffort {
+						t.Fatalf("ReasoningEffort = %q, want %q", req.ReasoningEffort, tc.wantEffort)
+					}
+					if req.Verbosity != tc.wantVerbosity {
+						t.Fatalf("Verbosity = %q, want %q", req.Verbosity, tc.wantVerbosity)
+					}
+					if rawJSONPresent(req.Tools) != tc.wantTools {
+						t.Fatalf("tools present = %t, want %t", rawJSONPresent(req.Tools), tc.wantTools)
+					}
+					if req.Faithful != tc.wantFaithful {
+						t.Fatalf("Faithful = %t, want %t", req.Faithful, tc.wantFaithful)
+					}
+					if (req.ParallelToolCalls != nil) != tc.wantParallelSet {
+						t.Fatalf("ParallelToolCalls = %v, want set %t", req.ParallelToolCalls, tc.wantParallelSet)
+					}
+					return codex.Completion{Text: "ok", Model: req.Model}, nil
+				},
+			}
+			app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+			resp := doJSON(t, app, tc.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestChatCompletionsStreamingModelAlias(t *testing.T) {
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			if req.Model != "gpt-5.5" {
+				t.Fatalf("Model = %q, want gpt-5.5", req.Model)
+			}
+			if req.ReasoningEffort != "low" {
+				t.Fatalf("ReasoningEffort = %q, want low", req.ReasoningEffort)
+			}
+			if req.Verbosity != "low" {
+				t.Fatalf("Verbosity = %q, want low", req.Verbosity)
+			}
+			events := make(chan codex.StreamEvent, 2)
+			events <- codex.StreamEvent{Delta: "ok"}
+			events <- codex.StreamEvent{Done: true}
+			close(events)
+			return events, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-5.5-fast","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"content":"ok"`) || !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Fatalf("stream = %q, want unchanged SSE response", body)
 	}
 }
 
