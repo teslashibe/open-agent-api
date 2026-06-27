@@ -58,14 +58,15 @@ func buildCodexService(cfg config.Config) (codex.Service, error) {
 	clients := make([]codex.PooledClientConfig, 0, len(cfg.CodexClients))
 	for _, clientCfg := range cfg.CodexClients {
 		client, err := codex.NewClient(codex.ClientConfig{
-			AuthPath:     clientCfg.AuthPath,
-			CodexHome:    clientCfg.CodexHome,
-			ProfilePath:  clientCfg.CodexProfilePath,
-			ScaffoldPath: clientCfg.CodexScaffoldPath,
-			WebsocketURL: cfg.CodexWebsocketURL,
-			Timeout:      cfg.CodexTimeout,
-			LogOutput:    os.Stdout,
-			LogBodyShape: cfg.LogBodyShape,
+			AuthPath:      clientCfg.AuthPath,
+			CodexHome:     clientCfg.CodexHome,
+			ProfilePath:   clientCfg.CodexProfilePath,
+			ScaffoldPath:  clientCfg.CodexScaffoldPath,
+			WebsocketURL:  cfg.CodexWebsocketURL,
+			Timeout:       cfg.CodexTimeout,
+			LogOutput:     os.Stdout,
+			LogBodyShape:  cfg.LogBodyShape,
+			LogToolEvents: cfg.LogCodexToolEvents,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create codex client %q: %w", clientCfg.Label, err)

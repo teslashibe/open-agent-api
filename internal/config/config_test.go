@@ -20,6 +20,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_TIMEOUT")
 	unsetenv(t, "CODEX_LOG_BODY_SHAPE")
 	unsetenv(t, "CODEX_LOG_REQUEST_IDENTITY")
+	unsetenv(t, "CODEX_LOG_CODEX_TOOL_EVENTS")
 	unsetenv(t, "CODEX_AGENT_QUEUE_ENABLED")
 	unsetenv(t, "CODEX_AGENT_MAX_ACTIVE")
 	unsetenv(t, "CODEX_AGENT_MAX_ACTIVE_PER_KEY")
@@ -74,6 +75,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogRequestIdentity {
 		t.Fatal("LogRequestIdentity = true, want false")
 	}
+	if cfg.LogCodexToolEvents {
+		t.Fatal("LogCodexToolEvents = true, want false")
+	}
 	if cfg.AgentQueueEnabled != DefaultAgentQueueEnabled {
 		t.Fatalf("AgentQueueEnabled = %t, want %t", cfg.AgentQueueEnabled, DefaultAgentQueueEnabled)
 	}
@@ -98,8 +102,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentQueuePriorityEnabled != DefaultAgentQueuePriorityEnabled {
 		t.Fatalf("AgentQueuePriorityEnabled = %t, want %t", cfg.AgentQueuePriorityEnabled, DefaultAgentQueuePriorityEnabled)
 	}
-	if cfg.ContextManagementEnabled {
-		t.Fatal("ContextManagementEnabled = true, want false")
+	if cfg.ContextManagementEnabled != DefaultContextManagementEnabled {
+		t.Fatalf("ContextManagementEnabled = %t, want %t", cfg.ContextManagementEnabled, DefaultContextManagementEnabled)
 	}
 	if cfg.ContextMaxBytes != DefaultContextMaxBytes ||
 		cfg.ContextMaxMessages != DefaultContextMaxMessages ||
@@ -140,6 +144,7 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_TIMEOUT", "3s")
 	t.Setenv("CODEX_LOG_BODY_SHAPE", "true")
 	t.Setenv("CODEX_LOG_REQUEST_IDENTITY", "true")
+	t.Setenv("CODEX_LOG_CODEX_TOOL_EVENTS", "true")
 	t.Setenv("CODEX_AGENT_QUEUE_ENABLED", "false")
 	t.Setenv("CODEX_AGENT_MAX_ACTIVE", "2")
 	t.Setenv("CODEX_AGENT_MAX_ACTIVE_PER_KEY", "2")
@@ -186,6 +191,9 @@ func TestLoadEnvironment(t *testing.T) {
 	}
 	if !cfg.LogRequestIdentity {
 		t.Fatal("LogRequestIdentity = false, want true")
+	}
+	if !cfg.LogCodexToolEvents {
+		t.Fatal("LogCodexToolEvents = false, want true")
 	}
 	if cfg.AgentQueueEnabled {
 		t.Fatal("AgentQueueEnabled = true, want false")
@@ -240,6 +248,7 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--codex-timeout", "4s",
 		"--log-body-shape",
 		"--log-request-identity",
+		"--log-codex-tool-events",
 		"--agent-queue-enabled=false",
 		"--agent-max-active", "3",
 		"--agent-max-active-per-key", "2",
@@ -281,6 +290,9 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if !cfg.LogRequestIdentity {
 		t.Fatal("LogRequestIdentity = false, want true")
+	}
+	if !cfg.LogCodexToolEvents {
+		t.Fatal("LogCodexToolEvents = false, want true")
 	}
 	if cfg.AgentQueueEnabled {
 		t.Fatal("AgentQueueEnabled = true, want false")
@@ -367,6 +379,15 @@ func TestLoadInvalidLogRequestIdentity(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid log request identity error")
+	}
+}
+
+func TestLoadInvalidLogCodexToolEvents(t *testing.T) {
+	t.Setenv("CODEX_LOG_CODEX_TOOL_EVENTS", "definitely")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid Codex tool-event log error")
 	}
 }
 

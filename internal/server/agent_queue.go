@@ -56,16 +56,17 @@ func newAgentQueue(enabled bool, maxActive int, maxActivePerKey int, limit int, 
 	}
 }
 
-func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey, class turnClass) (func(), error) {
+func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey, class turnClass) (func(), time.Duration, error) {
 	if q == nil {
-		return func() {}, nil
+		return func() {}, 0, nil
 	}
 	key = key.withDefaults()
 	priority := agentQueuePriority(class)
 
 	start := q.now()
 	if !q.enabled {
-		return q.acquireDistributedLock(ctx, requestID, start, key)
+		release, err := q.acquireDistributedLock(ctx, requestID, start, key)
+		return release, 0, err
 	}
 
 	q.mu.Lock()
@@ -73,12 +74,13 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 		activeGlobal, activeKey := q.acquireLocked(key)
 		q.mu.Unlock()
 		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=0 active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, activeGlobal, activeKey)
-		return q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		return release, 0, err
 	}
 	if len(q.waiters) >= q.limit {
 		q.mu.Unlock()
 		q.logf("agent_queue_full request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d limit=%d\n", requestID, key.Mode, key.Hash, class, priority, q.limit)
-		return nil, errAgentQueueFull
+		return nil, q.now().Sub(start), errAgentQueueFull
 	}
 
 	q.nextSeq++
@@ -95,23 +97,30 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 	select {
 	case <-waiter.ready:
 		activeGlobal, activeKey := q.currentActive(key)
-		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
-		return q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		wait := q.now().Sub(start)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
+		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		return release, wait, err
 	case <-timer.C:
 		if q.removeWaiter(waiter) {
-			q.logf("agent_queue_timeout request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d\n", requestID, key.Mode, key.Hash, class, priority, q.now().Sub(start).Milliseconds())
-			return nil, errAgentQueueTimeout
+			wait := q.now().Sub(start)
+			q.logf("agent_queue_timeout request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds())
+			return nil, wait, errAgentQueueTimeout
 		}
 		activeGlobal, activeKey := q.currentActive(key)
-		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
-		return q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		wait := q.now().Sub(start)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
+		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		return release, wait, err
 	case <-ctx.Done():
 		if q.removeWaiter(waiter) {
-			return nil, ctx.Err()
+			return nil, q.now().Sub(start), ctx.Err()
 		}
 		activeGlobal, activeKey := q.currentActive(key)
-		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
-		return q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		wait := q.now().Sub(start)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
+		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		return release, wait, err
 	}
 }
 

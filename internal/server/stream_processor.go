@@ -34,14 +34,16 @@ type streamProcessor struct {
 	outcome  *string
 
 	deltas, toolDeltas, upstreamEvents *int
-	textBytes, toolArgChars           *int
-	assistantText                     *strings.Builder
+	textBytes, toolArgChars            *int
+	assistantText                      *strings.Builder
 
 	toolCallEmitted         *bool
 	streamedToolCallIDs     map[string]bool
 	streamedToolCallIndexes map[int]bool
 	toolCallIndexByKey      map[string]int
 	nextToolCallIndex       *int
+	upstreamStart           time.Time
+	firstDeltaLatency       *time.Duration
 }
 
 func agentTurnExpectsToolCalls(messages []openai.ChatMessage, toolsPresent bool) bool {
@@ -78,6 +80,8 @@ func newStreamProcessor(
 	textBytes, toolArgChars *int,
 	assistantText *strings.Builder,
 	toolCallEmitted *bool,
+	upstreamStart time.Time,
+	firstDeltaLatency *time.Duration,
 ) *streamProcessor {
 	return &streamProcessor{
 		ctx:                     ctx,
@@ -100,7 +104,16 @@ func newStreamProcessor(
 		streamedToolCallIndexes: map[int]bool{},
 		toolCallIndexByKey:      map[string]int{},
 		nextToolCallIndex:       new(int),
+		upstreamStart:           upstreamStart,
+		firstDeltaLatency:       firstDeltaLatency,
 	}
+}
+
+func (p *streamProcessor) markFirstDelta() {
+	if p.firstDeltaLatency == nil || *p.firstDeltaLatency >= 0 {
+		return
+	}
+	*p.firstDeltaLatency = p.opts.now().Sub(p.upstreamStart)
 }
 
 func (p *streamProcessor) normalizeToolCallIndex(key string) int {
@@ -126,6 +139,7 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 	default:
 		return true
 	}
+	p.markFirstDelta()
 	*p.deltas++
 	if !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
 		ID:      p.id,
@@ -184,6 +198,9 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 			fullKey = "fslot:" + strconv.Itoa(i)
 		}
 		fullDelta.Index = p.normalizeToolCallIndex(fullKey)
+		if write {
+			p.markFirstDelta()
+		}
 		if write && !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
 			ID:      p.id,
 			Object:  "chat.completion.chunk",
@@ -207,6 +224,9 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 		}
 		outDelta := openAIToolCallDelta(*event.ToolCallDelta)
 		outDelta.Index = p.normalizeToolCallIndex("idx:" + strconv.Itoa(event.ToolCallDelta.Index))
+		if write {
+			p.markFirstDelta()
+		}
 		if write && !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
 			ID:      p.id,
 			Object:  "chat.completion.chunk",
@@ -294,29 +314,32 @@ func deliverToolStream(
 	created int64,
 	model string,
 	streamID string,
-) (outcome string, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount int, assistantText string, start time.Time) {
+	upstreamStart time.Time,
+) (outcome string, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount int, assistantText string, start time.Time, firstDeltaLatency time.Duration) {
 	outcome = "completed"
+	firstDeltaLatency = -1
 	var assistant strings.Builder
 	proc := newStreamProcessor(
 		ctx, cancel, w, opts, id, created, &model, streamID, &outcome,
 		&deltas, &toolDeltas, &upstreamEvents, &textBytes, &toolArgChars, &assistant, new(bool),
+		upstreamStart, &firstDeltaLatency,
 	)
 	start = opts.now()
 	toolsPresent := rawJSONPresent(req.Tools)
 	agentTurn := agentTurnExpectsToolCalls(req.Messages, toolsPresent)
 	retryEnabled := opts.contextConfig.DegenerateTurnRetryEnabled && toolsPresent
 
-	finishStream := func() (string, int, int, int, int, int, int, string, time.Time) {
+	finishStream := func() (string, int, int, int, int, int, int, string, time.Time, time.Duration) {
 		if outcome == "completed" {
 			if !proc.writeFinish() {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 			}
 		}
 		if outcome != "client_disconnect" {
 			_, _ = w.Write(sse.Done())
 			_ = w.Flush()
 		}
-		return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+		return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 	}
 
 	// Tool-result continuations and plain chat stream through immediately.
@@ -350,21 +373,21 @@ func deliverToolStream(
 	for event := range events {
 		if event.Err != nil {
 			if proc.handleEvent(event, true, deltaTextDrop) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 			}
 			break
 		}
 		if passthrough {
 			if proc.handleEvent(event, true, deltaTextReasoning) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 			}
 		} else if streamEventHasToolCall(event) {
 			if bufferPreToolText && !flushPreToolText(deltaTextReasoning) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 			}
 			passthrough = true
 			if proc.handleEvent(event, true, deltaTextReasoning) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 			}
 		} else {
 			if event.Delta != "" {
@@ -378,16 +401,16 @@ func deliverToolStream(
 			switch {
 			case bufferPreToolText && event.ReasoningDelta != "":
 				if proc.handleEvent(event, true, deltaTextReasoning) {
-					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 				}
 			case bufferPreToolText && event.Delta != "":
 				if proc.handleEvent(event, false, deltaTextDrop) {
-					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 				}
 				preToolText.WriteString(event.Delta)
 			default:
 				if proc.handleEvent(event, true, textMode) {
-					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 				}
 			}
 		}
@@ -401,7 +424,7 @@ func deliverToolStream(
 	}
 
 	if bufferPreToolText && !flushPreToolText(deltaTextContent) {
-		return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+		return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 	}
 
 	firstToolCallCount := *proc.nextToolCallIndex
