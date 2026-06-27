@@ -38,12 +38,12 @@ type StreamEvent struct {
 	Delta          string
 	ReasoningDelta string
 	ToolCalls      []ToolCall
-	ToolCallDelta *ToolCallDelta
-	Done          bool
-	Model         string
-	ID            string
-	Usage         openai.Usage
-	Err           error
+	ToolCallDelta  *ToolCallDelta
+	Done           bool
+	Model          string
+	ID             string
+	Usage          openai.Usage
+	Err            error
 }
 
 type ToolCall struct {
@@ -62,6 +62,7 @@ type ToolCallDelta struct {
 	ID       string                `json:"id,omitempty"`
 	Type     string                `json:"type,omitempty"`
 	Function ToolCallFunctionDelta `json:"function,omitempty"`
+	Final    bool                  `json:"-"`
 }
 
 type ToolCallFunctionDelta struct {

@@ -47,8 +47,11 @@ func TestParseStreamEventToolCallLifecycle(t *testing.T) {
 	if err != nil || terminal {
 		t.Fatalf("done parse err=%v terminal=%t", err, terminal)
 	}
-	if hasStreamEvent(done) {
-		t.Fatalf("done event should not re-emit final arguments: %#v", done)
+	if done.ToolCallDelta == nil {
+		t.Fatal("done ToolCallDelta = nil")
+	}
+	if got := *done.ToolCallDelta; got.Index != 0 || got.ID != "" || got.Type != "function" || got.Function.Arguments != `{"q":"codex"}` || !got.Final {
+		t.Fatalf("done delta = %#v", got)
 	}
 }
 
@@ -66,6 +69,24 @@ func TestParseStreamEventToolCallCompatibilityShape(t *testing.T) {
 	}
 	if event.ToolCallDelta.ID != "call_123" || event.ToolCallDelta.Function.Name != "lookup" || event.ToolCallDelta.Function.Arguments != `{"q":` {
 		t.Fatalf("tool_call_delta = %#v", event.ToolCallDelta)
+	}
+}
+
+func TestParseStreamEventOutputItemDoneEmitsFullToolCall(t *testing.T) {
+	event, terminal, err := parseStreamEvent([]byte(`{
+		"type":"response.output_item.done",
+		"output_index":0,
+		"item":{"id":"fc_123","type":"function_call","call_id":"call_123","name":"lookup","arguments":"{\"q\":\"codex\"}"}
+	}`))
+	if err != nil || terminal {
+		t.Fatalf("parse err=%v terminal=%t", err, terminal)
+	}
+	if len(event.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(event.ToolCalls))
+	}
+	toolCall := event.ToolCalls[0]
+	if toolCall.ID != "call_123" || toolCall.Type != "function" || toolCall.Function.Name != "lookup" || toolCall.Function.Arguments != `{"q":"codex"}` {
+		t.Fatalf("tool call = %#v", toolCall)
 	}
 }
 

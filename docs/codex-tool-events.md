@@ -43,11 +43,29 @@ Argument fragment events become `StreamEvent.ToolCallDelta` values with:
 - `type`: `function`
 - `function.arguments`: Codex `delta`, `arguments_delta`, or `arguments`
 
-`response.function_call_arguments.done` and `response.output_item.done` are
-recognized as tool lifecycle events but do not re-emit final arguments, because
-the streaming OpenAI response has already emitted argument fragments. Explicit
-`tool_calls` arrays from compatibility frames are forwarded as full internal
-tool calls.
+`response.function_call_arguments.done` updates the accumulated arguments for
+the in-progress tool call. `response.output_item.done` and explicit
+`tool_calls` arrays from compatibility frames are treated as full internal tool
+calls.
+
+The streaming OpenAI response layer uses a Cursor-compatible accumulator for
+tool calls. Codex start/name/argument fragments are not forwarded as individual
+OpenAI `delta.tool_calls` frames. Instead, the server tracks each tool call by
+upstream output index, assigns a stable OpenAI index in first-seen order,
+accumulates argument fragments, and emits one complete `delta.tool_calls` frame
+per tool call immediately before the final `finish_reason:"tool_calls"` chunk.
+
+Each emitted OpenAI tool-call delta includes:
+
+- stable `index`
+- non-empty `id` from Codex, or a deterministic stream-local fallback
+- `type: "function"`
+- `function.name`
+- complete JSON `function.arguments`
+
+Empty tool-call deltas with no ID, type, function name, or function arguments
+are ignored. If the final accumulated arguments are not valid JSON, the stream
+returns an error chunk instead of a `tool_calls` finish.
 
 ## Debug logging
 
@@ -101,5 +119,22 @@ curl -N http://127.0.0.1:8088/v1/chat/completions \
   }'
 ```
 
-Expected stream shape: chunks include `delta.tool_calls` fragments and the final
-chunk has `finish_reason:"tool_calls"` before `data: [DONE]`.
+Expected stream shape: chunks preserve incremental assistant text, if any, but
+tool calls are emitted as one complete `delta.tool_calls` frame per call. The
+final chunk has `finish_reason:"tool_calls"` before `data: [DONE]`.
+
+Cursor wire-capture validation:
+
+```bash
+ngrok http --url=icebound-melida-unstoppably.ngrok-free.dev 8787
+mitmdump -s tools/cursor_header_capture.py --mode reverse:http://127.0.0.1:8088@8787 --listen-host 127.0.0.1 --set flow_detail=0
+```
+
+Validation checklist:
+
+- Capture a real Cursor `/v1/chat/completions` streaming request and response.
+- Confirm each streamed tool call has exactly one complete Cursor-facing
+  `delta.tool_calls` frame before `finish_reason:"tool_calls"`.
+- Confirm no empty `delta.tool_calls` frames are present.
+- Run several tool continuation turns in the previously stalled chat and verify
+  Cursor continues advancing.
