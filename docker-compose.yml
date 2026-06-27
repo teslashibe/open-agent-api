@@ -16,7 +16,7 @@ services:
       CODEX_AGENT_QUEUE_KEY_MODE: "${CODEX_AGENT_QUEUE_KEY_MODE:-cursor}"
       CODEX_AGENT_QUEUE_LIMIT: "${CODEX_AGENT_QUEUE_LIMIT:-20}"
       CODEX_AGENT_QUEUE_TIMEOUT: "${CODEX_AGENT_QUEUE_TIMEOUT:-5m}"
-      CODEX_AGENT_QUEUE_LOCK_DIR: "${CODEX_AGENT_QUEUE_LOCK_DIR:-/tmp/codex-chat-api-agent-locks}"
+      CODEX_AGENT_QUEUE_LOCK_DIR: "${CODEX_AGENT_QUEUE_LOCK_DIR:-/var/lib/codex-chat-api/agent-locks}"
       CODEX_CONTEXT_MANAGEMENT_ENABLED: "${CODEX_CONTEXT_MANAGEMENT_ENABLED:-true}"
       CODEX_CONTEXT_MAX_BYTES: "${CODEX_CONTEXT_MAX_BYTES:-262144}"
       CODEX_CONTEXT_MAX_MESSAGES: "${CODEX_CONTEXT_MAX_MESSAGES:-150}"
@@ -26,6 +26,7 @@ services:
       CODEX_DEGENERATE_TURN_RETRY: "${CODEX_DEGENERATE_TURN_RETRY:-true}"
     volumes:
       - "${HOME}/.codex:/home/codex/.codex:ro"
+      - "agent-queue-locks:/var/lib/codex-chat-api/agent-locks"
     ports:
       - "127.0.0.1:${CODEX_CHAT_API_PORT:-8088}:8088"
     healthcheck:
@@ -35,3 +36,6 @@ services:
       retries: 6
       start_period: 5s
     restart: unless-stopped
+
+volumes:
+  agent-queue-locks:

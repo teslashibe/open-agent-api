@@ -51,12 +51,16 @@ func newAgentQueue(enabled bool, maxActive int, maxActivePerKey int, limit int, 
 }
 
 func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey) (func(), error) {
-	if q == nil || !q.enabled {
+	if q == nil {
 		return func() {}, nil
 	}
 	key = key.withDefaults()
 
 	start := q.now()
+	if !q.enabled {
+		return q.acquireDistributedLock(ctx, requestID, start, key)
+	}
+
 	q.mu.Lock()
 	if q.canAcquireLocked(key) && len(q.waiters) == 0 {
 		activeGlobal, activeKey := q.acquireLocked(key)

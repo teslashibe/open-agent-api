@@ -1100,11 +1100,50 @@ func TestAgentQueueSharedLockSerializesSameKeyAcrossQueues(t *testing.T) {
 	}
 }
 
-func TestAgentQueueAllowsDifferentKeyRequestsWithoutTools(t *testing.T) {
-	cfg := agentQueueTestConfig()
-	cfg.AgentMaxActive = 2
-	cfg.AgentQueueKeyMode = "body:session_id"
-	cfg.AgentQueueLockDir = t.TempDir()
+func TestAgentQueueDisabledStillUsesSharedLockForSameKey(t *testing.T) {
+	lockDir := t.TempDir()
+	logf := func(string, ...any) {}
+	q1 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, time.Now, logf)
+	q2 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, time.Now, logf)
+	key := newAgentQueueKey("body:session_id", "same-session")
+
+	releaseFirst, err := q1.acquire(context.Background(), "request-1", key)
+	if err != nil {
+		t.Fatalf("first acquire error = %v", err)
+	}
+
+	acquiredSecond := make(chan func(), 1)
+	errs := make(chan error, 1)
+	go func() {
+		releaseSecond, err := q2.acquire(context.Background(), "request-2", key)
+		if err != nil {
+			errs <- err
+			return
+		}
+		acquiredSecond <- releaseSecond
+	}()
+
+	select {
+	case releaseSecond := <-acquiredSecond:
+		releaseSecond()
+		t.Fatal("second disabled queue acquired same key before first shared lock released")
+	case err := <-errs:
+		t.Fatalf("second acquire error = %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseFirst()
+	select {
+	case releaseSecond := <-acquiredSecond:
+		releaseSecond()
+	case err := <-errs:
+		t.Fatalf("second acquire error after release = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("second disabled queue did not acquire same key after first shared lock released")
+	}
+}
+
+func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
 	toolEvents := make(chan codex.StreamEvent)
 	toolStarted := make(chan struct{}, 1)
 	startedNoTools := make(chan struct{}, 1)
@@ -1121,15 +1160,15 @@ func TestAgentQueueAllowsDifferentKeyRequestsWithoutTools(t *testing.T) {
 			return events, nil
 		},
 	}
-	app := New(cfg, WithCodexService(service), WithLogOutput(io.Discard))
+	app := New(agentQueueTestConfig(), WithCodexService(service), WithLogOutput(io.Discard))
 
-	toolDone := postJSONAsync(t, app, `{"session_id":"tool-session","stream":true,"messages":[{"role":"user","content":"tool"}],"tools":[{"type":"function"}]}`)
+	toolDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"tool"}],"tools":[{"type":"function"}]}`)
 	select {
 	case <-toolStarted:
 	case <-time.After(time.Second):
 		t.Fatal("tool request did not start")
 	}
-	resp := doJSON(t, app, `{"session_id":"ask-session","stream":true,"messages":[{"role":"user","content":"ask"}]}`)
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"ask"}]}`)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("no-tools status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -1137,7 +1176,7 @@ func TestAgentQueueAllowsDifferentKeyRequestsWithoutTools(t *testing.T) {
 	select {
 	case <-startedNoTools:
 	case <-time.After(time.Second):
-		t.Fatal("different-key request without tools did not start while another key was active")
+		t.Fatal("request without tools did not bypass active Agent queue slot")
 	}
 	toolEvents <- codex.StreamEvent{Done: true}
 	close(toolEvents)
@@ -1145,62 +1184,6 @@ func TestAgentQueueAllowsDifferentKeyRequestsWithoutTools(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("tool status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-}
-
-func TestAgentQueueSerializesSameKeyRequestsWithoutTools(t *testing.T) {
-	cfg := agentQueueTestConfig()
-	cfg.AgentMaxActive = 2
-	cfg.AgentQueueKeyMode = "body:session_id"
-	cfg.AgentQueueLockDir = t.TempDir()
-	firstEvents := make(chan codex.StreamEvent)
-	secondEvents := make(chan codex.StreamEvent)
-	started := make(chan int, 2)
-	var mu sync.Mutex
-	calls := 0
-
-	service := fakeCodexService{
-		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
-			mu.Lock()
-			calls++
-			call := calls
-			mu.Unlock()
-			started <- call
-			if call == 1 {
-				return firstEvents, nil
-			}
-			return secondEvents, nil
-		},
-	}
-	app := New(cfg, WithCodexService(service), WithLogOutput(io.Discard))
-
-	firstDone := postJSONAsync(t, app, `{"session_id":"same-session","stream":true,"messages":[{"role":"user","content":"one"}]}`)
-	if got := waitStarted(t, started, time.Second); got != 1 {
-		t.Fatalf("first stream call = %d, want 1", got)
-	}
-	secondDone := postJSONAsync(t, app, `{"session_id":"same-session","stream":true,"messages":[{"role":"user","content":"two"}]}`)
-	select {
-	case got := <-started:
-		t.Fatalf("second same-key text-only request started before first released: %d", got)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	firstEvents <- codex.StreamEvent{Done: true}
-	close(firstEvents)
-	resp := waitResponse(t, firstDone)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("first status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	if got := waitStarted(t, started, time.Second); got != 2 {
-		t.Fatalf("second stream call = %d, want 2", got)
-	}
-	secondEvents <- codex.StreamEvent{Done: true}
-	close(secondEvents)
-	resp = waitResponse(t, secondDone)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("second status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }
 

@@ -94,10 +94,10 @@ NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok
 
 Cursor base URL: `https://icebound-melida-unstoppably.ngrok-free.dev/v1`
 
-The Docker Compose service enables the Agent queue by default. Requests use
-`CODEX_AGENT_QUEUE_KEY_MODE=cursor` with `CODEX_AGENT_MAX_ACTIVE=2` and
-`CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, preserving one active stream per derived
-conversation key.
+The Docker Compose service enables the Agent queue by default. Tool-capable
+Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=cursor`
+with `CODEX_AGENT_MAX_ACTIVE=2` and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while
+Ask/text-only requests bypass the queue.
 
 ## Validate
 
@@ -411,9 +411,11 @@ Agent mode should send `tools` in the first request, receive an assistant
 containing the prior assistant `tool_calls` and matching `role:"tool"` results.
 The final response should be normal assistant text with `finish_reason:"stop"`.
 
-By default, requests enter a queue keyed by `CODEX_AGENT_QUEUE_KEY_MODE=cursor`.
-This allows up to `CODEX_AGENT_MAX_ACTIVE` concurrent streams across different
-Cursor chats while keeping one active stream per chat/session key.
+By default, requests that include `tools` enter an Agent queue keyed by
+`CODEX_AGENT_QUEUE_KEY_MODE=cursor`. This allows up to
+`CODEX_AGENT_MAX_ACTIVE` concurrent Agent streams across different Cursor chats
+while keeping one active stream per chat/session key. Requests without
+`tools`, including Ask mode, bypass the queue.
 
 Tune the queue with:
 
@@ -427,9 +429,11 @@ CODEX_AGENT_QUEUE_TIMEOUT=5m
 CODEX_AGENT_QUEUE_LOCK_DIR=/tmp/codex-chat-api-agent-locks
 ```
 
-Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable queueing, or raise
-`CODEX_AGENT_MAX_ACTIVE` after validating that overlapping Agent chats are stable
-in your workspace.
+Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable the in-process wait queue and
+global active-request limit, or raise `CODEX_AGENT_MAX_ACTIVE` after validating
+that overlapping Agent chats are stable in your workspace. Tool-capable requests
+still use the per-key shared lock when `CODEX_AGENT_QUEUE_LOCK_DIR` is set, so
+the same derived conversation key is not streamed concurrently.
 
 ### Codex client pool
 
@@ -472,6 +476,9 @@ The Agent queue also creates one shared lock file per queue-key hash in
 the same writable shared volume so the same chat cannot stream concurrently in
 different processes. Keep `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; sticky routing by
 the same queue key is still recommended to reduce lock contention.
+The supplied Docker Compose file mounts this path on a named volume by default
+at `/var/lib/codex-chat-api/agent-locks`, so replicas started from that Compose
+project share locks without extra volume wiring.
 
 Long Cursor Agent conversations can accumulate large historical tool outputs.
 Context management is disabled by default. When enabled, it applies only to
