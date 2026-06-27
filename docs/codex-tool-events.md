@@ -138,3 +138,17 @@ Validation checklist:
 - Confirm no empty `delta.tool_calls` frames are present.
 - Run several tool continuation turns in the previously stalled chat and verify
   Cursor continues advancing.
+
+The mitm addon emits redacted evidence lines for both sides of the stream. A
+passing capture should include request shape and response shape lines like:
+
+```text
+cursor_capture method=POST path=/v1/chat/completions body_bytes=<n> body_fields=messages,model,stream,stream_options,tools,user message_count=<n> tool_count=<n> stream=true headers=<redacted>
+cursor_response_shape events=<n> tool_frames=<tool-call-count> empty_tool_frames=0 finish=tool_calls done=True tool_indexes=0 tool_ids_present=True tool_names_present=True tool_args_json_valid=True
+```
+
+For a stalled-chat regression check, record at least three consecutive Cursor
+tool continuation turns through the capture route. The validation passes only if
+each tool-call turn has `empty_tool_frames=0`, `finish=tool_calls`, `done=True`,
+`tool_ids_present=True`, `tool_names_present=True`, `tool_args_json_valid=True`,
+and Cursor advances to the next turn without switching providers.
