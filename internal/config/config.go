@@ -307,7 +307,7 @@ func Defaults() Config {
 		AgentQueueKeyMode:                  DefaultAgentQueueKeyMode,
 		AgentQueueLimit:                    DefaultAgentQueueLimit,
 		AgentQueueTimeout:                  DefaultAgentQueueTimeout,
-		AgentQueueLockDir:                  filepath.Join(os.TempDir(), "codex-chat-api-agent-locks"),
+		AgentQueueLockDir:                  "",
 		ContextMaxBytes:                    DefaultContextMaxBytes,
 		ContextMaxMessages:                 DefaultContextMaxMessages,
 		ContextRecentMessages:              DefaultContextRecentMessages,

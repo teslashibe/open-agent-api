@@ -268,7 +268,7 @@ Flags override environment values.
 | Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `cursor` |
 | Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
-| Agent queue shared lock directory | `CODEX_AGENT_QUEUE_LOCK_DIR` | `--agent-queue-lock-dir` | system temp `codex-chat-api-agent-locks` |
+| Agent queue shared lock directory | `CODEX_AGENT_QUEUE_LOCK_DIR` | `--agent-queue-lock-dir` | disabled; set explicitly for multi-replica or multi-client pools |
 | Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `false` |
 | Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `262144` |
 | Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `150` |

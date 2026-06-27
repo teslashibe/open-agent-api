@@ -91,8 +91,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentQueueTimeout != DefaultAgentQueueTimeout {
 		t.Fatalf("AgentQueueTimeout = %s, want %s", cfg.AgentQueueTimeout, DefaultAgentQueueTimeout)
 	}
-	if cfg.AgentQueueLockDir == "" {
-		t.Fatal("AgentQueueLockDir = empty, want default cross-process lock directory")
+	if cfg.AgentQueueLockDir != "" {
+		t.Fatalf("AgentQueueLockDir = %q, want empty default", cfg.AgentQueueLockDir)
 	}
 	if cfg.ContextManagementEnabled {
 		t.Fatal("ContextManagementEnabled = true, want false")
