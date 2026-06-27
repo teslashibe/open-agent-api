@@ -26,6 +26,7 @@ const (
 	DefaultAgentQueueKeyMode                  = "cursor"
 	DefaultAgentQueueLimit                    = 20
 	DefaultAgentQueueTimeout                  = 5 * time.Minute
+	DefaultAgentQueuePriorityEnabled          = false
 	DefaultContextMaxBytes                    = 256 * 1024
 	DefaultContextMaxMessages                 = 150
 	DefaultContextRecentMessages              = 40
@@ -53,6 +54,7 @@ type Config struct {
 	AgentQueueLimit                    int
 	AgentQueueTimeout                  time.Duration
 	AgentQueueLockDir                  string
+	AgentQueuePriorityEnabled          bool
 	ContextManagementEnabled           bool
 	ContextMaxBytes                    int
 	ContextMaxMessages                 int
@@ -178,6 +180,13 @@ func Load(args []string) (Config, error) {
 	if value := os.Getenv("CODEX_AGENT_QUEUE_LOCK_DIR"); value != "" {
 		cfg.AgentQueueLockDir = value
 	}
+	if value := os.Getenv("CODEX_AGENT_QUEUE_PRIORITY_ENABLED"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_AGENT_QUEUE_PRIORITY_ENABLED: %w", err)
+		}
+		cfg.AgentQueuePriorityEnabled = enabled
+	}
 	if value := os.Getenv("CODEX_CONTEXT_MANAGEMENT_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -252,6 +261,7 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.AgentQueueLimit, "agent-queue-limit", cfg.AgentQueueLimit, "maximum waiting tool-capable Agent requests")
 	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue")
 	fs.StringVar(&cfg.AgentQueueLockDir, "agent-queue-lock-dir", cfg.AgentQueueLockDir, "directory for cross-process Agent queue key locks")
+	fs.BoolVar(&cfg.AgentQueuePriorityEnabled, "agent-queue-priority-enabled", cfg.AgentQueuePriorityEnabled, "experimentally prioritize low-risk eligible Agent queue waiters")
 	fs.BoolVar(&cfg.ContextManagementEnabled, "context-management-enabled", cfg.ContextManagementEnabled, "enable context management for tool-capable minimal-mode requests")
 	fs.IntVar(&cfg.ContextMaxBytes, "context-max-bytes", cfg.ContextMaxBytes, "approximate message context byte threshold before compaction")
 	fs.IntVar(&cfg.ContextMaxMessages, "context-max-messages", cfg.ContextMaxMessages, "message count threshold before compaction")
@@ -308,6 +318,7 @@ func Defaults() Config {
 		AgentQueueLimit:                    DefaultAgentQueueLimit,
 		AgentQueueTimeout:                  DefaultAgentQueueTimeout,
 		AgentQueueLockDir:                  "",
+		AgentQueuePriorityEnabled:          DefaultAgentQueuePriorityEnabled,
 		ContextMaxBytes:                    DefaultContextMaxBytes,
 		ContextMaxMessages:                 DefaultContextMaxMessages,
 		ContextRecentMessages:              DefaultContextRecentMessages,

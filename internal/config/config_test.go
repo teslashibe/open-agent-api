@@ -27,6 +27,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_AGENT_QUEUE_LIMIT")
 	unsetenv(t, "CODEX_AGENT_QUEUE_TIMEOUT")
 	unsetenv(t, "CODEX_AGENT_QUEUE_LOCK_DIR")
+	unsetenv(t, "CODEX_AGENT_QUEUE_PRIORITY_ENABLED")
 	unsetenv(t, "CODEX_CONTEXT_MANAGEMENT_ENABLED")
 	unsetenv(t, "CODEX_CONTEXT_MAX_BYTES")
 	unsetenv(t, "CODEX_CONTEXT_MAX_MESSAGES")
@@ -94,6 +95,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentQueueLockDir != "" {
 		t.Fatalf("AgentQueueLockDir = %q, want empty default", cfg.AgentQueueLockDir)
 	}
+	if cfg.AgentQueuePriorityEnabled != DefaultAgentQueuePriorityEnabled {
+		t.Fatalf("AgentQueuePriorityEnabled = %t, want %t", cfg.AgentQueuePriorityEnabled, DefaultAgentQueuePriorityEnabled)
+	}
 	if cfg.ContextManagementEnabled {
 		t.Fatal("ContextManagementEnabled = true, want false")
 	}
@@ -143,6 +147,7 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_AGENT_QUEUE_LIMIT", "7")
 	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "9s")
 	t.Setenv("CODEX_AGENT_QUEUE_LOCK_DIR", "/tmp/codex-locks")
+	t.Setenv("CODEX_AGENT_QUEUE_PRIORITY_ENABLED", "true")
 	t.Setenv("CODEX_CONTEXT_MANAGEMENT_ENABLED", "true")
 	t.Setenv("CODEX_CONTEXT_MAX_BYTES", "12345")
 	t.Setenv("CODEX_CONTEXT_MAX_MESSAGES", "77")
@@ -185,8 +190,8 @@ func TestLoadEnvironment(t *testing.T) {
 	if cfg.AgentQueueEnabled {
 		t.Fatal("AgentQueueEnabled = true, want false")
 	}
-	if cfg.AgentMaxActive != 2 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "header:x-cursor-session-id" || cfg.AgentQueueLimit != 7 || cfg.AgentQueueTimeout != 9*time.Second || cfg.AgentQueueLockDir != "/tmp/codex-locks" {
-		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s lock_dir:%q", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout, cfg.AgentQueueLockDir)
+	if cfg.AgentMaxActive != 2 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "header:x-cursor-session-id" || cfg.AgentQueueLimit != 7 || cfg.AgentQueueTimeout != 9*time.Second || cfg.AgentQueueLockDir != "/tmp/codex-locks" || !cfg.AgentQueuePriorityEnabled {
+		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s lock_dir:%q priority:%t", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout, cfg.AgentQueueLockDir, cfg.AgentQueuePriorityEnabled)
 	}
 	if !cfg.ContextManagementEnabled ||
 		cfg.ContextMaxBytes != 12345 ||
@@ -242,6 +247,7 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--agent-queue-limit", "8",
 		"--agent-queue-timeout", "10s",
 		"--agent-queue-lock-dir", "/tmp/flag-locks",
+		"--agent-queue-priority-enabled",
 		"--context-management-enabled",
 		"--context-max-bytes", "23456",
 		"--context-max-messages", "88",
@@ -279,8 +285,8 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	if cfg.AgentQueueEnabled {
 		t.Fatal("AgentQueueEnabled = true, want false")
 	}
-	if cfg.AgentMaxActive != 3 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "body:session_id" || cfg.AgentQueueLimit != 8 || cfg.AgentQueueTimeout != 10*time.Second || cfg.AgentQueueLockDir != "/tmp/flag-locks" {
-		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s lock_dir:%q", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout, cfg.AgentQueueLockDir)
+	if cfg.AgentMaxActive != 3 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "body:session_id" || cfg.AgentQueueLimit != 8 || cfg.AgentQueueTimeout != 10*time.Second || cfg.AgentQueueLockDir != "/tmp/flag-locks" || !cfg.AgentQueuePriorityEnabled {
+		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s lock_dir:%q priority:%t", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout, cfg.AgentQueueLockDir, cfg.AgentQueuePriorityEnabled)
 	}
 	if !cfg.ContextManagementEnabled ||
 		cfg.ContextMaxBytes != 23456 ||
@@ -426,6 +432,15 @@ func TestLoadInvalidAgentQueueTimeout(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid agent queue timeout error")
+	}
+}
+
+func TestLoadInvalidAgentQueuePriorityEnabled(t *testing.T) {
+	t.Setenv("CODEX_AGENT_QUEUE_PRIORITY_ENABLED", "definitely")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid agent queue priority enabled error")
 	}
 }
 

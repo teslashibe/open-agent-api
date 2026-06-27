@@ -1060,11 +1060,11 @@ func TestServerPassesQueueKeyAffinityToCodexRequest(t *testing.T) {
 func TestAgentQueueSharedLockSerializesSameKeyAcrossQueues(t *testing.T) {
 	lockDir := t.TempDir()
 	logf := func(string, ...any) {}
-	q1 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, time.Now, logf)
-	q2 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, time.Now, logf)
+	q1 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
+	q2 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
 	key := newAgentQueueKey("body:session_id", "same-session")
 
-	releaseFirst, err := q1.acquire(context.Background(), "request-1", key)
+	releaseFirst, err := q1.acquire(context.Background(), "request-1", key, turnClassToolGenerating)
 	if err != nil {
 		t.Fatalf("first acquire error = %v", err)
 	}
@@ -1072,7 +1072,7 @@ func TestAgentQueueSharedLockSerializesSameKeyAcrossQueues(t *testing.T) {
 	acquiredSecond := make(chan func(), 1)
 	errs := make(chan error, 1)
 	go func() {
-		releaseSecond, err := q2.acquire(context.Background(), "request-2", key)
+		releaseSecond, err := q2.acquire(context.Background(), "request-2", key, turnClassToolGenerating)
 		if err != nil {
 			errs <- err
 			return
@@ -1103,11 +1103,11 @@ func TestAgentQueueSharedLockSerializesSameKeyAcrossQueues(t *testing.T) {
 func TestAgentQueueDisabledStillUsesSharedLockForSameKey(t *testing.T) {
 	lockDir := t.TempDir()
 	logf := func(string, ...any) {}
-	q1 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, time.Now, logf)
-	q2 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, time.Now, logf)
+	q1 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
+	q2 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
 	key := newAgentQueueKey("body:session_id", "same-session")
 
-	releaseFirst, err := q1.acquire(context.Background(), "request-1", key)
+	releaseFirst, err := q1.acquire(context.Background(), "request-1", key, turnClassToolGenerating)
 	if err != nil {
 		t.Fatalf("first acquire error = %v", err)
 	}
@@ -1115,7 +1115,7 @@ func TestAgentQueueDisabledStillUsesSharedLockForSameKey(t *testing.T) {
 	acquiredSecond := make(chan func(), 1)
 	errs := make(chan error, 1)
 	go func() {
-		releaseSecond, err := q2.acquire(context.Background(), "request-2", key)
+		releaseSecond, err := q2.acquire(context.Background(), "request-2", key, turnClassToolGenerating)
 		if err != nil {
 			errs <- err
 			return
@@ -1184,6 +1184,85 @@ func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("tool status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestAgentQueuePriorityOrdersDifferentKeysViaHandler(t *testing.T) {
+	cfg := agentQueueTestConfig()
+	cfg.AgentMaxActive = 1
+	cfg.AgentQueueKeyMode = "header:x-cursor-session-id"
+	cfg.AgentQueuePriorityEnabled = true
+
+	releases := map[string]chan struct{}{
+		"first": make(chan struct{}),
+		"low":   make(chan struct{}),
+		"high":  make(chan struct{}),
+	}
+	started := make(chan string, 3)
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			label := strings.TrimSpace(openai.MessageText(req.Messages[0].Content))
+			started <- label
+			select {
+			case <-releases[label]:
+			case <-ctx.Done():
+				return codex.Completion{}, ctx.Err()
+			}
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
+
+	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"first"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-a"})
+	if got := waitStartedLabel(t, started, time.Second); got != "first" {
+		t.Fatalf("first started = %q, want first", got)
+	}
+
+	lowDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"low"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-b"})
+	waitFor(t, time.Second, func() bool {
+		return strings.Count(logs.String(), "agent_queue_wait request_id=") == 1
+	}, "low-priority waiter to queue")
+	highDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"high"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_high","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_high","content":"result"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`, map[string]string{"X-Cursor-Session-Id": "session-c"})
+	waitFor(t, time.Second, func() bool {
+		return strings.Count(logs.String(), "agent_queue_wait request_id=") == 2
+	}, "high-priority waiter to queue")
+
+	close(releases["first"])
+	resp := waitResponse(t, firstDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := waitStartedLabel(t, started, time.Second); got != "high" {
+		t.Fatalf("next started = %q, want high-priority continuation", got)
+	}
+	select {
+	case got := <-started:
+		t.Fatalf("low-priority request started while high was active: %q", got)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	close(releases["high"])
+	resp = waitResponse(t, highDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("high status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := waitStartedLabel(t, started, time.Second); got != "low" {
+		t.Fatalf("last started = %q, want low", got)
+	}
+	close(releases["low"])
+	resp = waitResponse(t, lowDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("low status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	for _, want := range []string{"turn_class=tool_result_continuation", "priority=10", "turn_class=tool_generating", "priority=0"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
 	}
 }
 
@@ -1365,7 +1444,7 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 		"message_roles=user",
 		"tools_present=true",
 		"tools_count=1",
-		"chat_completion model=gpt-test stream=true tools_present=true",
+		"chat_completion model=gpt-test stream=true tools_present=true turn_class=tool_generating",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("logs = %q, want %q", body, want)
@@ -1718,6 +1797,17 @@ func waitStarted(t *testing.T, started <-chan int, timeout time.Duration) int {
 	case <-time.After(timeout):
 		t.Fatalf("timed out waiting for stream call")
 		return 0
+	}
+}
+
+func waitStartedLabel(t *testing.T, started <-chan string, timeout time.Duration) string {
+	t.Helper()
+	select {
+	case got := <-started:
+		return got
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for service call")
+		return ""
 	}
 }
 
