@@ -48,7 +48,7 @@ func TestPooledServiceDifferentQueueKeysCanMapToDifferentClients(t *testing.T) {
 }
 
 func TestPooledServiceUnavailableClientFailsGracefully(t *testing.T) {
-	unavailable := errors.New("client unavailable")
+	unavailable := ErrClientUnavailable
 	pool, _ := testPool(t, ClientPoolUnavailableFail, 2, map[string]error{"client-1": unavailable})
 	req := Request{AffinityKey: "body:session-a", AffinityKeyHash: "hash-a", AffinityKeyMode: "body:session_id"}
 	for pool.selectIndex(req) != 1 {
@@ -63,7 +63,7 @@ func TestPooledServiceUnavailableClientFailsGracefully(t *testing.T) {
 
 func TestPooledServiceUnavailableClientFallbackFirst(t *testing.T) {
 	var logs bytes.Buffer
-	unavailable := errors.New("client unavailable")
+	unavailable := ErrClientUnavailable
 	pool, calls := testPool(t, ClientPoolUnavailableFallbackFirst, 2, map[string]error{"client-1": unavailable})
 	pool.logOutput = &logs
 	req := Request{RequestID: "req-fallback", AffinityKey: "body:session-a", AffinityKeyHash: "hash-a", AffinityKeyMode: "body:session_id"}
@@ -93,6 +93,42 @@ func TestPooledServiceUnavailableClientFallbackFirst(t *testing.T) {
 	}
 }
 
+func TestPooledServiceFallbackFirstDoesNotRetryOrdinaryStartError(t *testing.T) {
+	ordinary := errors.New("ordinary upstream error")
+	pool, calls := testPool(t, ClientPoolUnavailableFallbackFirst, 2, map[string]error{"client-1": ordinary})
+	req := Request{AffinityKey: "body:session-a", AffinityKeyHash: "hash-a", AffinityKeyMode: "body:session_id"}
+	for pool.selectIndex(req) != 1 {
+		req.AffinityKey += "-next"
+	}
+
+	_, err := pool.Complete(context.Background(), req)
+	if !errors.Is(err, ordinary) {
+		t.Fatalf("Complete() error = %v, want ordinary error", err)
+	}
+	called := calledLabels(calls)
+	if len(called) != 1 || !called["client-1"] {
+		t.Fatalf("called labels = %v, want only selected client", called)
+	}
+}
+
+func TestPooledServiceFallbackFirstDoesNotRetryMidStreamError(t *testing.T) {
+	midstream := errors.New("midstream upstream error")
+	pool, calls := testPool(t, ClientPoolUnavailableFallbackFirst, 2, map[string]error{"client-1": midstream})
+	req := Request{AffinityKey: "body:session-a", AffinityKeyHash: "hash-a", AffinityKeyMode: "body:session_id"}
+	for pool.selectIndex(req) != 1 {
+		req.AffinityKey += "-next"
+	}
+
+	_, err := pool.Complete(context.Background(), req)
+	if !errors.Is(err, midstream) {
+		t.Fatalf("Complete() error = %v, want midstream error", err)
+	}
+	called := calledLabels(calls)
+	if len(called) != 1 || !called["client-1"] {
+		t.Fatalf("called labels = %v, want only selected client", called)
+	}
+}
+
 func testPool(t *testing.T, policy string, count int, fail map[string]error) (*PooledService, map[string]int) {
 	t.Helper()
 	var mu sync.Mutex
@@ -101,14 +137,24 @@ func testPool(t *testing.T, policy string, count int, fail map[string]error) (*P
 	for i := range count {
 		label := "client-" + string(rune('0'+i))
 		service := poolFakeService{
-			complete: func(ctx context.Context, req Request) (Completion, error) {
+			stream: func(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 				mu.Lock()
-				defer mu.Unlock()
 				calls[label]++
+				mu.Unlock()
 				if err := fail[label]; err != nil {
-					return Completion{}, err
+					if errors.Is(err, ErrClientUnavailable) || strings.Contains(err.Error(), "ordinary") {
+						return nil, err
+					}
+					events := make(chan StreamEvent, 1)
+					events <- StreamEvent{Err: err}
+					close(events)
+					return events, nil
 				}
-				return Completion{Text: label, Model: req.Model}, nil
+				events := make(chan StreamEvent, 2)
+				events <- StreamEvent{Delta: label, Model: req.Model}
+				events <- StreamEvent{Done: true}
+				close(events)
+				return events, nil
 			},
 		}
 		clients = append(clients, PooledClientConfig{Label: label, Service: service})
@@ -135,13 +181,24 @@ func calledLabels(calls map[string]int) map[string]bool {
 }
 
 type poolFakeService struct {
-	complete func(context.Context, Request) (Completion, error)
+	stream func(context.Context, Request) (<-chan StreamEvent, error)
 }
 
 func (f poolFakeService) Complete(ctx context.Context, req Request) (Completion, error) {
-	return f.complete(ctx, req)
+	events, err := f.Stream(ctx, req)
+	if err != nil {
+		return Completion{}, err
+	}
+	var completion Completion
+	for event := range events {
+		if event.Err != nil {
+			return Completion{}, event.Err
+		}
+		completion.Text += event.Delta
+	}
+	return completion, nil
 }
 
-func (f poolFakeService) Stream(context.Context, Request) (<-chan StreamEvent, error) {
-	return nil, errors.New("unexpected Stream call")
+func (f poolFakeService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
+	return f.stream(ctx, req)
 }

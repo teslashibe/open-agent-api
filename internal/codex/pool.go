@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -73,29 +74,54 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 }
 
 func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, error) {
-	index := p.selectIndex(req)
-	p.logSelection(req, index, false)
-	completion, err := p.clients[index].service.Complete(ctx, req)
-	if err == nil || !p.shouldFallback(index) {
-		return completion, err
+	events, err := p.Stream(ctx, req)
+	if err != nil {
+		return Completion{}, err
 	}
-	p.logSelection(req, 0, true)
-	return p.clients[0].service.Complete(ctx, req)
+
+	var completion Completion
+	for event := range events {
+		if event.Err != nil {
+			return Completion{}, event.Err
+		}
+		if event.Delta != "" {
+			completion.Text += event.Delta
+		}
+		if len(event.ToolCalls) > 0 {
+			completion.ToolCalls = append(completion.ToolCalls, event.ToolCalls...)
+		}
+		if event.ToolCallDelta != nil {
+			applyToolCallDelta(&completion.ToolCalls, *event.ToolCallDelta)
+		}
+		if event.ID != "" {
+			completion.ID = event.ID
+		}
+		if event.Model != "" {
+			completion.Model = event.Model
+		}
+		if event.Usage.TotalTokens != 0 || event.Usage.PromptTokens != 0 || event.Usage.CompletionTokens != 0 {
+			completion.Usage = event.Usage
+		}
+	}
+	completion.ToolCalls = compactToolCalls(completion.ToolCalls)
+	return completion, nil
 }
 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	index := p.selectIndex(req)
 	p.logSelection(req, index, false)
 	events, err := p.clients[index].service.Stream(ctx, req)
-	if err == nil || !p.shouldFallback(index) {
+	if err == nil || !p.shouldFallback(index, err) {
 		return events, err
 	}
 	p.logSelection(req, 0, true)
 	return p.clients[0].service.Stream(ctx, req)
 }
 
-func (p *PooledService) shouldFallback(index int) bool {
-	return p.unavailablePolicy == ClientPoolUnavailableFallbackFirst && index != 0
+func (p *PooledService) shouldFallback(index int, err error) bool {
+	return p.unavailablePolicy == ClientPoolUnavailableFallbackFirst &&
+		index != 0 &&
+		errors.Is(err, ErrClientUnavailable)
 }
 
 func (p *PooledService) selectIndex(req Request) int {

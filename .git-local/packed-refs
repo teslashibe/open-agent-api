@@ -1,0 +1,30 @@
+# pack-refs with: peeled fully-peeled sorted 
+8a3ac2e892cb1e0b5943dcba37e78f0714392ae3 refs/heads/add-long-context-diagnostics
+f16f6cce0f896d2ad6125557f3a109b97b5369c0 refs/heads/agent-codex-29-1782541528
+af175f24848a83754fe6e8703bb2f1ae2fdbf89c refs/heads/agent-codex-35-1782549588
+81cf34d4e2082d3473ac30c3ffc294705de13efe refs/heads/agent-codex-43-1782577140
+cd22679f43a75f531f68f76c5e02e08feb2ac66f refs/heads/agent-codex-43-1782577772
+1b5d5fb49729f0b5c13223b282789653d95ed992 refs/heads/agent-codex-44-1782582955
+9126c1034ec7c6e31936bd9a4e8891be7a838aee refs/heads/agent-codex-45-1782582955
+2af3a0f16c54f061069970193490a073cac9e3eb refs/heads/agent-codex-46-1782582955
+eebea2032e768d98bf12314e4d6fa157bb89def4 refs/heads/codex-upstream-harness
+5ac3f7c2b620653bdfd358d95b5f5f88b3dc73c0 refs/heads/cursor-wire-capture
+98384fccf508a284d072171cdc801493823fa1d5 refs/heads/feature/cursor-throughput-stack
+3e116483736dfc39b80faa3c79b522ed7fbf141a refs/heads/harden-context-management-defaults
+23d962e609909cf85b9b63163fe24c725492e9dc refs/heads/issue-39-harness-blind-spots
+75a41452f7c0d963b466e817cde29a8cdf91a831 refs/heads/main
+a53f6b41a2af262fcfd87b475b9c8a936bee2975 refs/heads/per-chat-concurrency-and-tuning
+9b86adac5a72ff26b68d18cc70df462bf0ccd1bc refs/tags/v0.0.1
+^31ae897f3c49433e880240449529c6e610686cd4
+34116ba74bf549b62f9e43d2f1a73e83574b8ed4 refs/tags/v0.0.2
+^76b991ee77ac069a4ee737d4712f32253790d612
+9e87c98b7e170faea74d783894f163ce285f1925 refs/tags/v0.0.3
+^e9fa5d4f4773a217bac03a597a5eb263b3c5ac41
+3841b4aed9a6665b6e3b138ae19c61d621c31bf5 refs/tags/v0.0.4
+^ab1ad0c32ec6bf5ea236196ba5b128cafb5ff982
+b8a90a8225fd8a6a02c0ddc9d3a1c36211ffc5d2 refs/tags/v0.0.5
+^6c91020f340cfb52819bed7fd83490e9dfbcbdb7
+24ee8ba099430bc5bd692f7a035f5606791cd400 refs/tags/v0.0.6
+^2e59deab78f5537ba84b75d7f4ccba851dab933f
+43d9af5a5d80ad299483f5465b5947511f9b0222 refs/tags/v0.0.7
+^eebea2032e768d98bf12314e4d6fa157bb89def4

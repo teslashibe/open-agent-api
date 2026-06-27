@@ -268,6 +268,7 @@ Flags override environment values.
 | Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `cursor` |
 | Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
+| Agent queue shared lock directory | `CODEX_AGENT_QUEUE_LOCK_DIR` | `--agent-queue-lock-dir` | system temp `codex-chat-api-agent-locks` |
 | Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `false` |
 | Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `262144` |
 | Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `150` |
@@ -425,6 +426,7 @@ CODEX_AGENT_MAX_ACTIVE_PER_KEY=1
 CODEX_AGENT_QUEUE_KEY_MODE=cursor
 CODEX_AGENT_QUEUE_LIMIT=20
 CODEX_AGENT_QUEUE_TIMEOUT=5m
+CODEX_AGENT_QUEUE_LOCK_DIR=/tmp/codex-chat-api-agent-locks
 ```
 
 Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable queueing, or raise
@@ -467,10 +469,11 @@ codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1
 
 Do not put credentials, account IDs, auth paths, hostnames with secrets, or user
 names in client labels. Labels are intended only as safe operational aliases.
-In a multi-replica deployment, deterministic client selection is not enough by
-itself to serialize a same-chat stream across processes. Use sticky routing by
-the same queue key or a shared distributed lock/queue with
-`CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`.
+The Agent queue also creates one shared lock file per queue-key hash in
+`CODEX_AGENT_QUEUE_LOCK_DIR`. Multiple API replicas must point this setting at
+the same writable shared volume so the same chat cannot stream concurrently in
+different processes. Keep `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; sticky routing by
+the same queue key is still recommended to reduce lock contention.
 
 Long Cursor Agent conversations can accumulate large historical tool outputs.
 Context management is disabled by default. When enabled, it applies only to
@@ -600,9 +603,11 @@ When multiple Agent chats overlap, queue diagnostics show the lifecycle:
 ```text
 agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... position=2
 agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... wait_ms=1234 active_global=2 active_key=1
+agent_queue_lock_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... lock_wait_ms=1234
 codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default fallback=false
 stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
+agent_queue_lock_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=...
 agent_queue_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=... run_ms=8123 active_global=1 active_key=0
 ```
 

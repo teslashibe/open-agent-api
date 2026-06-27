@@ -75,6 +75,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			cfg.AgentMaxActivePerKey,
 			cfg.AgentQueueLimit,
 			cfg.AgentQueueTimeout,
+			cfg.AgentQueueLockDir,
 			opts.now,
 			func(format string, args ...any) {
 				logLine(opts, format, args...)

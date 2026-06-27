@@ -1057,6 +1057,49 @@ func TestServerPassesQueueKeyAffinityToCodexRequest(t *testing.T) {
 	}
 }
 
+func TestAgentQueueSharedLockSerializesSameKeyAcrossQueues(t *testing.T) {
+	lockDir := t.TempDir()
+	logf := func(string, ...any) {}
+	q1 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, time.Now, logf)
+	q2 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, time.Now, logf)
+	key := newAgentQueueKey("body:session_id", "same-session")
+
+	releaseFirst, err := q1.acquire(context.Background(), "request-1", key)
+	if err != nil {
+		t.Fatalf("first acquire error = %v", err)
+	}
+
+	acquiredSecond := make(chan func(), 1)
+	errs := make(chan error, 1)
+	go func() {
+		releaseSecond, err := q2.acquire(context.Background(), "request-2", key)
+		if err != nil {
+			errs <- err
+			return
+		}
+		acquiredSecond <- releaseSecond
+	}()
+
+	select {
+	case releaseSecond := <-acquiredSecond:
+		releaseSecond()
+		t.Fatal("second queue acquired same key before first shared lock released")
+	case err := <-errs:
+		t.Fatalf("second acquire error = %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseFirst()
+	select {
+	case releaseSecond := <-acquiredSecond:
+		releaseSecond()
+	case err := <-errs:
+		t.Fatalf("second acquire error after release = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("second queue did not acquire same key after first shared lock released")
+	}
+}
+
 func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
 	toolEvents := make(chan codex.StreamEvent)
 	toolStarted := make(chan struct{}, 1)

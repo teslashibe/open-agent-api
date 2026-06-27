@@ -52,6 +52,7 @@ type Config struct {
 	AgentQueueKeyMode                  string
 	AgentQueueLimit                    int
 	AgentQueueTimeout                  time.Duration
+	AgentQueueLockDir                  string
 	ContextManagementEnabled           bool
 	ContextMaxBytes                    int
 	ContextMaxMessages                 int
@@ -174,6 +175,9 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.AgentQueueTimeout = timeout
 	}
+	if value := os.Getenv("CODEX_AGENT_QUEUE_LOCK_DIR"); value != "" {
+		cfg.AgentQueueLockDir = value
+	}
 	if value := os.Getenv("CODEX_CONTEXT_MANAGEMENT_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -247,6 +251,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.AgentQueueKeyMode, "agent-queue-key-mode", cfg.AgentQueueKeyMode, "Agent queue key mode: cursor, global, auth_hash, request_fingerprint, header:<name>, or body:<field>")
 	fs.IntVar(&cfg.AgentQueueLimit, "agent-queue-limit", cfg.AgentQueueLimit, "maximum waiting tool-capable Agent requests")
 	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue")
+	fs.StringVar(&cfg.AgentQueueLockDir, "agent-queue-lock-dir", cfg.AgentQueueLockDir, "directory for cross-process Agent queue key locks")
 	fs.BoolVar(&cfg.ContextManagementEnabled, "context-management-enabled", cfg.ContextManagementEnabled, "enable context management for tool-capable minimal-mode requests")
 	fs.IntVar(&cfg.ContextMaxBytes, "context-max-bytes", cfg.ContextMaxBytes, "approximate message context byte threshold before compaction")
 	fs.IntVar(&cfg.ContextMaxMessages, "context-max-messages", cfg.ContextMaxMessages, "message count threshold before compaction")
@@ -302,6 +307,7 @@ func Defaults() Config {
 		AgentQueueKeyMode:                  DefaultAgentQueueKeyMode,
 		AgentQueueLimit:                    DefaultAgentQueueLimit,
 		AgentQueueTimeout:                  DefaultAgentQueueTimeout,
+		AgentQueueLockDir:                  filepath.Join(os.TempDir(), "codex-chat-api-agent-locks"),
 		ContextMaxBytes:                    DefaultContextMaxBytes,
 		ContextMaxMessages:                 DefaultContextMaxMessages,
 		ContextRecentMessages:              DefaultContextRecentMessages,

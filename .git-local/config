@@ -1,0 +1,11 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	ignorecase = true
+	precomposeunicode = true
+	worktree = /private/tmp/agent-pipeline/codex-chat-throughput/worktrees/codex-chat-api-agent-codex-44-1782582955
+[remote "origin"]
+	url = https://github.com/teslashibe/codex-chat-api.git
+[commit]
+	gpgsign = false
