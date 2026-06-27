@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/teslashibe/codex-chat-api/internal/config"
@@ -42,7 +41,7 @@ func manageContext(messages []openai.ChatMessage, cfg config.Config) contextMana
 		if managed[i].Role != "tool" {
 			continue
 		}
-		text := rawMessageText(managed[i].Content)
+		text := openai.MessageText(managed[i].Content)
 		if cfg.ContextToolOutputMaxBytes > 0 && len(text) > cfg.ContextToolOutputMaxBytes {
 			managed[i].Content = openai.TextContent(truncatedToolOutput(text, cfg.ContextToolOutputMaxBytes))
 			result.TruncatedTools++
@@ -58,7 +57,7 @@ func manageContext(messages []openai.ChatMessage, cfg config.Config) contextMana
 			if managed[i].Role != "tool" || managed[i].ToolCallID == "" {
 				continue
 			}
-			text := rawMessageText(managed[i].Content)
+			text := openai.MessageText(managed[i].Content)
 			compacted := compactedToolOutput(text, cfg.ContextCompactedToolOutputMaxBytes)
 			if compacted == text {
 				continue
@@ -88,7 +87,7 @@ func measureContext(messages []openai.ChatMessage, toolOutputMaxBytes int) conte
 			continue
 		}
 		shape.ToolOutputs++
-		if toolOutputMaxBytes > 0 && len(rawMessageText(message.Content)) > toolOutputMaxBytes {
+		if toolOutputMaxBytes > 0 && len(openai.MessageText(message.Content)) > toolOutputMaxBytes {
 			shape.OversizedToolOutputs++
 		}
 	}
@@ -112,27 +111,6 @@ func cloneMessages(messages []openai.ChatMessage) []openai.ChatMessage {
 		}
 	}
 	return out
-}
-
-func rawMessageText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		return text
-	}
-	var parts []map[string]any
-	if err := json.Unmarshal(raw, &parts); err == nil {
-		var b strings.Builder
-		for _, part := range parts {
-			if value, ok := part["text"].(string); ok {
-				b.WriteString(value)
-			}
-		}
-		return b.String()
-	}
-	return string(raw)
 }
 
 func truncatedToolOutput(text string, maxBytes int) string {
