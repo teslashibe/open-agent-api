@@ -139,14 +139,6 @@ func cursorConversationFingerprint(body map[string]json.RawMessage) string {
 	}
 
 	for _, message := range messages {
-		if strings.TrimSpace(message.Role) != "user" {
-			continue
-		}
-		if content := cursorMessageContentFingerprint(message.Content); content != "" {
-			return "first_user=" + content
-		}
-	}
-	for _, message := range messages {
 		for _, toolCall := range message.ToolCalls {
 			if id := strings.TrimSpace(toolCall.ID); id != "" {
 				return "earliest_tool=" + id
@@ -154,6 +146,14 @@ func cursorConversationFingerprint(body map[string]json.RawMessage) string {
 		}
 		if id := strings.TrimSpace(message.ToolCallID); id != "" {
 			return "earliest_tool_result=" + id
+		}
+	}
+	for _, message := range messages {
+		if strings.TrimSpace(message.Role) != "user" {
+			continue
+		}
+		if content := cursorMessageContentFingerprint(message.Content); content != "" {
+			return "first_user=" + content
 		}
 	}
 	return ""

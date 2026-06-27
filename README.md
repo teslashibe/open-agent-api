@@ -457,7 +457,7 @@ Queue key modes:
 
 | Mode | Behavior |
 | --- | --- |
-| `cursor` | Prefer stable Cursor conversation identifiers from metadata/body, then stable Cursor/session headers, then a deterministic non-content conversation fingerprint from message/tool IDs, then `x-forwarded-for` as a safe fallback. |
+| `cursor` | Prefer stable Cursor conversation identifiers from metadata/body, then stable Cursor/session headers, then a deterministic conversation fingerprint anchored on the earliest tool-call ID (or hashed first user message before tools appear), then `x-forwarded-for` or `remote_ip` as safe fallbacks. |
 | `global` | Fallback when a header/body key is missing. All unmatched Agent traffic shares one key. |
 | `auth_hash` | All requests using the same API key serialize. The raw key is never logged. |
 | `header:<name>` | Queue by a selected request header, for example `header:x-cursor-session-id`, if real traffic shows it is stable. |
@@ -466,8 +466,8 @@ Queue key modes:
 
 Configured header/body modes fall back to the global key when the selected value
 is missing. The default `cursor` mode logs the source in `key_mode`, such as
-`cursor:metadata`, `cursor:conversation_fingerprint`, or
-`cursor:x-forwarded-for`, and logs only `key_hash`, never raw identifiers,
+`cursor:metadata`, `cursor:conversation_fingerprint`, `cursor:x-forwarded-for`,
+`cursor:remote_ip`, and logs only `key_hash`, never raw identifiers,
 prompt text, tool arguments, tool outputs, or request bodies.
 
 ### Tool-call protocol notes
