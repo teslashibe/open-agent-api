@@ -69,8 +69,8 @@ returns an error chunk instead of a `tool_calls` finish.
 
 ## Debug logging
 
-When `CODEX_LOG_BODY_SHAPE=true` or `--log-body-shape` is enabled, raw Codex
-tool-event diagnostics are logged as redacted structural summaries:
+When `CODEX_LOG_CODEX_TOOL_EVENTS=true` or `--log-codex-tool-events` is enabled,
+raw Codex tool-event diagnostics are logged as redacted structural summaries:
 
 ```text
 codex_tool_event valid_json=true type=response.function_call_arguments.delta fields=delta,item_id,type has_item=false has_tool_call_delta=false tool_calls_count=0
@@ -78,13 +78,15 @@ codex_tool_event valid_json=true type=response.function_call_arguments.delta fie
 
 The log line includes event names, top-level field names, and counts. It does not
 print tool arguments, prompt text, authorization values, or raw payload content.
+This deeper debug flag is separate from `CODEX_LOG_BODY_SHAPE` so normal capture
+logging does not emit one `codex_tool_event` line per argument fragment.
 
 ## Manual validation
 
 Start the API with a valid Codex login:
 
 ```bash
-GOCACHE=$PWD/.gocache CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+GOCACHE=$PWD/.gocache CODEX_LOG_CODEX_TOOL_EVENTS=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
 ```
 
 Non-streaming check:

@@ -75,6 +75,8 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			cfg.AgentMaxActivePerKey,
 			cfg.AgentQueueLimit,
 			cfg.AgentQueueTimeout,
+			cfg.AgentQueueLockDir,
+			cfg.AgentQueuePriorityEnabled,
 			opts.now,
 			func(format string, args ...any) {
 				logLine(opts, format, args...)
@@ -123,9 +125,10 @@ func models(c *fiber.Ctx) error {
 
 func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		requestStart := opts.now()
 		requestID := opts.newID()
 		if opts.logBodyShape {
-			logLine(opts, "body_shape path=%s %s\n", c.Path(), redactedBodyShape(c.Body()))
+			logLine(opts, "body_shape path=%s %s %s\n", c.Path(), redactedBodyShape(c.Body()), summarizeCursorWire(c.Body()).logFields())
 		}
 		if opts.logRequestIdentity {
 			logLine(opts, "%s\n", redactedRequestIdentity(c, requestID))
@@ -145,16 +148,21 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 		modelAlias := openai.ResolveModelAlias(model)
 		toolsPresent := rawJSONPresent(req.Tools)
-		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, toolsPresent)
+		turnClass := classifyTurn(req, toolsPresent)
+		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t turn_class=%s\n", model, req.Stream, toolsPresent, turnClass)
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
+		queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, c, c.Body())
 		// Cursor and other OpenAI clients send their own tools. Faithful Codex mode
 		// injects the captured CLI profile/tools and often makes those requests fail upstream.
 		faithful := defaultBool(req.Faithful, !toolsPresent)
 		prewarm := defaultBool(req.Prewarm, faithful)
 		messages := req.Messages
+		contextDuration := time.Duration(0)
 		if toolsPresent && !faithful {
+			contextStart := opts.now()
 			managed := manageContext(req.Messages, opts.contextConfig)
+			contextDuration = opts.now().Sub(contextStart)
 			if managed.Changed {
 				logLine(
 					opts,
@@ -185,28 +193,37 @@ func chatCompletions(opts options) fiber.Handler {
 			Verbosity:         defaultString(req.Verbosity, modelAlias.Verbosity),
 			Faithful:          faithful,
 			Prewarm:           prewarm,
+			RequestID:         requestID,
+			AffinityKey:       queueKey.Value,
+			AffinityKeyHash:   queueKey.Hash,
+			AffinityKeyMode:   queueKey.Mode,
 		})
 
 		releaseQueue := func() {}
+		queueWait := time.Duration(0)
 		if toolsPresent {
-			queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, c, c.Body())
-			release, err := opts.agentQueue.acquire(ctx, requestID, queueKey)
+			release, wait, err := opts.agentQueue.acquire(ctx, requestID, queueKey, turnClass)
+			queueWait = wait
 			if err != nil {
 				cancel()
+				logRequestTiming(opts, requestID, contextDuration, queueWait, -1, -1, opts.now().Sub(requestStart))
 				return mapAgentQueueError(c, err)
 			}
 			releaseQueue = release
 		}
 
 		if req.Stream {
-			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, requestID, releaseQueue)
+			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, requestID, releaseQueue, requestStart, contextDuration, queueWait)
 		}
 		defer cancel()
 		defer releaseQueue()
 
+		upstreamStart := opts.now()
 		completion, err := completeWithDegenerateRetry(ctx, opts, opts.codexService, serviceReq, toolsPresent, requestID)
+		upstreamDuration := opts.now().Sub(upstreamStart)
 		if err != nil {
 			logLine(opts, "complete_error model=%s err=%s\n", model, detailedError(err))
+			logRequestTiming(opts, requestID, contextDuration, queueWait, upstreamDuration, -1, opts.now().Sub(requestStart))
 			return mapServiceError(c, err)
 		}
 
@@ -221,6 +238,7 @@ func chatCompletions(opts options) fiber.Handler {
 			finishReason = "tool_calls"
 		}
 
+		logRequestTiming(opts, requestID, contextDuration, queueWait, upstreamDuration, -1, opts.now().Sub(requestStart))
 		return c.JSON(openai.ChatCompletionResponse{
 			ID:      completionID(completion.ID, func() string { return requestID }),
 			Object:  "chat.completion",
@@ -238,11 +256,13 @@ func chatCompletions(opts options) fiber.Handler {
 	}
 }
 
-func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, requestID string, releaseQueue func()) error {
+func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
+	upstreamStart := opts.now()
 	events, err := opts.codexService.Stream(ctx, req)
 	if err != nil {
 		cancel()
 		releaseQueue()
+		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
 		return mapServiceError(c, err)
 	}
 
@@ -273,27 +293,46 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				"stream_end id=%s model=%s outcome=client_disconnect deltas=0 tool_deltas=0 upstream_events=0 finish=none ctx_err=%s duration_ms=0\n",
 				streamID, model, ctxErrString(ctx),
 			)
+			logRequestTiming(opts, streamID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
 			return
 		}
 
-		outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount, assistantText, start := deliverToolStream(
-			ctx, opts, w, cancel, req, opts.codexService, events, id, created, model, streamID,
+		outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount, assistantText, start, firstDeltaLatency := deliverToolStream(
+			ctx, opts, w, cancel, req, opts.codexService, events, id, created, model, streamID, upstreamStart,
 		)
 
 		finish := streamFinish(outcome, toolCallCount > 0)
 		if opts.logBodyShape {
 			logStreamOutput(opts, streamID, textBytes, toolCallCount, toolArgChars, detectLoopPhrase(assistantText))
 		}
-		if degenerateAgentTurn(rawJSONPresent(req.Tools), finish, textBytes, toolCallCount) {
-			logDegenerateTurn(opts, streamID, textBytes, toolCallCount, detectLoopPhrase(assistantText), len(req.Messages))
-		}
 		logLine(opts,
 			"stream_end id=%s model=%s outcome=%s deltas=%d tool_deltas=%d upstream_events=%d finish=%s ctx_err=%s duration_ms=%d\n",
 			streamID, model, outcome, deltas, toolDeltas, upstreamEvents, finish,
 			ctxErrString(ctx), opts.now().Sub(start).Milliseconds(),
 		)
+		logRequestTiming(opts, streamID, contextDuration, queueWait, opts.now().Sub(upstreamStart), firstDeltaLatency, opts.now().Sub(requestStart))
 	})
 	return nil
+}
+
+func logRequestTiming(opts options, requestID string, contextDuration, queueWait, upstreamDuration, firstDeltaLatency, totalDuration time.Duration) {
+	logLine(
+		opts,
+		"request_timing request_id=%s context_ms=%d queue_wait_ms=%d upstream_stream_ms=%d first_delta_ms=%d total_ms=%d\n",
+		requestID,
+		durationMillis(contextDuration),
+		durationMillis(queueWait),
+		durationMillis(upstreamDuration),
+		durationMillis(firstDeltaLatency),
+		durationMillis(totalDuration),
+	)
+}
+
+func durationMillis(duration time.Duration) int64 {
+	if duration < 0 {
+		return -1
+	}
+	return duration.Milliseconds()
 }
 
 func streamFinish(outcome string, toolCallEmitted bool) string {

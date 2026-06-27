@@ -20,12 +20,15 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_TIMEOUT")
 	unsetenv(t, "CODEX_LOG_BODY_SHAPE")
 	unsetenv(t, "CODEX_LOG_REQUEST_IDENTITY")
+	unsetenv(t, "CODEX_LOG_CODEX_TOOL_EVENTS")
 	unsetenv(t, "CODEX_AGENT_QUEUE_ENABLED")
 	unsetenv(t, "CODEX_AGENT_MAX_ACTIVE")
 	unsetenv(t, "CODEX_AGENT_MAX_ACTIVE_PER_KEY")
 	unsetenv(t, "CODEX_AGENT_QUEUE_KEY_MODE")
 	unsetenv(t, "CODEX_AGENT_QUEUE_LIMIT")
 	unsetenv(t, "CODEX_AGENT_QUEUE_TIMEOUT")
+	unsetenv(t, "CODEX_AGENT_QUEUE_LOCK_DIR")
+	unsetenv(t, "CODEX_AGENT_QUEUE_PRIORITY_ENABLED")
 	unsetenv(t, "CODEX_CONTEXT_MANAGEMENT_ENABLED")
 	unsetenv(t, "CODEX_CONTEXT_MAX_BYTES")
 	unsetenv(t, "CODEX_CONTEXT_MAX_MESSAGES")
@@ -33,6 +36,8 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES")
 	unsetenv(t, "CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES")
 	unsetenv(t, "CODEX_DEGENERATE_TURN_RETRY")
+	unsetenv(t, "CODEX_CLIENTS")
+	unsetenv(t, "CODEX_CLIENT_POOL_UNAVAILABLE")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -70,6 +75,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogRequestIdentity {
 		t.Fatal("LogRequestIdentity = true, want false")
 	}
+	if cfg.LogCodexToolEvents {
+		t.Fatal("LogCodexToolEvents = true, want false")
+	}
 	if cfg.AgentQueueEnabled != DefaultAgentQueueEnabled {
 		t.Fatalf("AgentQueueEnabled = %t, want %t", cfg.AgentQueueEnabled, DefaultAgentQueueEnabled)
 	}
@@ -88,8 +96,14 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentQueueTimeout != DefaultAgentQueueTimeout {
 		t.Fatalf("AgentQueueTimeout = %s, want %s", cfg.AgentQueueTimeout, DefaultAgentQueueTimeout)
 	}
-	if cfg.ContextManagementEnabled {
-		t.Fatal("ContextManagementEnabled = true, want false")
+	if cfg.AgentQueueLockDir != "" {
+		t.Fatalf("AgentQueueLockDir = %q, want empty default", cfg.AgentQueueLockDir)
+	}
+	if cfg.AgentQueuePriorityEnabled != DefaultAgentQueuePriorityEnabled {
+		t.Fatalf("AgentQueuePriorityEnabled = %t, want %t", cfg.AgentQueuePriorityEnabled, DefaultAgentQueuePriorityEnabled)
+	}
+	if cfg.ContextManagementEnabled != DefaultContextManagementEnabled {
+		t.Fatalf("ContextManagementEnabled = %t, want %t", cfg.ContextManagementEnabled, DefaultContextManagementEnabled)
 	}
 	if cfg.ContextMaxBytes != DefaultContextMaxBytes ||
 		cfg.ContextMaxMessages != DefaultContextMaxMessages ||
@@ -108,6 +122,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DegenerateTurnRetryEnabled != DefaultDegenerateTurnRetryEnabled {
 		t.Fatalf("DegenerateTurnRetryEnabled = %t, want %t", cfg.DegenerateTurnRetryEnabled, DefaultDegenerateTurnRetryEnabled)
 	}
+	if cfg.CodexClientPoolUnavailable != DefaultCodexClientPoolUnavailable {
+		t.Fatalf("CodexClientPoolUnavailable = %q, want %q", cfg.CodexClientPoolUnavailable, DefaultCodexClientPoolUnavailable)
+	}
+	if len(cfg.CodexClients) != 1 {
+		t.Fatalf("CodexClients length = %d, want 1", len(cfg.CodexClients))
+	}
+	if cfg.CodexClients[0].Label != "default" || cfg.CodexClients[0].AuthPath != cfg.AuthPath || cfg.CodexClients[0].CodexHome != cfg.CodexHome {
+		t.Fatalf("default codex client = %#v", cfg.CodexClients[0])
+	}
 }
 
 func TestLoadEnvironment(t *testing.T) {
@@ -121,18 +144,26 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_TIMEOUT", "3s")
 	t.Setenv("CODEX_LOG_BODY_SHAPE", "true")
 	t.Setenv("CODEX_LOG_REQUEST_IDENTITY", "true")
+	t.Setenv("CODEX_LOG_CODEX_TOOL_EVENTS", "true")
 	t.Setenv("CODEX_AGENT_QUEUE_ENABLED", "false")
 	t.Setenv("CODEX_AGENT_MAX_ACTIVE", "2")
 	t.Setenv("CODEX_AGENT_MAX_ACTIVE_PER_KEY", "2")
 	t.Setenv("CODEX_AGENT_QUEUE_KEY_MODE", "header:x-cursor-session-id")
 	t.Setenv("CODEX_AGENT_QUEUE_LIMIT", "7")
 	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "9s")
+	t.Setenv("CODEX_AGENT_QUEUE_LOCK_DIR", "/tmp/codex-locks")
+	t.Setenv("CODEX_AGENT_QUEUE_PRIORITY_ENABLED", "true")
 	t.Setenv("CODEX_CONTEXT_MANAGEMENT_ENABLED", "true")
 	t.Setenv("CODEX_CONTEXT_MAX_BYTES", "12345")
 	t.Setenv("CODEX_CONTEXT_MAX_MESSAGES", "77")
 	t.Setenv("CODEX_CONTEXT_RECENT_MESSAGES", "9")
 	t.Setenv("CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES", "456")
 	t.Setenv("CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES", "78")
+	t.Setenv("CODEX_CLIENT_POOL_UNAVAILABLE", "fallback_first")
+	t.Setenv("CODEX_CLIENTS", `[
+		{"label":"primary","codex_home":"/tmp/codex-a","profile_path":"/tmp/profile-a.json","scaffold_path":"/tmp/scaffold-a.json"},
+		{"label":"secondary","auth_path":"/tmp/auth-b.json","profile_path":"/tmp/profile-b.json","scaffold_path":"/tmp/scaffold-b.json"}
+	]`)
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -161,11 +192,14 @@ func TestLoadEnvironment(t *testing.T) {
 	if !cfg.LogRequestIdentity {
 		t.Fatal("LogRequestIdentity = false, want true")
 	}
+	if !cfg.LogCodexToolEvents {
+		t.Fatal("LogCodexToolEvents = false, want true")
+	}
 	if cfg.AgentQueueEnabled {
 		t.Fatal("AgentQueueEnabled = true, want false")
 	}
-	if cfg.AgentMaxActive != 2 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "header:x-cursor-session-id" || cfg.AgentQueueLimit != 7 || cfg.AgentQueueTimeout != 9*time.Second {
-		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
+	if cfg.AgentMaxActive != 2 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "header:x-cursor-session-id" || cfg.AgentQueueLimit != 7 || cfg.AgentQueueTimeout != 9*time.Second || cfg.AgentQueueLockDir != "/tmp/codex-locks" || !cfg.AgentQueuePriorityEnabled {
+		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s lock_dir:%q priority:%t", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout, cfg.AgentQueueLockDir, cfg.AgentQueuePriorityEnabled)
 	}
 	if !cfg.ContextManagementEnabled ||
 		cfg.ContextMaxBytes != 12345 ||
@@ -181,6 +215,18 @@ func TestLoadEnvironment(t *testing.T) {
 			cfg.ContextToolOutputMaxBytes,
 			cfg.ContextCompactedToolOutputMaxBytes,
 		)
+	}
+	if cfg.CodexClientPoolUnavailable != "fallback_first" {
+		t.Fatalf("CodexClientPoolUnavailable = %q", cfg.CodexClientPoolUnavailable)
+	}
+	if len(cfg.CodexClients) != 2 {
+		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
+	}
+	if cfg.CodexClients[0].Label != "primary" || cfg.CodexClients[0].AuthPath != filepath.Join("/tmp/codex-a", "auth.json") {
+		t.Fatalf("first codex client = %#v", cfg.CodexClients[0])
+	}
+	if cfg.CodexClients[1].Label != "secondary" || cfg.CodexClients[1].CodexHome != "/tmp/codex-home" || cfg.CodexClients[1].AuthPath != "/tmp/auth-b.json" {
+		t.Fatalf("second codex client = %#v", cfg.CodexClients[1])
 	}
 }
 
@@ -202,18 +248,23 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--codex-timeout", "4s",
 		"--log-body-shape",
 		"--log-request-identity",
+		"--log-codex-tool-events",
 		"--agent-queue-enabled=false",
 		"--agent-max-active", "3",
 		"--agent-max-active-per-key", "2",
 		"--agent-queue-key-mode", "body:session_id",
 		"--agent-queue-limit", "8",
 		"--agent-queue-timeout", "10s",
+		"--agent-queue-lock-dir", "/tmp/flag-locks",
+		"--agent-queue-priority-enabled",
 		"--context-management-enabled",
 		"--context-max-bytes", "23456",
 		"--context-max-messages", "88",
 		"--context-recent-messages", "10",
 		"--context-tool-output-max-bytes", "567",
 		"--context-compacted-tool-output-max-bytes", "89",
+		"--codex-client-pool-unavailable", "fallback_first",
+		"--codex-clients", `[{"label":"flag-a","codex_home":"/tmp/flag-a"},{"label":"flag-b","auth_path":"/tmp/flag-b-auth.json"}]`,
 	})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -240,11 +291,14 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	if !cfg.LogRequestIdentity {
 		t.Fatal("LogRequestIdentity = false, want true")
 	}
+	if !cfg.LogCodexToolEvents {
+		t.Fatal("LogCodexToolEvents = false, want true")
+	}
 	if cfg.AgentQueueEnabled {
 		t.Fatal("AgentQueueEnabled = true, want false")
 	}
-	if cfg.AgentMaxActive != 3 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "body:session_id" || cfg.AgentQueueLimit != 8 || cfg.AgentQueueTimeout != 10*time.Second {
-		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
+	if cfg.AgentMaxActive != 3 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "body:session_id" || cfg.AgentQueueLimit != 8 || cfg.AgentQueueTimeout != 10*time.Second || cfg.AgentQueueLockDir != "/tmp/flag-locks" || !cfg.AgentQueuePriorityEnabled {
+		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s lock_dir:%q priority:%t", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout, cfg.AgentQueueLockDir, cfg.AgentQueuePriorityEnabled)
 	}
 	if !cfg.ContextManagementEnabled ||
 		cfg.ContextMaxBytes != 23456 ||
@@ -260,6 +314,18 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 			cfg.ContextToolOutputMaxBytes,
 			cfg.ContextCompactedToolOutputMaxBytes,
 		)
+	}
+	if cfg.CodexClientPoolUnavailable != "fallback_first" {
+		t.Fatalf("CodexClientPoolUnavailable = %q", cfg.CodexClientPoolUnavailable)
+	}
+	if len(cfg.CodexClients) != 2 {
+		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
+	}
+	if cfg.CodexClients[0].Label != "flag-a" || cfg.CodexClients[0].AuthPath != filepath.Join("/tmp/flag-a", "auth.json") {
+		t.Fatalf("first flag codex client = %#v", cfg.CodexClients[0])
+	}
+	if cfg.CodexClients[1].Label != "flag-b" || cfg.CodexClients[1].CodexHome != "/tmp/flag-codex" || cfg.CodexClients[1].AuthPath != "/tmp/flag-b-auth.json" {
+		t.Fatalf("second flag codex client = %#v", cfg.CodexClients[1])
 	}
 }
 
@@ -316,6 +382,15 @@ func TestLoadInvalidLogRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestLoadInvalidLogCodexToolEvents(t *testing.T) {
+	t.Setenv("CODEX_LOG_CODEX_TOOL_EVENTS", "definitely")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid Codex tool-event log error")
+	}
+}
+
 func TestLoadInvalidAgentQueueEnabled(t *testing.T) {
 	t.Setenv("CODEX_AGENT_QUEUE_ENABLED", "definitely")
 	chdir(t, t.TempDir())
@@ -357,6 +432,12 @@ func TestLoadInvalidAgentQueueKeyMode(t *testing.T) {
 	}
 }
 
+func TestValidateAgentQueueKeyModeAcceptsCursor(t *testing.T) {
+	if err := validateAgentQueueKeyMode("cursor"); err != nil {
+		t.Fatalf("validateAgentQueueKeyMode(cursor) error = %v", err)
+	}
+}
+
 func TestLoadInvalidAgentQueueLimit(t *testing.T) {
 	t.Setenv("CODEX_AGENT_QUEUE_LIMIT", "-1")
 	chdir(t, t.TempDir())
@@ -372,6 +453,15 @@ func TestLoadInvalidAgentQueueTimeout(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid agent queue timeout error")
+	}
+}
+
+func TestLoadInvalidAgentQueuePriorityEnabled(t *testing.T) {
+	t.Setenv("CODEX_AGENT_QUEUE_PRIORITY_ENABLED", "definitely")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid agent queue priority enabled error")
 	}
 }
 
@@ -401,6 +491,34 @@ func TestLoadInvalidContextLimits(t *testing.T) {
 				t.Fatal("Load() error = nil, want invalid context limit error")
 			}
 		})
+	}
+}
+
+func TestLoadInvalidCodexClients(t *testing.T) {
+	tests := map[string]string{
+		"empty":           `[]`,
+		"duplicate_label": `[{"label":"same"},{"label":"same"}]`,
+		"bad_label":       `[{"label":"secret/path"}]`,
+		"bad_json":        `not-json`,
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CODEX_CLIENTS", value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid codex clients error")
+			}
+		})
+	}
+}
+
+func TestLoadInvalidCodexClientPoolUnavailable(t *testing.T) {
+	t.Setenv("CODEX_CLIENT_POOL_UNAVAILABLE", "random")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid codex client pool unavailable error")
 	}
 }
 

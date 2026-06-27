@@ -24,25 +24,27 @@ const (
 )
 
 type ClientConfig struct {
-	AuthPath     string
-	CodexHome    string
-	ProfilePath  string
-	ScaffoldPath string
-	WebsocketURL string
-	Timeout      time.Duration
-	LogOutput    io.Writer
-	LogBodyShape bool
+	AuthPath      string
+	CodexHome     string
+	ProfilePath   string
+	ScaffoldPath  string
+	WebsocketURL  string
+	Timeout       time.Duration
+	LogOutput     io.Writer
+	LogBodyShape  bool
+	LogToolEvents bool
 }
 
 type Client struct {
-	authPath     string
-	codexHome    string
-	websocketURL string
-	timeout      time.Duration
-	dial         websocketDialFunc
-	builder      requestBuilder
-	logOutput    io.Writer
-	logBodyShape bool
+	authPath      string
+	codexHome     string
+	websocketURL  string
+	timeout       time.Duration
+	dial          websocketDialFunc
+	builder       requestBuilder
+	logOutput     io.Writer
+	logBodyShape  bool
+	logToolEvents bool
 }
 
 type websocketConn interface {
@@ -79,14 +81,15 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		authPath:     cfg.AuthPath,
-		codexHome:    cfg.CodexHome,
-		websocketURL: cfg.WebsocketURL,
-		timeout:      cfg.Timeout,
-		dial:         defaultDial(websocket.DefaultDialer),
-		builder:      builder,
-		logOutput:    cfg.LogOutput,
-		logBodyShape: cfg.LogBodyShape,
+		authPath:      cfg.AuthPath,
+		codexHome:     cfg.CodexHome,
+		websocketURL:  cfg.WebsocketURL,
+		timeout:       cfg.Timeout,
+		dial:          defaultDial(websocket.DefaultDialer),
+		builder:       builder,
+		logOutput:     cfg.LogOutput,
+		logBodyShape:  cfg.LogBodyShape,
+		logToolEvents: cfg.LogToolEvents,
 	}, nil
 }
 
@@ -297,7 +300,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 }
 
 func (c *Client) logCodexToolEvent(raw []byte) {
-	if !c.logBodyShape || c.logOutput == nil || !isCodexToolEvent(raw) {
+	if !c.logToolEvents || c.logOutput == nil || !isCodexToolEvent(raw) {
 		return
 	}
 	_, _ = fmt.Fprintf(c.logOutput, "codex_tool_event %s\n", redactedCodexToolEventShape(raw))
