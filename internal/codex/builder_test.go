@@ -153,27 +153,55 @@ func TestBuildMinimalRequestIncludesClientTools(t *testing.T) {
 		t.Fatalf("buildMinimal() error = %v", err)
 	}
 
+	// Codex uses the Responses API tool format: function fields are flattened
+	// to the top level rather than nested under a "function" object.
 	tools := payload["tools"].([]any)
 	tool := tools[0].(map[string]any)
-	function := tool["function"].(map[string]any)
 	if tool["type"] != "function" ||
-		function["name"] != "lookup" ||
-		function["description"] != "Look up a term" {
+		tool["name"] != "lookup" ||
+		tool["description"] != "Look up a term" {
 		t.Fatalf("tool schema = %#v", tool)
 	}
-	parameters := function["parameters"].(map[string]any)
+	if _, nested := tool["function"]; nested {
+		t.Fatalf("tool must not keep nested function object: %#v", tool)
+	}
+	parameters := tool["parameters"].(map[string]any)
 	properties := parameters["properties"].(map[string]any)
 	q := properties["q"].(map[string]any)
 	if parameters["type"] != "object" || q["type"] != "string" || q["description"] != "query" {
 		t.Fatalf("parameters = %#v", parameters)
 	}
 	toolChoice := payload["tool_choice"].(map[string]any)
-	choiceFunction := toolChoice["function"].(map[string]any)
-	if toolChoice["type"] != "function" || choiceFunction["name"] != "lookup" {
+	if toolChoice["type"] != "function" || toolChoice["name"] != "lookup" {
 		t.Fatalf("tool_choice = %#v", toolChoice)
+	}
+	if _, nested := toolChoice["function"]; nested {
+		t.Fatalf("tool_choice must not keep nested function object: %#v", toolChoice)
 	}
 	if payload["parallel_tool_calls"] != false {
 		t.Fatalf("parallel_tool_calls = %v, want false", payload["parallel_tool_calls"])
+	}
+}
+
+func TestBuildMinimalRequestPassesThroughFlatTools(t *testing.T) {
+	builder := fixtureBuilder()
+	payload, err := builder.buildMinimal(Request{
+		Model:           "plain-model",
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("use a tool")}},
+		Tools:           json.RawMessage(`[{"type":"function","name":"lookup","description":"flat","parameters":{"type":"object","properties":{}}}]`),
+		ToolChoice:      json.RawMessage(`"auto"`),
+	})
+	if err != nil {
+		t.Fatalf("buildMinimal() error = %v", err)
+	}
+	tool := payload["tools"].([]any)[0].(map[string]any)
+	if tool["type"] != "function" || tool["name"] != "lookup" || tool["description"] != "flat" {
+		t.Fatalf("flat tool altered: %#v", tool)
+	}
+	if payload["tool_choice"] != "auto" {
+		t.Fatalf("string tool_choice = %#v, want \"auto\"", payload["tool_choice"])
 	}
 }
 

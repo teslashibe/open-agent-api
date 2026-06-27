@@ -139,14 +139,14 @@ func (b requestBuilder) buildMinimal(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, NewError(ErrorKindClient, 400, "invalid tools JSON", err)
 		}
-		payload["tools"] = tools
+		payload["tools"] = normalizeToolsForCodex(tools)
 	}
 	if rawJSONPresent(req.ToolChoice) {
 		toolChoice, err := decodeRawJSON(req.ToolChoice)
 		if err != nil {
 			return nil, NewError(ErrorKindClient, 400, "invalid tool_choice JSON", err)
 		}
-		payload["tool_choice"] = toolChoice
+		payload["tool_choice"] = normalizeToolChoiceForCodex(toolChoice)
 	}
 	if req.ParallelToolCalls != nil {
 		payload["parallel_tool_calls"] = *req.ParallelToolCalls
@@ -279,6 +279,64 @@ func decodeRawJSON(raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return value, nil
+}
+
+// normalizeToolsForCodex converts OpenAI Chat Completions function tools, which
+// nest the schema under a "function" object, into the flat Responses API shape
+// Codex expects ({"type":"function","name":...,"parameters":...}). Tools that
+// are already flat (or non-function tools) are passed through unchanged.
+func normalizeToolsForCodex(tools any) any {
+	list, ok := tools.([]any)
+	if !ok {
+		return tools
+	}
+	normalized := make([]any, 0, len(list))
+	for _, item := range list {
+		normalized = append(normalized, normalizeToolForCodex(item))
+	}
+	return normalized
+}
+
+func normalizeToolForCodex(tool any) any {
+	toolMap, ok := tool.(map[string]any)
+	if !ok {
+		return tool
+	}
+	fn, ok := toolMap["function"].(map[string]any)
+	if !ok {
+		return tool
+	}
+	flat := map[string]any{"type": firstNonEmpty(asString(toolMap["type"]), "function")}
+	for key, value := range fn {
+		flat[key] = value
+	}
+	if _, hasParams := flat["parameters"]; !hasParams {
+		flat["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	return flat
+}
+
+// normalizeToolChoiceForCodex flattens a forced-function tool_choice object the
+// same way as tools. String values ("auto"/"none"/"required") pass through.
+func normalizeToolChoiceForCodex(choice any) any {
+	choiceMap, ok := choice.(map[string]any)
+	if !ok {
+		return choice
+	}
+	fn, ok := choiceMap["function"].(map[string]any)
+	if !ok {
+		return choice
+	}
+	flat := map[string]any{"type": firstNonEmpty(asString(choiceMap["type"]), "function")}
+	if name := asString(fn["name"]); name != "" {
+		flat["name"] = name
+	}
+	return flat
+}
+
+func asString(value any) string {
+	s, _ := value.(string)
+	return s
 }
 
 func milliseconds(t time.Time) string {
