@@ -27,11 +27,12 @@ const (
 	DefaultAgentQueueLimit                    = 20
 	DefaultAgentQueueTimeout                  = 5 * time.Minute
 	DefaultAgentQueuePriorityEnabled          = false
-	DefaultContextMaxBytes                    = 256 * 1024
-	DefaultContextMaxMessages                 = 150
-	DefaultContextRecentMessages              = 40
-	DefaultContextToolOutputMaxBytes          = 64 * 1024
-	DefaultContextCompactedToolOutputMaxBytes = 1024
+	DefaultContextManagementEnabled           = true
+	DefaultContextMaxBytes                    = 192 * 1024
+	DefaultContextMaxMessages                 = 120
+	DefaultContextRecentMessages              = 24
+	DefaultContextToolOutputMaxBytes          = 32 * 1024
+	DefaultContextCompactedToolOutputMaxBytes = 512
 	DefaultDegenerateTurnRetryEnabled         = true
 	DefaultCodexClientPoolUnavailable         = "fail"
 )
@@ -47,6 +48,7 @@ type Config struct {
 	CodexTimeout                       time.Duration
 	LogBodyShape                       bool
 	LogRequestIdentity                 bool
+	LogCodexToolEvents                 bool
 	AgentQueueEnabled                  bool
 	AgentMaxActive                     int
 	AgentMaxActivePerKey               int
@@ -138,6 +140,13 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CODEX_LOG_REQUEST_IDENTITY: %w", err)
 		}
 		cfg.LogRequestIdentity = logRequestIdentity
+	}
+	if value := os.Getenv("CODEX_LOG_CODEX_TOOL_EVENTS"); value != "" {
+		logCodexToolEvents, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_LOG_CODEX_TOOL_EVENTS: %w", err)
+		}
+		cfg.LogCodexToolEvents = logCodexToolEvents
 	}
 	if value := os.Getenv("CODEX_AGENT_QUEUE_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
@@ -254,6 +263,7 @@ func Load(args []string) (Config, error) {
 	fs.DurationVar(&cfg.CodexTimeout, "codex-timeout", cfg.CodexTimeout, "Codex websocket request timeout")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
+	fs.BoolVar(&cfg.LogCodexToolEvents, "log-codex-tool-events", cfg.LogCodexToolEvents, "log redacted upstream Codex tool-event diagnostics")
 	fs.BoolVar(&cfg.AgentQueueEnabled, "agent-queue-enabled", cfg.AgentQueueEnabled, "enable Agent queue for requests with tools")
 	fs.IntVar(&cfg.AgentMaxActive, "agent-max-active", cfg.AgentMaxActive, "maximum concurrent tool-capable Agent requests")
 	fs.IntVar(&cfg.AgentMaxActivePerKey, "agent-max-active-per-key", cfg.AgentMaxActivePerKey, "maximum concurrent tool-capable Agent requests per queue key")
@@ -319,6 +329,7 @@ func Defaults() Config {
 		AgentQueueTimeout:                  DefaultAgentQueueTimeout,
 		AgentQueueLockDir:                  "",
 		AgentQueuePriorityEnabled:          DefaultAgentQueuePriorityEnabled,
+		ContextManagementEnabled:           DefaultContextManagementEnabled,
 		ContextMaxBytes:                    DefaultContextMaxBytes,
 		ContextMaxMessages:                 DefaultContextMaxMessages,
 		ContextRecentMessages:              DefaultContextRecentMessages,
