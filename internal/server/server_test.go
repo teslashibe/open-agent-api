@@ -433,7 +433,7 @@ func TestChatCompletionsManagesToolPresentContext(t *testing.T) {
 			if tool.Role != "tool" || tool.ToolCallID != "call_123" {
 				t.Fatalf("tool message = %#v, want preserved tool_call_id", tool)
 			}
-			text := rawMessageText(tool.Content)
+			text := openai.MessageText(tool.Content)
 			if !strings.Contains(text, "tool output truncated from") {
 				t.Fatalf("tool content = %q, want truncation marker", text)
 			}
@@ -486,7 +486,7 @@ func TestChatCompletionsContextManagementSkipsPlainRequests(t *testing.T) {
 	const toolLikeSecret = "tool-like-secret"
 	service := fakeCodexService{
 		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
-			if got := rawMessageText(req.Messages[1].Content); got != strings.Repeat(toolLikeSecret, 10) {
+			if got := openai.MessageText(req.Messages[1].Content); got != strings.Repeat(toolLikeSecret, 10) {
 				t.Fatalf("plain request message changed: %q", got)
 			}
 			return codex.Completion{Text: "ok", Model: req.Model}, nil

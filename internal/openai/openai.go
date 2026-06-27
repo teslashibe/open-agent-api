@@ -1,6 +1,9 @@
 package openai
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 const (
 	DefaultModel = "gpt-5.5"
@@ -115,4 +118,56 @@ type Model struct {
 func TextContent(text string) json.RawMessage {
 	data, _ := json.Marshal(text)
 	return data
+}
+
+// MessageText extracts human-readable text from a message content field, which
+// may be a JSON string or structured OpenAI/Cursor content part(s).
+func MessageText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return string(raw)
+	}
+	return collectMessageText(value)
+}
+
+func collectMessageText(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []any:
+		var b strings.Builder
+		for _, item := range v {
+			b.WriteString(collectMessageText(item))
+		}
+		return b.String()
+	case map[string]any:
+		var b strings.Builder
+		if text, ok := v["text"].(string); ok {
+			b.WriteString(text)
+		}
+		if content, ok := v["content"].(string); ok {
+			b.WriteString(content)
+		}
+		if output, ok := v["output"].(string); ok {
+			b.WriteString(output)
+		}
+		if input, ok := v["input"].(string); ok {
+			b.WriteString(input)
+		}
+		if nested, ok := v["content"]; ok {
+			if _, isString := nested.(string); !isString {
+				b.WriteString(collectMessageText(nested))
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
 }
