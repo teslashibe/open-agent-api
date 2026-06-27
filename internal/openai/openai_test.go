@@ -11,8 +11,9 @@ func TestChatCompletionRequestParsesToolCallFields(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-test",
 		"messages":[
-			{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"codex\"}"}}]},
-			{"role":"tool","tool_call_id":"call_123","content":"result"}
+			{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"codex\"}"}},{"id":"call_456","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},
+			{"role":"tool","tool_call_id":"call_123","content":"result"},
+			{"role":"tool","tool_call_id":"call_456","content":"module github.com/teslashibe/codex-chat-api"}
 		],
 		"tools":[{"type":"function","function":{"name":"lookup"}}],
 		"tool_choice":{"type":"function","function":{"name":"lookup"}},
@@ -31,8 +32,8 @@ func TestChatCompletionRequestParsesToolCallFields(t *testing.T) {
 	if got := string(req.Messages[0].Content); got != "null" {
 		t.Fatalf("assistant content = %s, want null", got)
 	}
-	if len(req.Messages[0].ToolCalls) != 1 {
-		t.Fatalf("tool_calls len = %d, want 1", len(req.Messages[0].ToolCalls))
+	if len(req.Messages[0].ToolCalls) != 2 {
+		t.Fatalf("tool_calls len = %d, want 2", len(req.Messages[0].ToolCalls))
 	}
 	toolCall := req.Messages[0].ToolCalls[0]
 	if toolCall.ID != "call_123" || toolCall.Type != "function" || toolCall.Function.Name != "lookup" {
@@ -40,6 +41,9 @@ func TestChatCompletionRequestParsesToolCallFields(t *testing.T) {
 	}
 	if req.Messages[1].ToolCallID != "call_123" {
 		t.Fatalf("tool_call_id = %q, want call_123", req.Messages[1].ToolCallID)
+	}
+	if req.Messages[2].ToolCallID != "call_456" {
+		t.Fatalf("second tool_call_id = %q, want call_456", req.Messages[2].ToolCallID)
 	}
 }
 

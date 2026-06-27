@@ -179,9 +179,6 @@ func splitMessages(messages []openai.ChatMessage) ([]string, []any) {
 		if role == "" {
 			role = "user"
 		}
-		if role == "tool" {
-			continue
-		}
 		text := messageText(message.Content)
 		if role == "developer" {
 			role = "system"
@@ -190,22 +187,46 @@ func splitMessages(messages []openai.ChatMessage) ([]string, []any) {
 			systemTexts = append(systemTexts, text)
 			continue
 		}
-		if text == "" {
+		if role == "tool" {
+			if message.ToolCallID == "" {
+				continue
+			}
+			items = append(items, map[string]any{
+				"type":    "function_call_output",
+				"call_id": message.ToolCallID,
+				"output":  text,
+			})
 			continue
 		}
 		partType := "input_text"
 		if role == "assistant" {
 			partType = "output_text"
 		}
-		items = append(items, map[string]any{
-			"type": "message",
-			"role": role,
-			"content": []any{
-				map[string]any{"type": partType, "text": text},
-			},
-		})
+		if text != "" {
+			items = append(items, map[string]any{
+				"type": "message",
+				"role": role,
+				"content": []any{
+					map[string]any{"type": partType, "text": text},
+				},
+			})
+		}
+		if role == "assistant" {
+			for _, toolCall := range message.ToolCalls {
+				items = append(items, functionCallItem(toolCall))
+			}
+		}
 	}
 	return systemTexts, items
+}
+
+func functionCallItem(toolCall openai.ToolCall) map[string]any {
+	return map[string]any{
+		"type":      "function_call",
+		"call_id":   toolCall.ID,
+		"name":      toolCall.Function.Name,
+		"arguments": toolCall.Function.Arguments,
+	}
 }
 
 func messageText(raw json.RawMessage) string {
