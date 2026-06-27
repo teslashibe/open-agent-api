@@ -37,6 +37,18 @@ var modelAliases = []ModelAlias{
 		ReasoningEffort: "low",
 		Verbosity:       "low",
 	},
+	{
+		ID:              "gpt-5.3-codex-spark",
+		UpstreamModel:   DefaultModel,
+		ReasoningEffort: "low",
+		Verbosity:       "low",
+	},
+	{
+		ID:              "gpt-5.3-codex-spark-preview",
+		UpstreamModel:   DefaultModel,
+		ReasoningEffort: "low",
+		Verbosity:       "low",
+	},
 }
 
 func ModelAliases() []ModelAlias {

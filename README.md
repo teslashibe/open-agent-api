@@ -760,3 +760,18 @@ For issue #45 latency/logging changes, record the live Cursor BYOK evidence in
   call that this API ignores. Use `faithful:false` for clean assistant-style chat,
   or let the server auto-switch when the client sends `tools`.
 - Requests are subject to your ChatGPT plan's rate limits.
+
+
+### Cursor Custom Model
+
+For Cursor's OpenAI-compatible custom provider, use:
+
+```text
+Base URL: http://127.0.0.1:8088/v1
+API Key: any non-empty value
+Model: gpt-5.3-codex-spark
+```
+
+Cursor may also send `gpt-5.3-codex-spark-preview`; the API accepts that as an equivalent alias.
+
+`gpt-5.3-codex-spark` is a Cursor-facing alias that routes to the stable Codex upstream model with low reasoning effort and low verbosity for faster interactive turns.
