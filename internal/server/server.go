@@ -85,16 +85,19 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 }
 
 func models(c *fiber.Ctx) error {
+	aliases := openai.ModelAliases()
+	models := make([]openai.Model, 0, len(aliases))
+	for _, alias := range aliases {
+		models = append(models, openai.Model{
+			ID:      alias.ID,
+			Object:  "model",
+			Created: 0,
+			OwnedBy: "codex-chat-api",
+		})
+	}
 	return c.JSON(openai.ModelListResponse{
 		Object: "list",
-		Data: []openai.Model{
-			{
-				ID:      openai.DefaultModel,
-				Object:  "model",
-				Created: 0,
-				OwnedBy: "codex-chat-api",
-			},
-		},
+		Data:   models,
 	})
 }
 
@@ -116,6 +119,7 @@ func chatCompletions(opts options) fiber.Handler {
 		if model == "" {
 			model = openai.DefaultModel
 		}
+		modelAlias := openai.ResolveModelAlias(model)
 		toolsPresent := rawJSONPresent(req.Tools)
 		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, toolsPresent)
 
@@ -125,13 +129,13 @@ func chatCompletions(opts options) fiber.Handler {
 		faithful := defaultBool(req.Faithful, !toolsPresent)
 		prewarm := defaultBool(req.Prewarm, faithful)
 		serviceReq := codex.Request{
-			Model:             model,
+			Model:             modelAlias.UpstreamModel,
 			Messages:          req.Messages,
 			Tools:             req.Tools,
 			ToolChoice:        req.ToolChoice,
 			ParallelToolCalls: req.ParallelToolCalls,
-			ReasoningEffort:   defaultString(req.ReasoningEffort, "medium"),
-			Verbosity:         defaultString(req.Verbosity, "medium"),
+			ReasoningEffort:   defaultString(req.ReasoningEffort, modelAlias.ReasoningEffort),
+			Verbosity:         defaultString(req.Verbosity, modelAlias.Verbosity),
 			Faithful:          faithful,
 			Prewarm:           prewarm,
 		}
