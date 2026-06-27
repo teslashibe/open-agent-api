@@ -1,0 +1,4 @@
+Remove accidental .git-local artifacts and restore single-client defaults.
+
+Drop committed repository internals, disable cross-process queue locks by
+default, and document opt-in lock directory for multi-replica pools.

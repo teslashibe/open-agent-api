@@ -3,6 +3,8 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -37,14 +39,23 @@ type streamProcessor struct {
 	textBytes, toolArgChars            *int
 	assistantText                      *strings.Builder
 
-	toolCallEmitted         *bool
-	streamedToolCallIDs     map[string]bool
-	streamedToolCallIndexes map[int]bool
-	toolCallIndexByKey      map[string]int
-	nextToolCallIndex       *int
-	upstreamStart           time.Time
-	firstDeltaLatency       *time.Duration
-	responseShape           streamResponseShape
+	toolCallEmitted     *bool
+	toolCallIndexByKey  map[string]int
+	nextToolCallIndex   *int
+	toolCallsByKey      map[string]*streamedToolCall
+	toolCallKeysByIndex map[int]string
+	upstreamStart       time.Time
+	firstDeltaLatency   *time.Duration
+	responseShape       streamResponseShape
+}
+
+type streamedToolCall struct {
+	key       string
+	index     int
+	id        string
+	typ       string
+	name      string
+	arguments string
 }
 
 func agentTurnExpectsToolCalls(messages []openai.ChatMessage, toolsPresent bool) bool {
@@ -85,28 +96,28 @@ func newStreamProcessor(
 	firstDeltaLatency *time.Duration,
 ) *streamProcessor {
 	return &streamProcessor{
-		ctx:                     ctx,
-		cancel:                  cancel,
-		w:                       w,
-		opts:                    opts,
-		id:                      id,
-		created:                 created,
-		model:                   model,
-		streamID:                streamID,
-		outcome:                 outcome,
-		deltas:                  deltas,
-		toolDeltas:              toolDeltas,
-		upstreamEvents:          upstreamEvents,
-		textBytes:               textBytes,
-		toolArgChars:            toolArgChars,
-		assistantText:           assistantText,
-		toolCallEmitted:         toolCallEmitted,
-		streamedToolCallIDs:     map[string]bool{},
-		streamedToolCallIndexes: map[int]bool{},
-		toolCallIndexByKey:      map[string]int{},
-		nextToolCallIndex:       new(int),
-		upstreamStart:           upstreamStart,
-		firstDeltaLatency:       firstDeltaLatency,
+		ctx:                 ctx,
+		cancel:              cancel,
+		w:                   w,
+		opts:                opts,
+		id:                  id,
+		created:             created,
+		model:               model,
+		streamID:            streamID,
+		outcome:             outcome,
+		deltas:              deltas,
+		toolDeltas:          toolDeltas,
+		upstreamEvents:      upstreamEvents,
+		textBytes:           textBytes,
+		toolArgChars:        toolArgChars,
+		assistantText:       assistantText,
+		toolCallEmitted:     toolCallEmitted,
+		toolCallIndexByKey:  map[string]int{},
+		nextToolCallIndex:   new(int),
+		toolCallsByKey:      map[string]*streamedToolCall{},
+		toolCallKeysByIndex: map[int]string{},
+		upstreamStart:       upstreamStart,
+		firstDeltaLatency:   firstDeltaLatency,
 	}
 }
 
@@ -125,6 +136,176 @@ func (p *streamProcessor) normalizeToolCallIndex(key string) int {
 	p.toolCallIndexByKey[key] = mapped
 	*p.nextToolCallIndex++
 	return mapped
+}
+
+func (p *streamProcessor) toolCallKey(upstreamIndex int) string {
+	if key, ok := p.toolCallKeysByIndex[upstreamIndex]; ok {
+		return key
+	}
+	key := "idx:" + strconv.Itoa(upstreamIndex)
+	p.toolCallKeysByIndex[upstreamIndex] = key
+	return key
+}
+
+func (p *streamProcessor) toolCallForIndex(upstreamIndex int) *streamedToolCall {
+	key := p.toolCallKey(upstreamIndex)
+	if toolCall, ok := p.toolCallsByKey[key]; ok {
+		return toolCall
+	}
+	toolCall := &streamedToolCall{
+		key:   key,
+		index: p.normalizeToolCallIndex(key),
+		typ:   "function",
+	}
+	p.toolCallsByKey[key] = toolCall
+	return toolCall
+}
+
+func (p *streamProcessor) toolCallForFullToolCall(upstreamIndex int, id string) *streamedToolCall {
+	if id != "" {
+		for _, toolCall := range p.toolCallsByKey {
+			if toolCall.id == id {
+				p.toolCallKeysByIndex[upstreamIndex] = toolCall.key
+				return toolCall
+			}
+		}
+	}
+	return p.toolCallForIndex(upstreamIndex)
+}
+
+func (p *streamProcessor) accumulateFullToolCall(upstreamIndex int, toolCall codex.ToolCall) {
+	if toolCall.ID == "" && toolCall.Type == "" && toolCall.Function.Name == "" && toolCall.Function.Arguments == "" {
+		return
+	}
+	p.responseShape.ToolCalls = true
+	accumulated := p.toolCallForFullToolCall(upstreamIndex, toolCall.ID)
+	if toolCall.ID != "" {
+		accumulated.id = toolCall.ID
+	}
+	accumulated.typ = defaultString(toolCall.Type, "function")
+	if toolCall.Function.Name != "" {
+		accumulated.name = toolCall.Function.Name
+	}
+	if toolCall.Function.Arguments != "" {
+		accumulated.arguments = toolCall.Function.Arguments
+	}
+	*p.toolCallEmitted = true
+	*p.toolDeltas++
+	*p.toolArgChars += len(toolCall.Function.Arguments)
+}
+
+func (p *streamProcessor) accumulateToolCallDelta(delta codex.ToolCallDelta) {
+	if delta.ID == "" && delta.Type == "" && delta.Function.Name == "" && delta.Function.Arguments == "" {
+		return
+	}
+	p.responseShape.ToolCalls = true
+	accumulated := p.toolCallForIndex(delta.Index)
+	if delta.ID != "" {
+		accumulated.id = delta.ID
+	}
+	if delta.Type != "" {
+		accumulated.typ = delta.Type
+	}
+	if delta.Function.Name != "" {
+		accumulated.name = delta.Function.Name
+	}
+	if delta.Function.Arguments != "" {
+		if delta.Final {
+			accumulated.arguments = delta.Function.Arguments
+		} else {
+			accumulated.arguments += delta.Function.Arguments
+		}
+	}
+	*p.toolCallEmitted = true
+	*p.toolDeltas++
+	*p.toolArgChars += len(delta.Function.Arguments)
+}
+
+func (p *streamProcessor) orderedToolCalls() []*streamedToolCall {
+	out := make([]*streamedToolCall, 0, len(p.toolCallsByKey))
+	for _, toolCall := range p.toolCallsByKey {
+		out = append(out, toolCall)
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1].index > out[j].index; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
+}
+
+func (p *streamProcessor) validateToolCall(toolCall *streamedToolCall) error {
+	if toolCall.id == "" {
+		toolCall.id = fmt.Sprintf("call_%s_%d", safeIdentifier(p.streamID), toolCall.index)
+	}
+	toolCall.typ = defaultString(toolCall.typ, "function")
+	if toolCall.name == "" {
+		return fmt.Errorf("missing function name")
+	}
+	if strings.TrimSpace(toolCall.arguments) == "" {
+		toolCall.arguments = "{}"
+	}
+	if !json.Valid([]byte(toolCall.arguments)) {
+		return fmt.Errorf("invalid function arguments JSON")
+	}
+	return nil
+}
+
+func safeIdentifier(value string) string {
+	if value == "" {
+		return "stream"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-':
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "stream"
+	}
+	return b.String()
+}
+
+func (p *streamProcessor) writeToolCalls() bool {
+	for _, toolCall := range p.orderedToolCalls() {
+		if err := p.validateToolCall(toolCall); err != nil {
+			logLine(p.opts, "tool_call_validation_error id=%s index=%d err=%s\n", p.streamID, toolCall.index, err)
+			_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, *p.model, "invalid upstream tool call"))
+			*p.outcome = "upstream_error"
+			return false
+		}
+		delta := openai.ToolCallDelta{
+			Index: toolCall.index,
+			ID:    toolCall.id,
+			Type:  toolCall.typ,
+			Function: &openai.ToolCallFunctionDelta{
+				Name:      toolCall.name,
+				Arguments: toolCall.arguments,
+			},
+		}
+		p.markFirstDelta()
+		if !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
+			ID:      p.id,
+			Object:  "chat.completion.chunk",
+			Created: p.created,
+			Model:   *p.model,
+			Choices: []openai.ChatCompletionChunkChoice{
+				{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{delta}}},
+			},
+		}) {
+			*p.outcome = "client_disconnect"
+			return false
+		}
+	}
+	return true
 }
 
 func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
@@ -189,61 +370,10 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 		}
 	}
 	for i, toolCall := range event.ToolCalls {
-		if skipCompletedToolCallDelta(i, toolCall, p.streamedToolCallIDs, p.streamedToolCallIndexes) {
-			continue
-		}
-		p.responseShape.ToolCalls = true
-		*p.toolArgChars += len(toolCall.Function.Arguments)
-		*p.toolCallEmitted = true
-		*p.toolDeltas++
-		fullDelta := openAIToolCallFullDelta(i, toolCall)
-		fullKey := toolCall.ID
-		if fullKey == "" {
-			fullKey = "fslot:" + strconv.Itoa(i)
-		}
-		fullDelta.Index = p.normalizeToolCallIndex(fullKey)
-		if write {
-			p.markFirstDelta()
-		}
-		if write && !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
-			ID:      p.id,
-			Object:  "chat.completion.chunk",
-			Created: p.created,
-			Model:   *p.model,
-			Choices: []openai.ChatCompletionChunkChoice{
-				{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{fullDelta}}},
-			},
-		}) {
-			*p.outcome = "client_disconnect"
-			return true
-		}
+		p.accumulateFullToolCall(i, toolCall)
 	}
 	if event.ToolCallDelta != nil {
-		p.responseShape.ToolCalls = true
-		*p.toolCallEmitted = true
-		*p.toolDeltas++
-		*p.toolArgChars += len(event.ToolCallDelta.Function.Arguments)
-		p.streamedToolCallIndexes[event.ToolCallDelta.Index] = true
-		if event.ToolCallDelta.ID != "" {
-			p.streamedToolCallIDs[event.ToolCallDelta.ID] = true
-		}
-		outDelta := openAIToolCallDelta(*event.ToolCallDelta)
-		outDelta.Index = p.normalizeToolCallIndex("idx:" + strconv.Itoa(event.ToolCallDelta.Index))
-		if write {
-			p.markFirstDelta()
-		}
-		if write && !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
-			ID:      p.id,
-			Object:  "chat.completion.chunk",
-			Created: p.created,
-			Model:   *p.model,
-			Choices: []openai.ChatCompletionChunkChoice{
-				{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{outDelta}}},
-			},
-		}) {
-			*p.outcome = "client_disconnect"
-			return true
-		}
+		p.accumulateToolCallDelta(*event.ToolCallDelta)
 	}
 	return false
 }
@@ -252,6 +382,12 @@ func (p *streamProcessor) writeFinish() bool {
 	finish := "stop"
 	if *p.toolCallEmitted {
 		finish = "tool_calls"
+		if !p.writeToolCalls() {
+			return *p.outcome == "upstream_error"
+		}
+		if *p.outcome != "completed" {
+			return true
+		}
 	}
 	if !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
 		ID:      p.id,
@@ -277,9 +413,9 @@ func (p *streamProcessor) resetAttemptStats() {
 	p.assistantText.Reset()
 	*p.toolCallEmitted = false
 	*p.nextToolCallIndex = 0
-	p.streamedToolCallIDs = map[string]bool{}
-	p.streamedToolCallIndexes = map[int]bool{}
 	p.toolCallIndexByKey = map[string]int{}
+	p.toolCallsByKey = map[string]*streamedToolCall{}
+	p.toolCallKeysByIndex = map[int]string{}
 	*p.outcome = "completed"
 }
 

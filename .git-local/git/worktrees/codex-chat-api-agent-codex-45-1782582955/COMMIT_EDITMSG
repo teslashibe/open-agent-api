@@ -1,0 +1,4 @@
+Rebase context/logging latency work onto post-#46 feature branch.
+
+Merge request_timing queue wait tracking with priority lanes, client pool,
+and tighter default context management settings.

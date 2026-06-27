@@ -374,7 +374,11 @@ func applyToolCallDelta(toolCalls *[]ToolCall, delta ToolCallDelta) {
 		toolCall.Function.Name = delta.Function.Name
 	}
 	if delta.Function.Arguments != "" {
-		toolCall.Function.Arguments += delta.Function.Arguments
+		if delta.Final {
+			toolCall.Function.Arguments = delta.Function.Arguments
+		} else {
+			toolCall.Function.Arguments += delta.Function.Arguments
+		}
 	}
 }
 
