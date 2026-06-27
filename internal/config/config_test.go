@@ -19,8 +19,11 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_WEBSOCKET_URL")
 	unsetenv(t, "CODEX_TIMEOUT")
 	unsetenv(t, "CODEX_LOG_BODY_SHAPE")
+	unsetenv(t, "CODEX_LOG_REQUEST_IDENTITY")
 	unsetenv(t, "CODEX_AGENT_QUEUE_ENABLED")
 	unsetenv(t, "CODEX_AGENT_MAX_ACTIVE")
+	unsetenv(t, "CODEX_AGENT_MAX_ACTIVE_PER_KEY")
+	unsetenv(t, "CODEX_AGENT_QUEUE_KEY_MODE")
 	unsetenv(t, "CODEX_AGENT_QUEUE_LIMIT")
 	unsetenv(t, "CODEX_AGENT_QUEUE_TIMEOUT")
 	chdir(t, t.TempDir())
@@ -57,11 +60,20 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogBodyShape {
 		t.Fatal("LogBodyShape = true, want false")
 	}
+	if cfg.LogRequestIdentity {
+		t.Fatal("LogRequestIdentity = true, want false")
+	}
 	if cfg.AgentQueueEnabled != DefaultAgentQueueEnabled {
 		t.Fatalf("AgentQueueEnabled = %t, want %t", cfg.AgentQueueEnabled, DefaultAgentQueueEnabled)
 	}
 	if cfg.AgentMaxActive != DefaultAgentMaxActive {
 		t.Fatalf("AgentMaxActive = %d, want %d", cfg.AgentMaxActive, DefaultAgentMaxActive)
+	}
+	if cfg.AgentMaxActivePerKey != DefaultAgentMaxActivePerKey {
+		t.Fatalf("AgentMaxActivePerKey = %d, want %d", cfg.AgentMaxActivePerKey, DefaultAgentMaxActivePerKey)
+	}
+	if cfg.AgentQueueKeyMode != DefaultAgentQueueKeyMode {
+		t.Fatalf("AgentQueueKeyMode = %q, want %q", cfg.AgentQueueKeyMode, DefaultAgentQueueKeyMode)
 	}
 	if cfg.AgentQueueLimit != DefaultAgentQueueLimit {
 		t.Fatalf("AgentQueueLimit = %d, want %d", cfg.AgentQueueLimit, DefaultAgentQueueLimit)
@@ -81,8 +93,11 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_WEBSOCKET_URL", "wss://example.test/codex")
 	t.Setenv("CODEX_TIMEOUT", "3s")
 	t.Setenv("CODEX_LOG_BODY_SHAPE", "true")
+	t.Setenv("CODEX_LOG_REQUEST_IDENTITY", "true")
 	t.Setenv("CODEX_AGENT_QUEUE_ENABLED", "false")
 	t.Setenv("CODEX_AGENT_MAX_ACTIVE", "2")
+	t.Setenv("CODEX_AGENT_MAX_ACTIVE_PER_KEY", "2")
+	t.Setenv("CODEX_AGENT_QUEUE_KEY_MODE", "header:x-cursor-session-id")
 	t.Setenv("CODEX_AGENT_QUEUE_LIMIT", "7")
 	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "9s")
 	chdir(t, t.TempDir())
@@ -110,11 +125,14 @@ func TestLoadEnvironment(t *testing.T) {
 	if !cfg.LogBodyShape {
 		t.Fatal("LogBodyShape = false, want true")
 	}
+	if !cfg.LogRequestIdentity {
+		t.Fatal("LogRequestIdentity = false, want true")
+	}
 	if cfg.AgentQueueEnabled {
 		t.Fatal("AgentQueueEnabled = true, want false")
 	}
-	if cfg.AgentMaxActive != 2 || cfg.AgentQueueLimit != 7 || cfg.AgentQueueTimeout != 9*time.Second {
-		t.Fatalf("agent queue config = enabled:%t max:%d limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
+	if cfg.AgentMaxActive != 2 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "header:x-cursor-session-id" || cfg.AgentQueueLimit != 7 || cfg.AgentQueueTimeout != 9*time.Second {
+		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
 	}
 }
 
@@ -135,8 +153,11 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--codex-websocket-url", "wss://flag.test/codex",
 		"--codex-timeout", "4s",
 		"--log-body-shape",
+		"--log-request-identity",
 		"--agent-queue-enabled=false",
 		"--agent-max-active", "3",
+		"--agent-max-active-per-key", "2",
+		"--agent-queue-key-mode", "body:session_id",
 		"--agent-queue-limit", "8",
 		"--agent-queue-timeout", "10s",
 	})
@@ -162,11 +183,14 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	if !cfg.LogBodyShape {
 		t.Fatal("LogBodyShape = false, want true")
 	}
+	if !cfg.LogRequestIdentity {
+		t.Fatal("LogRequestIdentity = false, want true")
+	}
 	if cfg.AgentQueueEnabled {
 		t.Fatal("AgentQueueEnabled = true, want false")
 	}
-	if cfg.AgentMaxActive != 3 || cfg.AgentQueueLimit != 8 || cfg.AgentQueueTimeout != 10*time.Second {
-		t.Fatalf("agent queue config = enabled:%t max:%d limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
+	if cfg.AgentMaxActive != 3 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "body:session_id" || cfg.AgentQueueLimit != 8 || cfg.AgentQueueTimeout != 10*time.Second {
+		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
 	}
 }
 
@@ -214,6 +238,15 @@ func TestLoadInvalidLogBodyShape(t *testing.T) {
 	}
 }
 
+func TestLoadInvalidLogRequestIdentity(t *testing.T) {
+	t.Setenv("CODEX_LOG_REQUEST_IDENTITY", "definitely")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid log request identity error")
+	}
+}
+
 func TestLoadInvalidAgentQueueEnabled(t *testing.T) {
 	t.Setenv("CODEX_AGENT_QUEUE_ENABLED", "definitely")
 	chdir(t, t.TempDir())
@@ -229,6 +262,29 @@ func TestLoadInvalidAgentMaxActive(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid agent max active error")
+	}
+}
+
+func TestLoadInvalidAgentMaxActivePerKey(t *testing.T) {
+	t.Setenv("CODEX_AGENT_MAX_ACTIVE_PER_KEY", "0")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid agent max active per key error")
+	}
+}
+
+func TestLoadInvalidAgentQueueKeyMode(t *testing.T) {
+	tests := []string{"session", "header:", "body:"}
+	for _, value := range tests {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CODEX_AGENT_QUEUE_KEY_MODE", value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid agent queue key mode error")
+			}
+		})
 	}
 }
 

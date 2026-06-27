@@ -742,6 +742,7 @@ func TestAgentQueueSerializesToolStreams(t *testing.T) {
 func TestAgentQueueHonorsMaxActive(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.AgentMaxActive = 2
+	cfg.AgentQueueKeyMode = "header:x-cursor-session-id"
 	started := make(chan int, 3)
 	release := make(chan struct{})
 	var mu sync.Mutex
@@ -764,8 +765,8 @@ func TestAgentQueueHonorsMaxActive(t *testing.T) {
 	}
 	app := New(cfg, WithCodexService(service), WithLogOutput(io.Discard))
 
-	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
-	secondDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-a"})
+	secondDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-b"})
 	if got := waitStarted(t, started, time.Second); got != 1 {
 		t.Fatalf("first complete call = %d, want 1", got)
 	}
@@ -773,7 +774,7 @@ func TestAgentQueueHonorsMaxActive(t *testing.T) {
 		t.Fatalf("second complete call = %d, want 2", got)
 	}
 
-	thirdDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"three"}],"tools":[{"type":"function"}]}`)
+	thirdDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"three"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-c"})
 	select {
 	case got := <-started:
 		t.Fatalf("third complete started before a slot released: %d", got)
@@ -792,6 +793,74 @@ func TestAgentQueueHonorsMaxActive(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 		}
+	}
+}
+
+func TestAgentQueueSerializesSameKey(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.AgentMaxActive = 2
+	cfg.AgentQueueKeyMode = "body:session_id"
+	firstRelease := make(chan struct{})
+	secondRelease := make(chan struct{})
+	started := make(chan int, 2)
+	var mu sync.Mutex
+	calls := 0
+
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			mu.Lock()
+			calls++
+			call := calls
+			mu.Unlock()
+			started <- call
+			release := firstRelease
+			if call == 2 {
+				release = secondRelease
+			}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return codex.Completion{}, ctx.Err()
+			}
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
+
+	firstDone := postJSONAsync(t, app, `{"session_id":"same-session","messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	if got := waitStarted(t, started, time.Second); got != 1 {
+		t.Fatalf("first complete call = %d, want 1", got)
+	}
+	secondDone := postJSONAsync(t, app, `{"session_id":"same-session","messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	select {
+	case got := <-started:
+		t.Fatalf("second same-key request started before first released: %d", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(firstRelease)
+	resp := waitResponse(t, firstDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := waitStarted(t, started, time.Second); got != 2 {
+		t.Fatalf("second complete call = %d, want 2", got)
+	}
+	close(secondRelease)
+	resp = waitResponse(t, secondDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	for _, want := range []string{"key_mode=body:session_id", "key_hash=", "active_global=", "active_key="} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
+	}
+	if strings.Contains(logs.String(), "same-session") {
+		t.Fatalf("logs leaked queue key value: %q", logs.String())
 	}
 }
 
@@ -868,8 +937,10 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue full") {
 		t.Fatalf("body = %q, want OpenAI-shaped queue full error", body)
 	}
-	if !strings.Contains(logs.String(), "agent_queue_full request_id=") {
-		t.Fatalf("logs = %q, want agent_queue_full", logs.String())
+	for _, want := range []string{"agent_queue_full request_id=", "key_mode=global", "key_hash=", "limit=0"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
 	}
 
 	events <- codex.StreamEvent{Done: true}
@@ -907,8 +978,10 @@ func TestAgentQueueTimeoutReturns429(t *testing.T) {
 	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue timeout") {
 		t.Fatalf("body = %q, want OpenAI-shaped queue timeout error", body)
 	}
-	if !strings.Contains(logs.String(), "agent_queue_timeout request_id=") {
-		t.Fatalf("logs = %q, want agent_queue_timeout", logs.String())
+	for _, want := range []string{"agent_queue_timeout request_id=", "key_mode=global", "key_hash=", "wait_ms="} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
 	}
 
 	events <- codex.StreamEvent{Done: true}
@@ -1014,6 +1087,77 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 		"tools_present=true",
 		"tools_count=1",
 		"chat_completion model=gpt-test stream=true tools_present=true",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("logs = %q, want %q", body, want)
+		}
+	}
+}
+
+func TestRequestIdentityLogsAreRedacted(t *testing.T) {
+	const secret = "secret-access-token"
+	const cookie = "session-cookie-secret"
+	const prompt = "do not log this prompt"
+	const toolArgs = "do-not-log-tool-args"
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.LogRequestIdentity = true
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		bytes.NewBufferString(`{"model":"gpt-test","stream":false,"user":"user@example.test","session_id":"body-session","metadata":{"workspace_id":"workspace-123","nested":{"secret":"`+secret+`"}},"messages":[{"role":"user","content":"`+prompt+`"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"`+toolArgs+`"}}]}],"tools":[{"type":"function","function":{"name":"lookup","description":"secret schema","parameters":{"type":"object"}}}]}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("User-Agent", "Cursor/Test")
+	req.Header.Set("X-Cursor-Session-Id", "cursor-value-secret")
+	req.Header.Set("X-Request-Id", "request-value-secret")
+	resp, err := app.Test(req, 2000)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body := logs.String()
+	for _, leaked := range []string{secret, cookie, prompt, toolArgs, "Bearer", "user@example.test", "body-session", "workspace-123", "cursor-value-secret", "request-value-secret", "secret schema"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("logs leaked %q: %q", leaked, body)
+		}
+	}
+	for _, want := range []string{
+		"request_identity request_id=chatcmpl-fixed method=POST path=/v1/chat/completions",
+		"user_agent_hash=",
+		"header_names=",
+		"authorization",
+		"cookie",
+		"cursor_headers=",
+		"x-cursor-session-id=",
+		"x-request-id=",
+		"body_fields=messages,metadata,model,session_id,stream,tools,user",
+		"body_scalars=model=",
+		"session_id=",
+		"user=",
+		"metadata_fields=nested,workspace_id",
+		"metadata_scalars=workspace_id=",
+		"message_count=2",
+		"message_roles=user,assistant",
+		"tool_count=1",
+		"stream=false",
+		"tools_present=true",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("logs = %q, want %q", body, want)
@@ -1228,7 +1372,7 @@ func fixedServerOptions() Option {
 
 func doJSON(t *testing.T, app interface {
 	Test(*http.Request, ...int) (*http.Response, error)
-}, body string) *http.Response {
+}, body string, headers ...map[string]string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	if err != nil {
@@ -1236,6 +1380,11 @@ func doJSON(t *testing.T, app interface {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer secret-access-token")
+	for _, headerSet := range headers {
+		for key, value := range headerSet {
+			req.Header.Set(key, value)
+		}
+	}
 	resp, err := app.Test(req, 2000)
 	if err != nil {
 		t.Fatalf("app.Test() error = %v", err)
@@ -1245,7 +1394,7 @@ func doJSON(t *testing.T, app interface {
 
 func postJSONAsync(t *testing.T, app interface {
 	Test(*http.Request, ...int) (*http.Response, error)
-}, body string) <-chan *http.Response {
+}, body string, headers ...map[string]string) <-chan *http.Response {
 	t.Helper()
 	done := make(chan *http.Response, 1)
 	go func() {
@@ -1257,6 +1406,11 @@ func postJSONAsync(t *testing.T, app interface {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer secret-access-token")
+		for _, headerSet := range headers {
+			for key, value := range headerSet {
+				req.Header.Set(key, value)
+			}
+		}
 		resp, err := app.Test(req, 2000)
 		if err != nil {
 			t.Errorf("app.Test() error = %v", err)
