@@ -7,36 +7,42 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
 const (
-	DefaultHost              = "127.0.0.1"
-	DefaultPort              = 8088
-	DefaultCodexWebsocketURL = "wss://chatgpt.com/backend-api/codex/responses"
-	DefaultCodexTimeout      = 120 * time.Second
-	DefaultAgentQueueEnabled = true
-	DefaultAgentMaxActive    = 1
-	DefaultAgentQueueLimit   = 20
-	DefaultAgentQueueTimeout = 5 * time.Minute
+	DefaultHost                 = "127.0.0.1"
+	DefaultPort                 = 8088
+	DefaultCodexWebsocketURL    = "wss://chatgpt.com/backend-api/codex/responses"
+	DefaultCodexTimeout         = 120 * time.Second
+	DefaultAgentQueueEnabled    = true
+	DefaultAgentMaxActive       = 1
+	DefaultAgentMaxActivePerKey = 1
+	DefaultAgentQueueKeyMode    = "global"
+	DefaultAgentQueueLimit      = 20
+	DefaultAgentQueueTimeout    = 5 * time.Minute
 )
 
 type Config struct {
-	Host              string
-	Port              int
-	CodexHome         string
-	AuthPath          string
-	CodexProfilePath  string
-	CodexScaffoldPath string
-	CodexWebsocketURL string
-	CodexTimeout      time.Duration
-	LogBodyShape      bool
-	AgentQueueEnabled bool
-	AgentMaxActive    int
-	AgentQueueLimit   int
-	AgentQueueTimeout time.Duration
+	Host                 string
+	Port                 int
+	CodexHome            string
+	AuthPath             string
+	CodexProfilePath     string
+	CodexScaffoldPath    string
+	CodexWebsocketURL    string
+	CodexTimeout         time.Duration
+	LogBodyShape         bool
+	LogRequestIdentity   bool
+	AgentQueueEnabled    bool
+	AgentMaxActive       int
+	AgentMaxActivePerKey int
+	AgentQueueKeyMode    string
+	AgentQueueLimit      int
+	AgentQueueTimeout    time.Duration
 }
 
 func Load(args []string) (Config, error) {
@@ -96,6 +102,13 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.LogBodyShape = logBodyShape
 	}
+	if value := os.Getenv("CODEX_LOG_REQUEST_IDENTITY"); value != "" {
+		logRequestIdentity, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_LOG_REQUEST_IDENTITY: %w", err)
+		}
+		cfg.LogRequestIdentity = logRequestIdentity
+	}
 	if value := os.Getenv("CODEX_AGENT_QUEUE_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -109,6 +122,16 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CODEX_AGENT_MAX_ACTIVE: %w", err)
 		}
 		cfg.AgentMaxActive = maxActive
+	}
+	if value := os.Getenv("CODEX_AGENT_MAX_ACTIVE_PER_KEY"); value != "" {
+		maxActivePerKey, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_AGENT_MAX_ACTIVE_PER_KEY: %w", err)
+		}
+		cfg.AgentMaxActivePerKey = maxActivePerKey
+	}
+	if value := os.Getenv("CODEX_AGENT_QUEUE_KEY_MODE"); value != "" {
+		cfg.AgentQueueKeyMode = value
 	}
 	if value := os.Getenv("CODEX_AGENT_QUEUE_LIMIT"); value != "" {
 		limit, err := strconv.Atoi(value)
@@ -135,8 +158,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.CodexWebsocketURL, "codex-websocket-url", cfg.CodexWebsocketURL, "Codex websocket URL")
 	fs.DurationVar(&cfg.CodexTimeout, "codex-timeout", cfg.CodexTimeout, "Codex websocket request timeout")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
-	fs.BoolVar(&cfg.AgentQueueEnabled, "agent-queue-enabled", cfg.AgentQueueEnabled, "enable global Agent queue for requests with tools")
+	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
+	fs.BoolVar(&cfg.AgentQueueEnabled, "agent-queue-enabled", cfg.AgentQueueEnabled, "enable Agent queue for requests with tools")
 	fs.IntVar(&cfg.AgentMaxActive, "agent-max-active", cfg.AgentMaxActive, "maximum concurrent tool-capable Agent requests")
+	fs.IntVar(&cfg.AgentMaxActivePerKey, "agent-max-active-per-key", cfg.AgentMaxActivePerKey, "maximum concurrent tool-capable Agent requests per queue key")
+	fs.StringVar(&cfg.AgentQueueKeyMode, "agent-queue-key-mode", cfg.AgentQueueKeyMode, "Agent queue key mode: global, auth_hash, request_fingerprint, header:<name>, or body:<field>")
 	fs.IntVar(&cfg.AgentQueueLimit, "agent-queue-limit", cfg.AgentQueueLimit, "maximum waiting tool-capable Agent requests")
 	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue")
 	if err := fs.Parse(args); err != nil {
@@ -162,18 +188,20 @@ func Load(args []string) (Config, error) {
 func Defaults() Config {
 	codexHome := defaultCodexHome()
 	return Config{
-		Host:              DefaultHost,
-		Port:              DefaultPort,
-		CodexHome:         codexHome,
-		AuthPath:          filepath.Join(codexHome, "auth.json"),
-		CodexProfilePath:  "codex_profile.json",
-		CodexScaffoldPath: "codex_scaffold.json",
-		CodexWebsocketURL: DefaultCodexWebsocketURL,
-		CodexTimeout:      DefaultCodexTimeout,
-		AgentQueueEnabled: DefaultAgentQueueEnabled,
-		AgentMaxActive:    DefaultAgentMaxActive,
-		AgentQueueLimit:   DefaultAgentQueueLimit,
-		AgentQueueTimeout: DefaultAgentQueueTimeout,
+		Host:                 DefaultHost,
+		Port:                 DefaultPort,
+		CodexHome:            codexHome,
+		AuthPath:             filepath.Join(codexHome, "auth.json"),
+		CodexProfilePath:     "codex_profile.json",
+		CodexScaffoldPath:    "codex_scaffold.json",
+		CodexWebsocketURL:    DefaultCodexWebsocketURL,
+		CodexTimeout:         DefaultCodexTimeout,
+		AgentQueueEnabled:    DefaultAgentQueueEnabled,
+		AgentMaxActive:       DefaultAgentMaxActive,
+		AgentMaxActivePerKey: DefaultAgentMaxActivePerKey,
+		AgentQueueKeyMode:    DefaultAgentQueueKeyMode,
+		AgentQueueLimit:      DefaultAgentQueueLimit,
+		AgentQueueTimeout:    DefaultAgentQueueTimeout,
 	}
 }
 
@@ -209,6 +237,12 @@ func (c Config) Validate() error {
 	if c.AgentMaxActive < 1 {
 		return errors.New("agent max active must be at least 1")
 	}
+	if c.AgentMaxActivePerKey < 1 {
+		return errors.New("agent max active per key must be at least 1")
+	}
+	if err := validateAgentQueueKeyMode(c.AgentQueueKeyMode); err != nil {
+		return err
+	}
 	if c.AgentQueueLimit < 0 {
 		return errors.New("agent queue limit must be non-negative")
 	}
@@ -216,6 +250,25 @@ func (c Config) Validate() error {
 		return errors.New("agent queue timeout must be positive")
 	}
 	return nil
+}
+
+func validateAgentQueueKeyMode(mode string) error {
+	switch {
+	case mode == "global", mode == "auth_hash", mode == "request_fingerprint":
+		return nil
+	case strings.HasPrefix(mode, "header:"):
+		if strings.TrimSpace(strings.TrimPrefix(mode, "header:")) == "" {
+			return errors.New("agent queue header key mode requires a header name")
+		}
+		return nil
+	case strings.HasPrefix(mode, "body:"):
+		if strings.TrimSpace(strings.TrimPrefix(mode, "body:")) == "" {
+			return errors.New("agent queue body key mode requires a field name")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported agent queue key mode %q", mode)
+	}
 }
 
 func loadDotEnv(path string) error {

@@ -25,13 +25,15 @@ import (
 type Option func(*options)
 
 type options struct {
-	codexService   codex.Service
-	requestContext func(*fiber.Ctx) context.Context
-	now            func() time.Time
-	newID          func() string
-	logOutput      io.Writer
-	logBodyShape   bool
-	agentQueue     *agentQueue
+	codexService       codex.Service
+	requestContext     func(*fiber.Ctx) context.Context
+	now                func() time.Time
+	newID              func() string
+	logOutput          io.Writer
+	logBodyShape       bool
+	logRequestIdentity bool
+	agentQueueKeyMode  string
+	agentQueue         *agentQueue
 }
 
 func WithCodexService(service codex.Service) Option {
@@ -56,8 +58,10 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		newID: func() string {
 			return "chatcmpl-" + uuid.NewString()
 		},
-		logOutput:    os.Stdout,
-		logBodyShape: cfg.LogBodyShape,
+		logOutput:          os.Stdout,
+		logBodyShape:       cfg.LogBodyShape,
+		logRequestIdentity: cfg.LogRequestIdentity,
+		agentQueueKeyMode:  cfg.AgentQueueKeyMode,
 	}
 	for _, setter := range setters {
 		setter(&opts)
@@ -66,6 +70,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		opts.agentQueue = newAgentQueue(
 			cfg.AgentQueueEnabled,
 			cfg.AgentMaxActive,
+			cfg.AgentMaxActivePerKey,
 			cfg.AgentQueueLimit,
 			cfg.AgentQueueTimeout,
 			opts.now,
@@ -116,8 +121,12 @@ func models(c *fiber.Ctx) error {
 
 func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		requestID := opts.newID()
 		if opts.logBodyShape {
 			logLine(opts, "body_shape path=%s %s\n", c.Path(), redactedBodyShape(c.Body()))
+		}
+		if opts.logRequestIdentity {
+			logLine(opts, "%s\n", redactedRequestIdentity(c, requestID))
 		}
 
 		var req openai.ChatCompletionRequest
@@ -137,7 +146,6 @@ func chatCompletions(opts options) fiber.Handler {
 		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, toolsPresent)
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
-		requestID := opts.newID()
 		// Cursor and other OpenAI clients send their own tools. Faithful Codex mode
 		// injects the captured CLI profile/tools and often makes those requests fail upstream.
 		faithful := defaultBool(req.Faithful, !toolsPresent)
@@ -156,7 +164,8 @@ func chatCompletions(opts options) fiber.Handler {
 
 		releaseQueue := func() {}
 		if toolsPresent {
-			release, err := opts.agentQueue.acquire(ctx, requestID)
+			queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, c, c.Body())
+			release, err := opts.agentQueue.acquire(ctx, requestID, queueKey)
 			if err != nil {
 				cancel()
 				return mapAgentQueueError(c, err)

@@ -13,86 +13,92 @@ var (
 )
 
 type agentQueue struct {
-	enabled bool
-	max     int
-	limit   int
-	timeout time.Duration
-	now     func() time.Time
-	logf    func(string, ...any)
+	enabled   bool
+	max       int
+	maxPerKey int
+	limit     int
+	timeout   time.Duration
+	now       func() time.Time
+	logf      func(string, ...any)
 
-	mu      sync.Mutex
-	active  int
-	waiters []*agentQueueWaiter
+	mu        sync.Mutex
+	active    int
+	activeKey map[string]int
+	waiters   []*agentQueueWaiter
 }
 
 type agentQueueWaiter struct {
+	key   agentQueueKey
 	ready chan struct{}
 }
 
-func newAgentQueue(enabled bool, maxActive int, limit int, timeout time.Duration, now func() time.Time, logf func(string, ...any)) *agentQueue {
+func newAgentQueue(enabled bool, maxActive int, maxActivePerKey int, limit int, timeout time.Duration, now func() time.Time, logf func(string, ...any)) *agentQueue {
 	return &agentQueue{
-		enabled: enabled,
-		max:     maxActive,
-		limit:   limit,
-		timeout: timeout,
-		now:     now,
-		logf:    logf,
+		enabled:   enabled,
+		max:       maxActive,
+		maxPerKey: maxActivePerKey,
+		limit:     limit,
+		timeout:   timeout,
+		now:       now,
+		logf:      logf,
+		activeKey: map[string]int{},
 	}
 }
 
-func (q *agentQueue) acquire(ctx context.Context, requestID string) (func(), error) {
+func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey) (func(), error) {
 	if q == nil || !q.enabled {
 		return func() {}, nil
 	}
+	key = key.withDefaults()
 
 	start := q.now()
 	q.mu.Lock()
-	if q.active < q.max && len(q.waiters) == 0 {
-		q.active++
-		active := q.active
+	if q.canAcquireLocked(key) && len(q.waiters) == 0 {
+		activeGlobal, activeKey := q.acquireLocked(key)
 		q.mu.Unlock()
-		q.logf("agent_queue_acquire request_id=%s wait_ms=0 active=%d\n", requestID, active)
-		return q.releaseFunc(requestID, start), nil
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s wait_ms=0 active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, activeGlobal, activeKey)
+		return q.releaseFunc(requestID, start, key), nil
 	}
 	if len(q.waiters) >= q.limit {
 		q.mu.Unlock()
-		q.logf("agent_queue_full request_id=%s limit=%d\n", requestID, q.limit)
+		q.logf("agent_queue_full request_id=%s key_mode=%s key_hash=%s limit=%d\n", requestID, key.Mode, key.Hash, q.limit)
 		return nil, errAgentQueueFull
 	}
 
-	waiter := &agentQueueWaiter{ready: make(chan struct{})}
+	waiter := &agentQueueWaiter{key: key, ready: make(chan struct{})}
 	q.waiters = append(q.waiters, waiter)
 	position := len(q.waiters)
+	q.advanceLocked()
 	q.mu.Unlock()
-	q.logf("agent_queue_wait request_id=%s position=%d\n", requestID, position)
+	q.logf("agent_queue_wait request_id=%s key_mode=%s key_hash=%s position=%d\n", requestID, key.Mode, key.Hash, position)
 
 	timer := time.NewTimer(q.timeout)
 	defer timer.Stop()
 
 	select {
 	case <-waiter.ready:
-		active := q.currentActive()
-		q.logf("agent_queue_acquire request_id=%s wait_ms=%d active=%d\n", requestID, q.now().Sub(start).Milliseconds(), active)
-		return q.releaseFunc(requestID, start), nil
+		activeGlobal, activeKey := q.currentActive(key)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
+		return q.releaseFunc(requestID, start, key), nil
 	case <-timer.C:
 		if q.removeWaiter(waiter) {
-			q.logf("agent_queue_timeout request_id=%s wait_ms=%d\n", requestID, q.now().Sub(start).Milliseconds())
+			q.logf("agent_queue_timeout request_id=%s key_mode=%s key_hash=%s wait_ms=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds())
 			return nil, errAgentQueueTimeout
 		}
-		active := q.currentActive()
-		q.logf("agent_queue_acquire request_id=%s wait_ms=%d active=%d\n", requestID, q.now().Sub(start).Milliseconds(), active)
-		return q.releaseFunc(requestID, start), nil
+		activeGlobal, activeKey := q.currentActive(key)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
+		return q.releaseFunc(requestID, start, key), nil
 	case <-ctx.Done():
 		if q.removeWaiter(waiter) {
 			return nil, ctx.Err()
 		}
-		active := q.currentActive()
-		q.logf("agent_queue_acquire request_id=%s wait_ms=%d active=%d\n", requestID, q.now().Sub(start).Milliseconds(), active)
-		return q.releaseFunc(requestID, start), nil
+		activeGlobal, activeKey := q.currentActive(key)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
+		return q.releaseFunc(requestID, start, key), nil
 	}
 }
 
-func (q *agentQueue) releaseFunc(requestID string, start time.Time) func() {
+func (q *agentQueue) releaseFunc(requestID string, start time.Time, key agentQueueKey) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -100,17 +106,22 @@ func (q *agentQueue) releaseFunc(requestID string, start time.Time) func() {
 			if q.active > 0 {
 				q.active--
 			}
+			if q.activeKey[key.Value] > 0 {
+				q.activeKey[key.Value]--
+			}
+			activeGlobal := q.active
+			activeKey := q.activeKey[key.Value]
 			q.advanceLocked()
 			q.mu.Unlock()
-			q.logf("agent_queue_release request_id=%s run_ms=%d\n", requestID, q.now().Sub(start).Milliseconds())
+			q.logf("agent_queue_release request_id=%s key_mode=%s key_hash=%s run_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
 		})
 	}
 }
 
-func (q *agentQueue) currentActive() int {
+func (q *agentQueue) currentActive(key agentQueueKey) (int, int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.active
+	return q.active, q.activeKey[key.Value]
 }
 
 func (q *agentQueue) removeWaiter(waiter *agentQueueWaiter) bool {
@@ -126,10 +137,30 @@ func (q *agentQueue) removeWaiter(waiter *agentQueueWaiter) bool {
 }
 
 func (q *agentQueue) advanceLocked() {
-	for q.active < q.max && len(q.waiters) > 0 {
-		waiter := q.waiters[0]
-		q.waiters = q.waiters[1:]
-		q.active++
+	for q.active < q.max {
+		index := -1
+		for i, waiter := range q.waiters {
+			if q.canAcquireLocked(waiter.key) {
+				index = i
+				break
+			}
+		}
+		if index == -1 {
+			return
+		}
+		waiter := q.waiters[index]
+		q.waiters = append(q.waiters[:index], q.waiters[index+1:]...)
+		q.acquireLocked(waiter.key)
 		close(waiter.ready)
 	}
+}
+
+func (q *agentQueue) canAcquireLocked(key agentQueueKey) bool {
+	return q.active < q.max && q.activeKey[key.Value] < q.maxPerKey
+}
+
+func (q *agentQueue) acquireLocked(key agentQueueKey) (int, int) {
+	q.active++
+	q.activeKey[key.Value]++
+	return q.active, q.activeKey[key.Value]
 }
