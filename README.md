@@ -772,4 +772,6 @@ API Key: any non-empty value
 Model: gpt-5.3-codex-spark
 ```
 
+Cursor may also send `gpt-5.3-codex-spark-preview`; the API accepts that as an equivalent alias.
+
 `gpt-5.3-codex-spark` is a Cursor-facing alias that routes to the stable Codex upstream model with low reasoning effort and low verbosity for faster interactive turns.
