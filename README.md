@@ -125,9 +125,10 @@ curl -s http://127.0.0.1:18088/health
 Cloudflare quick-tunnel URLs are ephemeral. Restarting `cloudflared` may produce
 a new URL, so update Cursor's base URL after a restart.
 
-The Docker Compose service enables the global Agent queue by default. Tool-capable
-Cursor Agent requests are serialized with `CODEX_AGENT_MAX_ACTIVE=1`, while
-Ask/text-only requests bypass the queue.
+The Docker Compose service enables the Agent queue by default. Tool-capable
+Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=global` and are serialized
+with `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while Ask/text-only requests bypass the
+queue.
 
 ## Validate
 
@@ -289,8 +290,11 @@ Flags override environment values.
 | Codex websocket URL | `CODEX_WEBSOCKET_URL` | `--codex-websocket-url` | `wss://chatgpt.com/backend-api/codex/responses` |
 | Codex request timeout | `CODEX_TIMEOUT` | `--codex-timeout` | `120s` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
+| Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
 | Agent queue enabled | `CODEX_AGENT_QUEUE_ENABLED` | `--agent-queue-enabled` | `true` |
 | Agent max active requests | `CODEX_AGENT_MAX_ACTIVE` | `--agent-max-active` | `1` |
+| Agent max active per key | `CODEX_AGENT_MAX_ACTIVE_PER_KEY` | `--agent-max-active-per-key` | `1` |
+| Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `global` |
 | Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
 
@@ -429,16 +433,19 @@ Agent mode should send `tools` in the first request, receive an assistant
 containing the prior assistant `tool_calls` and matching `role:"tool"` results.
 The final response should be normal assistant text with `finish_reason:"stop"`.
 
-By default, requests that include `tools` enter a global FIFO Agent queue. This
-keeps one tool-capable Agent stream active at a time because overlapping Cursor
-tool-call streams can stall while Cursor coordinates local tool execution in the
-same workspace. Requests without `tools`, including Ask mode, bypass the queue.
+By default, requests that include `tools` enter an Agent queue keyed by
+`CODEX_AGENT_QUEUE_KEY_MODE=global`. This keeps one tool-capable Agent stream
+active at a time because overlapping Cursor tool-call streams can stall while
+Cursor coordinates local tool execution in the same workspace. Requests without
+`tools`, including Ask mode, bypass the queue.
 
 Tune the queue with:
 
 ```bash
 CODEX_AGENT_QUEUE_ENABLED=true
 CODEX_AGENT_MAX_ACTIVE=1
+CODEX_AGENT_MAX_ACTIVE_PER_KEY=1
+CODEX_AGENT_QUEUE_KEY_MODE=global
 CODEX_AGENT_QUEUE_LIMIT=20
 CODEX_AGENT_QUEUE_TIMEOUT=5m
 ```
@@ -446,6 +453,20 @@ CODEX_AGENT_QUEUE_TIMEOUT=5m
 Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable queueing, or raise
 `CODEX_AGENT_MAX_ACTIVE` after validating that overlapping Agent chats are stable
 in your workspace.
+
+Queue key modes:
+
+| Mode | Behavior |
+| --- | --- |
+| `global` | Safe default. All tool-capable requests share one key, so same-window Agent traffic is serialized. |
+| `auth_hash` | All requests using the same API key serialize. The raw key is never logged. |
+| `header:<name>` | Queue by a selected request header, for example `header:x-cursor-session-id`, if real traffic shows it is stable. |
+| `body:<field>` | Queue by a selected top-level JSON body field, for example `body:session_id`, if real traffic shows it is stable. |
+| `request_fingerprint` | Queue by a redacted fingerprint of authorization hash, user agent hash, and remote IP. This is not a proven per-chat key. |
+
+Configured header/body modes fall back to the global key when the selected value
+is missing. Until Cursor traffic shows a stable per-chat/session/workspace
+signal, `global` is the only robust single-window mode.
 
 ### Tool-call protocol notes
 
@@ -497,16 +518,24 @@ through a Cloudflare tunnel and returned actual top-level files.
 
 ### Diagnostics
 
-Enable redacted request logging:
+Enable redacted body-shape logging:
 
 ```bash
 CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+```
+
+To discover stable Cursor request identity signals, enable the request identity
+diagnostic line:
+
+```bash
+CODEX_LOG_REQUEST_IDENTITY=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
 ```
 
 Successful Cursor probes should log:
 
 - `GET /v1/models`
 - `POST /v1/chat/completions` with `authorization_present=true`
+- `request_identity request_id=... method=POST path=/v1/chat/completions ...`
 - `chat_completion model=gpt-5.5-high stream=... tools_present=...`
 - `agent_queue_acquire request_id=...` before queued Agent stream starts
 - `agent_queue_release request_id=...` after the stream fully ends
@@ -515,14 +544,20 @@ Body-shape logs include field names, message count, message roles, and tool coun
 Bearer tokens and message content are never printed. Codex tool websocket events
 are logged as redacted structural summaries when body-shape logging is enabled.
 
+Request identity logs include header names, selected Cursor/session/request
+header hashes, top-level body fields, metadata field names, message role
+sequence, stream flag, and tool count. They do not print Authorization values,
+cookies, prompt content, message content, tool arguments, tool schemas, or full
+request bodies.
+
 When multiple Agent chats overlap, queue diagnostics show the lifecycle:
 
 ```text
-agent_queue_wait request_id=... position=2
-agent_queue_acquire request_id=... wait_ms=1234 active=1
+agent_queue_wait request_id=... key_mode=header:x-cursor-session-id key_hash=... position=2
+agent_queue_acquire request_id=... key_mode=header:x-cursor-session-id key_hash=... wait_ms=1234 active_global=2 active_key=1
 stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
-agent_queue_release request_id=... run_ms=8123
+agent_queue_release request_id=... key_mode=header:x-cursor-session-id key_hash=... run_ms=8123 active_global=1 active_key=0
 ```
 
 If the queue is full or a request waits longer than `CODEX_AGENT_QUEUE_TIMEOUT`,
