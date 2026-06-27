@@ -41,8 +41,8 @@ func TestShouldRetryDegenerateTurn(t *testing.T) {
 	if !shouldRetryDegenerateTurn(true, true, msgs, 0, "I'll inspect the repo now.", 26) {
 		t.Fatal("expected retry for tool continuation with loop phrase")
 	}
-	if !shouldRetryDegenerateTurn(true, true, msgs, 0, strings.Repeat("x", 600), 600) {
-		t.Fatal("expected retry for long tool continuation without tool calls")
+	if shouldRetryDegenerateTurn(true, true, msgs, 0, strings.Repeat("x", 600), 600) {
+		t.Fatal("should not retry long final answer after tool result")
 	}
 	msgs[len(msgs)-1].Role = "assistant"
 	if shouldRetryDegenerateTurn(true, true, msgs, 0, "done", 4) {
