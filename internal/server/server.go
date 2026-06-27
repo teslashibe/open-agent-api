@@ -203,6 +203,8 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		var deltas, toolDeltas, upstreamEvents int
 		outcome := "completed"
 		toolCallEmitted := false
+		streamedToolCallIDs := map[string]bool{}
+		streamedToolCallIndexes := map[int]bool{}
 
 		// finalize logs one stream lifecycle summary regardless of how the
 		// stream ends (normal completion, client disconnect, or upstream error).
@@ -259,6 +261,9 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				}
 			}
 			for i, toolCall := range event.ToolCalls {
+				if skipCompletedToolCallDelta(i, toolCall, streamedToolCallIDs, streamedToolCallIndexes) {
+					continue
+				}
 				toolCallEmitted = true
 				toolDeltas++
 				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
@@ -278,6 +283,10 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 			if event.ToolCallDelta != nil {
 				toolCallEmitted = true
 				toolDeltas++
+				streamedToolCallIndexes[event.ToolCallDelta.Index] = true
+				if event.ToolCallDelta.ID != "" {
+					streamedToolCallIDs[event.ToolCallDelta.ID] = true
+				}
 				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 					ID:      id,
 					Object:  "chat.completion.chunk",
@@ -319,6 +328,13 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		finalize()
 	})
 	return nil
+}
+
+func skipCompletedToolCallDelta(index int, toolCall codex.ToolCall, streamedIDs map[string]bool, streamedIndexes map[int]bool) bool {
+	if toolCall.ID != "" && streamedIDs[toolCall.ID] {
+		return true
+	}
+	return streamedIndexes[index]
 }
 
 func streamFinish(outcome string, toolCallEmitted bool) string {
