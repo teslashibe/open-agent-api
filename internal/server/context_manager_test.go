@@ -110,6 +110,26 @@ func TestManageContextDoesNotCompactToolMessagesWithoutCallID(t *testing.T) {
 	}
 }
 
+func TestManageContextDoesNotExpandOlderSmallToolOutputs(t *testing.T) {
+	messages := []openai.ChatMessage{
+		{Role: "assistant", Content: []byte("null"), ToolCalls: []openai.ToolCall{{ID: "call_small", Type: "function", Function: openai.ToolCallFunction{Name: "lookup", Arguments: `{}`}}}},
+		{Role: "tool", ToolCallID: "call_small", Content: openai.TextContent("small")},
+		{Role: "user", Content: openai.TextContent("recent")},
+	}
+	cfg := contextTestConfig()
+	cfg.ContextMaxBytes = 1
+	cfg.ContextRecentMessages = 1
+	cfg.ContextCompactedToolOutputMaxBytes = 32
+
+	result := manageContext(messages, cfg)
+	if result.CompactedTools != 0 {
+		t.Fatalf("CompactedTools = %d, want 0", result.CompactedTools)
+	}
+	if rawMessageText(result.Messages[1].Content) != "small" {
+		t.Fatalf("small tool output changed: %#v", result.Messages[1])
+	}
+}
+
 func contextTestConfig() config.Config {
 	cfg := config.Defaults()
 	cfg.ContextManagementEnabled = true

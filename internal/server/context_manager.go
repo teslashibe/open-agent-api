@@ -147,7 +147,14 @@ func truncatedToolOutput(text string, maxBytes int) string {
 
 func compactedToolOutput(text string, maxBytes int) string {
 	kept := prefixBytes(text, maxBytes)
-	return kept + "\n\n" + fmt.Sprintf("[codex-chat-api: older tool output compacted from %d bytes; kept %d bytes]", len(text), len(kept))
+	if kept == text {
+		return text
+	}
+	compacted := kept + "\n\n" + fmt.Sprintf("[codex-chat-api: older tool output compacted from %d bytes; kept %d bytes]", len(text), len(kept))
+	if len(compacted) >= len(text) {
+		return text
+	}
+	return compacted
 }
 
 func prefixBytes(text string, maxBytes int) string {
