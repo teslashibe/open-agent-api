@@ -1067,13 +1067,13 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 	var logs bytes.Buffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
-	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"}],"tools":[{"type":"function"}]}`)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("first request did not start")
 	}
-	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"},{"role":"user","content":"follow up"}],"tools":[{"type":"function"}]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
@@ -1082,7 +1082,7 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue full") {
 		t.Fatalf("body = %q, want OpenAI-shaped queue full error", body)
 	}
-	for _, want := range []string{"agent_queue_full request_id=", "key_mode=header:x-cursor-session-id", "key_hash=", "limit=0"} {
+	for _, want := range []string{"agent_queue_full request_id=", "key_mode=cursor:conversation_fingerprint", "key_hash=", "limit=0"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}
@@ -1108,13 +1108,13 @@ func TestAgentQueueTimeoutReturns429(t *testing.T) {
 	var logs bytes.Buffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
-	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"}],"tools":[{"type":"function"}]}`)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("first request did not start")
 	}
-	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"},{"role":"user","content":"follow up"}],"tools":[{"type":"function"}]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
@@ -1123,7 +1123,7 @@ func TestAgentQueueTimeoutReturns429(t *testing.T) {
 	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue timeout") {
 		t.Fatalf("body = %q, want OpenAI-shaped queue timeout error", body)
 	}
-	for _, want := range []string{"agent_queue_timeout request_id=", "key_mode=header:x-cursor-session-id", "key_hash=", "wait_ms="} {
+	for _, want := range []string{"agent_queue_timeout request_id=", "key_mode=cursor:conversation_fingerprint", "key_hash=", "wait_ms="} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}

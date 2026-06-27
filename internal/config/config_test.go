@@ -357,6 +357,12 @@ func TestLoadInvalidAgentQueueKeyMode(t *testing.T) {
 	}
 }
 
+func TestValidateAgentQueueKeyModeAcceptsCursor(t *testing.T) {
+	if err := validateAgentQueueKeyMode("cursor"); err != nil {
+		t.Fatalf("validateAgentQueueKeyMode(cursor) error = %v", err)
+	}
+}
+
 func TestLoadInvalidAgentQueueLimit(t *testing.T) {
 	t.Setenv("CODEX_AGENT_QUEUE_LIMIT", "-1")
 	chdir(t, t.TempDir())
