@@ -2,6 +2,7 @@ package codextest
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 )
 
 func TestWaitRequestsRemovesTimedOutWaiters(t *testing.T) {
+	requireLocalListener(t)
 	upstream := NewUpstream()
 	defer upstream.Close()
 
@@ -25,6 +27,7 @@ func TestWaitRequestsRemovesTimedOutWaiters(t *testing.T) {
 }
 
 func TestDelayedFrameStopsWhenConnectionCloses(t *testing.T) {
+	requireLocalListener(t)
 	upstream := NewUpstream(Script{
 		DelayedFrame(time.Hour, `{"type":"response.completed"}`),
 	})
@@ -50,4 +53,14 @@ func TestDelayedFrameStopsWhenConnectionCloses(t *testing.T) {
 	if err := WaitClosed(ctx, req.Closed); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func requireLocalListener(t *testing.T) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("local listeners are unavailable in this environment: %v", err)
+	}
+	_ = ln.Close()
 }

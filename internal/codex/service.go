@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
@@ -24,6 +23,10 @@ type Request struct {
 	Verbosity         string
 	Faithful          bool
 	Prewarm           bool
+	RequestID         string
+	AffinityKey       string
+	AffinityKeyHash   string
+	AffinityKeyMode   string
 }
 
 type Completion struct {
@@ -38,12 +41,12 @@ type StreamEvent struct {
 	Delta          string
 	ReasoningDelta string
 	ToolCalls      []ToolCall
-	ToolCallDelta *ToolCallDelta
-	Done          bool
-	Model         string
-	ID            string
-	Usage         openai.Usage
-	Err           error
+	ToolCallDelta  *ToolCallDelta
+	Done           bool
+	Model          string
+	ID             string
+	Usage          openai.Usage
+	Err            error
 }
 
 type ToolCall struct {
@@ -76,6 +79,8 @@ const (
 	ErrorKindUpstream ErrorKind = "upstream"
 	ErrorKindClient   ErrorKind = "client"
 )
+
+var ErrClientUnavailable = errors.New("codex client unavailable")
 
 type Error struct {
 	Kind    ErrorKind
@@ -127,6 +132,6 @@ func unavailableError() error {
 		ErrorKindUpstream,
 		502,
 		"codex transport is not configured",
-		fmt.Errorf("real codex websocket transport is not implemented"),
+		ErrClientUnavailable,
 	)
 }

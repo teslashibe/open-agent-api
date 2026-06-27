@@ -75,11 +75,11 @@ func completeWithDegenerateRetry(
 	}
 
 	loopPhrase := detectLoopPhrase(completion.Text)
-	logDegenerateTurn(opts, requestID, textBytes, toolCallCount, loopPhrase, len(req.Messages))
 	if !shouldRetryDegenerateTurn(opts.contextConfig.DegenerateTurnRetryEnabled, toolsPresent, req.Messages, toolCallCount, completion.Text, textBytes) {
 		return completion, nil
 	}
 
+	logDegenerateTurn(opts, requestID, textBytes, toolCallCount, loopPhrase, len(req.Messages))
 	logDegenerateTurnRetry(opts, requestID, 1, 0)
 	retryCompletion, retryErr := service.Complete(ctx, buildDegenerateRetryRequest(req))
 	if retryErr != nil {

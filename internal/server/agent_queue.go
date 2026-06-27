@@ -3,6 +3,9 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -18,6 +21,8 @@ type agentQueue struct {
 	maxPerKey int
 	limit     int
 	timeout   time.Duration
+	lockDir   string
+	priority  bool
 	now       func() time.Time
 	logf      func(string, ...any)
 
@@ -25,52 +30,66 @@ type agentQueue struct {
 	active    int
 	activeKey map[string]int
 	waiters   []*agentQueueWaiter
+	nextSeq   int64
 }
 
 type agentQueueWaiter struct {
-	key   agentQueueKey
-	ready chan struct{}
+	key      agentQueueKey
+	class    turnClass
+	priority int
+	seq      int64
+	ready    chan struct{}
 }
 
-func newAgentQueue(enabled bool, maxActive int, maxActivePerKey int, limit int, timeout time.Duration, now func() time.Time, logf func(string, ...any)) *agentQueue {
+func newAgentQueue(enabled bool, maxActive int, maxActivePerKey int, limit int, timeout time.Duration, lockDir string, priority bool, now func() time.Time, logf func(string, ...any)) *agentQueue {
 	return &agentQueue{
 		enabled:   enabled,
 		max:       maxActive,
 		maxPerKey: maxActivePerKey,
 		limit:     limit,
 		timeout:   timeout,
+		lockDir:   lockDir,
+		priority:  priority,
 		now:       now,
 		logf:      logf,
 		activeKey: map[string]int{},
 	}
 }
 
-func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey) (func(), error) {
-	if q == nil || !q.enabled {
-		return func() {}, nil
+func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey, class turnClass) (func(), time.Duration, error) {
+	if q == nil {
+		return func() {}, 0, nil
 	}
 	key = key.withDefaults()
+	priority := agentQueuePriority(class)
 
 	start := q.now()
+	if !q.enabled {
+		release, err := q.acquireDistributedLock(ctx, requestID, start, key)
+		return release, 0, err
+	}
+
 	q.mu.Lock()
 	if q.canAcquireLocked(key) && len(q.waiters) == 0 {
 		activeGlobal, activeKey := q.acquireLocked(key)
 		q.mu.Unlock()
-		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s wait_ms=0 active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, activeGlobal, activeKey)
-		return q.releaseFunc(requestID, start, key), nil
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=0 active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, activeGlobal, activeKey)
+		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		return release, 0, err
 	}
 	if len(q.waiters) >= q.limit {
 		q.mu.Unlock()
-		q.logf("agent_queue_full request_id=%s key_mode=%s key_hash=%s limit=%d\n", requestID, key.Mode, key.Hash, q.limit)
-		return nil, errAgentQueueFull
+		q.logf("agent_queue_full request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d limit=%d\n", requestID, key.Mode, key.Hash, class, priority, q.limit)
+		return nil, q.now().Sub(start), errAgentQueueFull
 	}
 
-	waiter := &agentQueueWaiter{key: key, ready: make(chan struct{})}
+	q.nextSeq++
+	waiter := &agentQueueWaiter{key: key, class: class, priority: priority, seq: q.nextSeq, ready: make(chan struct{})}
 	q.waiters = append(q.waiters, waiter)
 	position := len(q.waiters)
 	q.advanceLocked()
 	q.mu.Unlock()
-	q.logf("agent_queue_wait request_id=%s key_mode=%s key_hash=%s position=%d\n", requestID, key.Mode, key.Hash, position)
+	q.logf("agent_queue_wait request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d position=%d\n", requestID, key.Mode, key.Hash, class, priority, position)
 
 	timer := time.NewTimer(q.timeout)
 	defer timer.Stop()
@@ -78,27 +97,100 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 	select {
 	case <-waiter.ready:
 		activeGlobal, activeKey := q.currentActive(key)
-		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
-		return q.releaseFunc(requestID, start, key), nil
+		wait := q.now().Sub(start)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
+		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		return release, wait, err
 	case <-timer.C:
 		if q.removeWaiter(waiter) {
-			q.logf("agent_queue_timeout request_id=%s key_mode=%s key_hash=%s wait_ms=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds())
-			return nil, errAgentQueueTimeout
+			wait := q.now().Sub(start)
+			q.logf("agent_queue_timeout request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds())
+			return nil, wait, errAgentQueueTimeout
 		}
 		activeGlobal, activeKey := q.currentActive(key)
-		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
-		return q.releaseFunc(requestID, start, key), nil
+		wait := q.now().Sub(start)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
+		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		return release, wait, err
 	case <-ctx.Done():
 		if q.removeWaiter(waiter) {
-			return nil, ctx.Err()
+			return nil, q.now().Sub(start), ctx.Err()
 		}
 		activeGlobal, activeKey := q.currentActive(key)
-		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
-		return q.releaseFunc(requestID, start, key), nil
+		wait := q.now().Sub(start)
+		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
+		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		return release, wait, err
 	}
 }
 
-func (q *agentQueue) releaseFunc(requestID string, start time.Time, key agentQueueKey) func() {
+func (q *agentQueue) releaseWithDistributedLock(ctx context.Context, requestID string, start time.Time, key agentQueueKey, class turnClass, priority int) (func(), error) {
+	releaseLocal := q.releaseFunc(requestID, start, key, class, priority)
+	releaseDistributed, err := q.acquireDistributedLock(ctx, requestID, start, key)
+	if err != nil {
+		releaseLocal()
+		return nil, err
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			releaseDistributed()
+			releaseLocal()
+		})
+	}, nil
+}
+
+func (q *agentQueue) acquireDistributedLock(ctx context.Context, requestID string, start time.Time, key agentQueueKey) (func(), error) {
+	if q.lockDir == "" {
+		return func() {}, nil
+	}
+	if err := os.MkdirAll(q.lockDir, 0o700); err != nil {
+		return nil, fmt.Errorf("agent queue lock dir: %w", err)
+	}
+	path := filepath.Join(q.lockDir, key.Hash+".lock")
+	remaining := q.timeout
+	if q.now != nil && q.timeout > 0 {
+		if elapsed := q.now().Sub(start); elapsed > 0 {
+			remaining -= elapsed
+		}
+	}
+	if remaining <= 0 {
+		remaining = q.timeout
+	}
+	lockStart := time.Now()
+	for {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_, _ = fmt.Fprintf(file, "request_id=%s\nkey_mode=%s\nkey_hash=%s\n", requestID, key.Mode, key.Hash)
+			_ = file.Close()
+			q.logf("agent_queue_lock_acquire request_id=%s key_mode=%s key_hash=%s lock_wait_ms=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds())
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+						q.logf("agent_queue_lock_release_error request_id=%s key_mode=%s key_hash=%s err=%s\n", requestID, key.Mode, key.Hash, err)
+						return
+					}
+					q.logf("agent_queue_lock_release request_id=%s key_mode=%s key_hash=%s\n", requestID, key.Mode, key.Hash)
+				})
+			}, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("agent queue lock acquire: %w", err)
+		}
+		if remaining > 0 && time.Since(lockStart) >= remaining {
+			q.logf("agent_queue_lock_timeout request_id=%s key_mode=%s key_hash=%s wait_ms=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds())
+			return nil, errAgentQueueTimeout
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func (q *agentQueue) releaseFunc(requestID string, start time.Time, key agentQueueKey, class turnClass, priority int) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -113,7 +205,7 @@ func (q *agentQueue) releaseFunc(requestID string, start time.Time, key agentQue
 			activeKey := q.activeKey[key.Value]
 			q.advanceLocked()
 			q.mu.Unlock()
-			q.logf("agent_queue_release request_id=%s key_mode=%s key_hash=%s run_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
+			q.logf("agent_queue_release request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d run_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
 		})
 	}
 }
@@ -138,13 +230,7 @@ func (q *agentQueue) removeWaiter(waiter *agentQueueWaiter) bool {
 
 func (q *agentQueue) advanceLocked() {
 	for q.active < q.max {
-		index := -1
-		for i, waiter := range q.waiters {
-			if q.canAcquireLocked(waiter.key) {
-				index = i
-				break
-			}
-		}
+		index := q.nextWaiterLocked()
 		if index == -1 {
 			return
 		}
@@ -153,6 +239,23 @@ func (q *agentQueue) advanceLocked() {
 		q.acquireLocked(waiter.key)
 		close(waiter.ready)
 	}
+}
+
+func (q *agentQueue) nextWaiterLocked() int {
+	index := -1
+	for i, waiter := range q.waiters {
+		if !q.canAcquireLocked(waiter.key) {
+			continue
+		}
+		if index == -1 {
+			index = i
+			continue
+		}
+		if q.priority && waiter.priority > q.waiters[index].priority {
+			index = i
+		}
+	}
+	return index
 }
 
 func (q *agentQueue) canAcquireLocked(key agentQueueKey) bool {
