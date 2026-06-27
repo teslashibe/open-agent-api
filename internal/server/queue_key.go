@@ -35,6 +35,8 @@ func resolveAgentQueueKey(mode string, c *fiber.Ctx, rawBody []byte) agentQueueK
 			return newAgentQueueKey(mode, defaultAgentQueueKeyValue)
 		}
 		return newAgentQueueKey(mode, safeHash(auth))
+	case mode == "cursor":
+		return resolveCursorQueueKey(c, rawBody)
 	case mode == "request_fingerprint":
 		return newAgentQueueKey(mode, requestFingerprint(c))
 	case strings.HasPrefix(mode, "header:"):
@@ -54,6 +56,116 @@ func resolveAgentQueueKey(mode string, c *fiber.Ctx, rawBody []byte) agentQueueK
 	default:
 		return newAgentQueueKey(defaultAgentQueueKeyMode, defaultAgentQueueKeyValue)
 	}
+}
+
+func resolveCursorQueueKey(c *fiber.Ctx, rawBody []byte) agentQueueKey {
+	var body map[string]json.RawMessage
+	_ = json.Unmarshal(rawBody, &body)
+
+	if value := cursorMetadataIdentifier(body); value != "" {
+		return newAgentQueueKey("cursor:metadata", value)
+	}
+	for _, name := range []string{
+		"x-cursor-session-id",
+		"x-conversation-id",
+		"x-conversation-thread-id",
+		"x-session-id",
+	} {
+		if value := strings.TrimSpace(c.Get(name)); value != "" {
+			return newAgentQueueKey("cursor:header:"+name, value)
+		}
+	}
+	if value := cursorConversationFingerprint(body); value != "" {
+		return newAgentQueueKey("cursor:conversation_fingerprint", value)
+	}
+	if value := strings.TrimSpace(c.Get("x-forwarded-for")); value != "" {
+		return newAgentQueueKey("cursor:x-forwarded-for", value)
+	}
+	if ip := strings.TrimSpace(c.IP()); ip != "" {
+		return newAgentQueueKey("cursor:x-forwarded-for", ip)
+	}
+	return newAgentQueueKey("cursor:global", defaultAgentQueueKeyValue)
+}
+
+func cursorMetadataIdentifier(body map[string]json.RawMessage) string {
+	for _, field := range cursorStableIDFields() {
+		if value := scalarRawString(body[field]); value != "" {
+			return field + "=" + value
+		}
+	}
+	var metadata map[string]json.RawMessage
+	if err := json.Unmarshal(body["metadata"], &metadata); err != nil {
+		return ""
+	}
+	for _, field := range cursorStableIDFields() {
+		if value := scalarRawString(metadata[field]); value != "" {
+			return "metadata." + field + "=" + value
+		}
+	}
+	return ""
+}
+
+func cursorStableIDFields() []string {
+	return []string{
+		"conversation_id",
+		"chat_id",
+		"thread_id",
+		"session_id",
+		"cursor_conversation_id",
+		"cursor_chat_id",
+		"cursor_thread_id",
+	}
+}
+
+func cursorConversationFingerprint(body map[string]json.RawMessage) string {
+	rawMessages, ok := body["messages"]
+	if !ok {
+		return ""
+	}
+	var messages []cursorFingerprintMessage
+	if err := json.Unmarshal(rawMessages, &messages); err != nil {
+		return ""
+	}
+
+	parts := make([]string, 0)
+	for _, message := range messages {
+		if message.ID != "" {
+			parts = append(parts, "message_id="+message.ID)
+		}
+		if message.ToolCallID != "" {
+			parts = append(parts, "tool_result="+message.ToolCallID)
+		}
+		for _, toolCall := range message.ToolCalls {
+			if toolCall.ID == "" {
+				continue
+			}
+			parts = append(parts, "assistant_tool="+toolCall.ID+"|"+toolCall.Type+"|"+toolCall.Function.Name)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(parts) > 12 {
+		parts = parts[len(parts)-12:]
+	}
+	return strings.Join(parts, "|")
+}
+
+type cursorFingerprintMessage struct {
+	ID         string                      `json:"id"`
+	Role       string                      `json:"role"`
+	ToolCallID string                      `json:"tool_call_id"`
+	ToolCalls  []cursorFingerprintToolCall `json:"tool_calls"`
+}
+
+type cursorFingerprintToolCall struct {
+	ID       string                        `json:"id"`
+	Type     string                        `json:"type"`
+	Function cursorFingerprintToolFunction `json:"function"`
+}
+
+type cursorFingerprintToolFunction struct {
+	Name string `json:"name"`
 }
 
 func newAgentQueueKey(mode string, value string) agentQueueKey {
@@ -101,20 +213,24 @@ func scalarBodyField(raw []byte, field string) string {
 	if !ok {
 		return ""
 	}
+	return scalarRawString(rawValue)
+}
+
+func scalarRawString(raw json.RawMessage) string {
 	var value any
-	if err := json.Unmarshal(rawValue, &value); err != nil {
+	if err := json.Unmarshal(raw, &value); err != nil {
 		return ""
 	}
 	switch typed := value.(type) {
 	case string:
-		return typed
+		return strings.TrimSpace(typed)
 	case bool:
 		if typed {
 			return "true"
 		}
 		return "false"
 	case float64:
-		return string(rawValue)
+		return strings.TrimSpace(string(raw))
 	default:
 		return ""
 	}

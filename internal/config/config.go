@@ -21,7 +21,7 @@ const (
 	DefaultAgentQueueEnabled                  = true
 	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
-	DefaultAgentQueueKeyMode                  = "header:x-cursor-session-id"
+	DefaultAgentQueueKeyMode                  = "cursor"
 	DefaultAgentQueueLimit                    = 20
 	DefaultAgentQueueTimeout                  = 5 * time.Minute
 	DefaultContextMaxBytes                    = 256 * 1024
@@ -29,7 +29,7 @@ const (
 	DefaultContextRecentMessages              = 40
 	DefaultContextToolOutputMaxBytes          = 64 * 1024
 	DefaultContextCompactedToolOutputMaxBytes = 1024
-	DefaultDegenerateTurnRetryEnabled       = true
+	DefaultDegenerateTurnRetryEnabled         = true
 )
 
 type Config struct {
@@ -55,7 +55,7 @@ type Config struct {
 	ContextRecentMessages              int
 	ContextToolOutputMaxBytes          int
 	ContextCompactedToolOutputMaxBytes int
-	DegenerateTurnRetryEnabled           bool
+	DegenerateTurnRetryEnabled         bool
 }
 
 func Load(args []string) (Config, error) {
@@ -224,7 +224,7 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.AgentQueueEnabled, "agent-queue-enabled", cfg.AgentQueueEnabled, "enable Agent queue for requests with tools")
 	fs.IntVar(&cfg.AgentMaxActive, "agent-max-active", cfg.AgentMaxActive, "maximum concurrent tool-capable Agent requests")
 	fs.IntVar(&cfg.AgentMaxActivePerKey, "agent-max-active-per-key", cfg.AgentMaxActivePerKey, "maximum concurrent tool-capable Agent requests per queue key")
-	fs.StringVar(&cfg.AgentQueueKeyMode, "agent-queue-key-mode", cfg.AgentQueueKeyMode, "Agent queue key mode: global, auth_hash, request_fingerprint, header:<name>, or body:<field>")
+	fs.StringVar(&cfg.AgentQueueKeyMode, "agent-queue-key-mode", cfg.AgentQueueKeyMode, "Agent queue key mode: cursor, global, auth_hash, request_fingerprint, header:<name>, or body:<field>")
 	fs.IntVar(&cfg.AgentQueueLimit, "agent-queue-limit", cfg.AgentQueueLimit, "maximum waiting tool-capable Agent requests")
 	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue")
 	fs.BoolVar(&cfg.ContextManagementEnabled, "context-management-enabled", cfg.ContextManagementEnabled, "enable context management for tool-capable minimal-mode requests")
@@ -276,7 +276,7 @@ func Defaults() Config {
 		ContextRecentMessages:              DefaultContextRecentMessages,
 		ContextToolOutputMaxBytes:          DefaultContextToolOutputMaxBytes,
 		ContextCompactedToolOutputMaxBytes: DefaultContextCompactedToolOutputMaxBytes,
-		DegenerateTurnRetryEnabled:       DefaultDegenerateTurnRetryEnabled,
+		DegenerateTurnRetryEnabled:         DefaultDegenerateTurnRetryEnabled,
 	}
 }
 
@@ -344,7 +344,7 @@ func (c Config) Validate() error {
 
 func validateAgentQueueKeyMode(mode string) error {
 	switch {
-	case mode == "global", mode == "auth_hash", mode == "request_fingerprint":
+	case mode == "cursor", mode == "global", mode == "auth_hash", mode == "request_fingerprint":
 		return nil
 	case strings.HasPrefix(mode, "header:"):
 		if strings.TrimSpace(strings.TrimPrefix(mode, "header:")) == "" {
