@@ -271,15 +271,35 @@ func (p *streamProcessor) replay(events []codex.StreamEvent, textMode deltaTextM
 }
 
 func (p *streamProcessor) streamEvents(events <-chan codex.StreamEvent, textMode deltaTextMode) bool {
-	for event := range events {
+	for {
+		event, ok := recvStreamEvent(p.ctx, p.cancel, events)
+		if !ok {
+			if p.ctx.Err() != nil {
+				*p.outcome = "client_disconnect"
+				return false
+			}
+			return true
+		}
 		if p.handleEvent(event, true, textMode) {
 			return false
 		}
 		if event.Done {
-			break
+			return true
 		}
 	}
-	return true
+}
+
+func recvStreamEvent(ctx context.Context, cancel context.CancelFunc, events <-chan codex.StreamEvent) (codex.StreamEvent, bool) {
+	select {
+	case <-ctx.Done():
+		cancel()
+		return codex.StreamEvent{}, false
+	case event, ok := <-events:
+		if !ok {
+			return codex.StreamEvent{}, false
+		}
+		return event, true
+	}
 }
 
 func deliverToolStream(
@@ -347,7 +367,14 @@ func deliverToolStream(
 		return true
 	}
 
-	for event := range events {
+	for {
+		event, ok := recvStreamEvent(ctx, cancel, events)
+		if !ok {
+			if ctx.Err() != nil {
+				outcome = "client_disconnect"
+			}
+			break
+		}
 		if event.Err != nil {
 			if proc.handleEvent(event, true, deltaTextDrop) {
 				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
