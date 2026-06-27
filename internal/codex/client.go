@@ -120,7 +120,26 @@ func (c *Client) Complete(ctx context.Context, req Request) (Completion, error) 
 			completion.Usage = event.Usage
 		}
 	}
+	// applyToolCallDelta grows the slice to the upstream delta index, which is
+	// the codex output_index and can be offset by preceding reasoning items.
+	// Drop the resulting phantom (empty) tool calls so callers never see a
+	// tool call with no id/name/arguments.
+	completion.ToolCalls = compactToolCalls(completion.ToolCalls)
 	return completion, nil
+}
+
+func compactToolCalls(toolCalls []ToolCall) []ToolCall {
+	if len(toolCalls) == 0 {
+		return toolCalls
+	}
+	compact := make([]ToolCall, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		if toolCall.ID == "" && toolCall.Function.Name == "" && toolCall.Function.Arguments == "" {
+			continue
+		}
+		compact = append(compact, toolCall)
+	}
+	return compact
 }
 
 func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {

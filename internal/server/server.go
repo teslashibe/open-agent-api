@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -242,6 +243,25 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		streamedToolCallIDs := map[string]bool{}
 		streamedToolCallIndexes := map[int]bool{}
 
+		// Codex output_index counts every output item (including reasoning
+		// items), so a tool call can arrive at index 1+ with no index 0. The
+		// OpenAI streaming contract requires tool_calls[].index to be a
+		// contiguous 0-based sequence; otherwise clients (e.g. Cursor) allocate
+		// a phantom empty tool call for the missing leading index and fail when
+		// finalizing it. normalizeToolCallIndex remaps upstream indexes to a
+		// dense 0-based sequence in order of first appearance.
+		toolCallIndexByKey := map[string]int{}
+		nextToolCallIndex := 0
+		normalizeToolCallIndex := func(key string) int {
+			if mapped, ok := toolCallIndexByKey[key]; ok {
+				return mapped
+			}
+			mapped := nextToolCallIndex
+			toolCallIndexByKey[key] = mapped
+			nextToolCallIndex++
+			return mapped
+		}
+
 		// finalize logs one stream lifecycle summary regardless of how the
 		// stream ends (normal completion, client disconnect, or upstream error).
 		finalize := func() {
@@ -302,13 +322,19 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				}
 				toolCallEmitted = true
 				toolDeltas++
+				fullDelta := openAIToolCallFullDelta(i, toolCall)
+				fullKey := toolCall.ID
+				if fullKey == "" {
+					fullKey = "fslot:" + strconv.Itoa(i)
+				}
+				fullDelta.Index = normalizeToolCallIndex(fullKey)
 				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 					ID:      id,
 					Object:  "chat.completion.chunk",
 					Created: created,
 					Model:   model,
 					Choices: []openai.ChatCompletionChunkChoice{
-						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{openAIToolCallFullDelta(i, toolCall)}}},
+						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{fullDelta}}},
 					},
 				}) {
 					outcome = "client_disconnect"
@@ -323,13 +349,18 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				if event.ToolCallDelta.ID != "" {
 					streamedToolCallIDs[event.ToolCallDelta.ID] = true
 				}
+				// All chunks of a single tool call share the upstream index but
+				// only the first carries the ID, so key normalization on the
+				// upstream index to keep continuation chunks aligned.
+				outDelta := openAIToolCallDelta(*event.ToolCallDelta)
+				outDelta.Index = normalizeToolCallIndex("idx:" + strconv.Itoa(event.ToolCallDelta.Index))
 				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 					ID:      id,
 					Object:  "chat.completion.chunk",
 					Created: created,
 					Model:   model,
 					Choices: []openai.ChatCompletionChunkChoice{
-						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{openAIToolCallDelta(*event.ToolCallDelta)}}},
+						{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{outDelta}}},
 					},
 				}) {
 					outcome = "client_disconnect"
