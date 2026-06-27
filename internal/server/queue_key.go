@@ -78,13 +78,24 @@ func resolveCursorQueueKey(c *fiber.Ctx, rawBody []byte) agentQueueKey {
 	if value := cursorConversationFingerprint(body); value != "" {
 		return newAgentQueueKey("cursor:conversation_fingerprint", value)
 	}
-	if value := strings.TrimSpace(c.Get("x-forwarded-for")); value != "" {
+	if value := forwardedForQueueKey(c); value != "" {
 		return newAgentQueueKey("cursor:x-forwarded-for", value)
 	}
 	if ip := strings.TrimSpace(c.IP()); ip != "" {
-		return newAgentQueueKey("cursor:x-forwarded-for", ip)
+		return newAgentQueueKey("cursor:remote_ip", ip)
 	}
 	return newAgentQueueKey("cursor:global", defaultAgentQueueKeyValue)
+}
+
+func forwardedForQueueKey(c *fiber.Ctx) string {
+	raw := strings.TrimSpace(c.Get("X-Forwarded-For"))
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.Index(raw, ","); idx >= 0 {
+		raw = raw[:idx]
+	}
+	return strings.TrimSpace(raw)
 }
 
 func cursorMetadataIdentifier(body map[string]json.RawMessage) string {
@@ -128,24 +139,43 @@ func cursorConversationFingerprint(body map[string]json.RawMessage) string {
 	}
 
 	for _, message := range messages {
-		if id := strings.TrimSpace(message.ID); id != "" {
-			return "message_id=" + id
+		if strings.TrimSpace(message.Role) != "user" {
+			continue
 		}
+		if content := cursorMessageContentFingerprint(message.Content); content != "" {
+			return "first_user=" + content
+		}
+	}
+	for _, message := range messages {
 		for _, toolCall := range message.ToolCalls {
 			if id := strings.TrimSpace(toolCall.ID); id != "" {
-				return "assistant_tool=" + id + "|" + strings.TrimSpace(toolCall.Type) + "|" + strings.TrimSpace(toolCall.Function.Name)
+				return "earliest_tool=" + id
 			}
 		}
 		if id := strings.TrimSpace(message.ToolCallID); id != "" {
-			return "tool_result=" + id
+			return "earliest_tool_result=" + id
 		}
 	}
 	return ""
 }
 
+func cursorMessageContentFingerprint(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(content, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if text != "" {
+			return safeHash(text)
+		}
+	}
+	return safeHash(string(content))
+}
+
 type cursorFingerprintMessage struct {
-	ID         string                      `json:"id"`
 	Role       string                      `json:"role"`
+	Content    json.RawMessage             `json:"content"`
 	ToolCallID string                      `json:"tool_call_id"`
 	ToolCalls  []cursorFingerprintToolCall `json:"tool_calls"`
 }

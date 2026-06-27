@@ -67,9 +67,7 @@ func TestCursorQueueKeyConversationFingerprintStableAcrossTurns(t *testing.T) {
 }
 
 func TestCursorQueueKeyFallsBackToForwardedFor(t *testing.T) {
-	key := resolveQueueKeyForTest(t, "cursor", `{
-		"messages":[{"role":"user","content":"no stable ids"}]
-	}`, map[string]string{"X-Forwarded-For": "203.0.113.10"})
+	key := resolveQueueKeyForTest(t, "cursor", `{"messages":[]}`, map[string]string{"X-Forwarded-For": "203.0.113.10"})
 
 	if key.Mode != "cursor:x-forwarded-for" {
 		t.Fatalf("mode = %q, want cursor:x-forwarded-for", key.Mode)
@@ -79,6 +77,44 @@ func TestCursorQueueKeyFallsBackToForwardedFor(t *testing.T) {
 	}
 	if strings.Contains(key.Mode, "203.0.113.10") || strings.Contains(key.Hash, "203.0.113.10") {
 		t.Fatalf("key diagnostics leaked forwarded IP: mode=%q hash=%q", key.Mode, key.Hash)
+	}
+}
+
+func TestCursorQueueKeyFallsBackToRemoteIP(t *testing.T) {
+	key := resolveQueueKeyForTest(t, "cursor", `{"messages":[]}`, nil)
+
+	if key.Mode != "cursor:remote_ip" {
+		t.Fatalf("mode = %q, want cursor:remote_ip", key.Mode)
+	}
+	if key.Hash == "" || key.Hash == "none" {
+		t.Fatalf("hash = %q, want populated hash", key.Hash)
+	}
+}
+
+func TestCursorQueueKeyConversationFingerprintIgnoresLaterMessageIDs(t *testing.T) {
+	first := resolveQueueKeyForTest(t, "cursor", `{
+		"messages":[
+			{"role":"user","content":"stable opening prompt"},
+			{"role":"assistant","content":null,"tool_calls":[{"id":"call_one","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_one","content":"result"}
+		]
+	}`, nil)
+	withIDs := resolveQueueKeyForTest(t, "cursor", `{
+		"messages":[
+			{"id":"msg-user-1","role":"user","content":"stable opening prompt"},
+			{"id":"msg-assistant-1","role":"assistant","content":null,"tool_calls":[{"id":"call_one","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"id":"msg-tool-1","role":"tool","tool_call_id":"call_one","content":"result"},
+			{"id":"msg-user-2","role":"user","content":"follow up"},
+			{"id":"msg-assistant-2","role":"assistant","content":null,"tool_calls":[{"id":"call_two","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+			{"id":"msg-tool-2","role":"tool","tool_call_id":"call_two","content":"later result"}
+		]
+	}`, nil)
+
+	if first.Mode != "cursor:conversation_fingerprint" || withIDs.Mode != "cursor:conversation_fingerprint" {
+		t.Fatalf("modes = %q,%q want cursor:conversation_fingerprint", first.Mode, withIDs.Mode)
+	}
+	if first.Hash != withIDs.Hash {
+		t.Fatalf("hashes differed after message ids appeared: %s != %s", first.Hash, withIDs.Hash)
 	}
 }
 
