@@ -113,6 +113,13 @@ func TestCodexToolEventLoggingIsRedacted(t *testing.T) {
 	var logs bytes.Buffer
 	client := &Client{logBodyShape: true, logOutput: &logs}
 
+	client.logCodexToolEvent([]byte(`{"type":"response.function_call_arguments.delta","delta":"` + secretArgs + `"}`))
+	if logs.Len() != 0 {
+		t.Fatalf("body-shape logging wrote tool event %q", logs.String())
+	}
+
+	client.logToolEvents = true
+
 	client.logCodexToolEvent([]byte(`{
 		"type":"response.function_call_arguments.delta",
 		"item_id":"fc_123",
@@ -130,7 +137,7 @@ func TestCodexToolEventLoggingIsRedacted(t *testing.T) {
 	}
 
 	logs.Reset()
-	client.logBodyShape = false
+	client.logToolEvents = false
 	client.logCodexToolEvent([]byte(`{"type":"response.function_call_arguments.delta","delta":"` + secretArgs + `"}`))
 	if logs.Len() != 0 {
 		t.Fatalf("debug-gated logging wrote %q", logs.String())

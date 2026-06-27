@@ -39,6 +39,7 @@ func TestCodexUpstreamGiantToolStreamForwardsIncrementally(t *testing.T) {
 	if got := strings.Count(body, `"tool_calls"`); got < 2000 {
 		t.Fatalf("tool call SSE chunks = %d, want many incremental chunks", got)
 	}
+	assertNoEmptyToolCallDeltas(t, body)
 	for _, want := range []string{`"finish_reason":"tool_calls"`, "data: [DONE]\n\n"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream missing %q in body length %d", want, len(body))
@@ -46,6 +47,12 @@ func TestCodexUpstreamGiantToolStreamForwardsIncrementally(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "tool_arg_chars=8800") || !strings.Contains(logs.String(), "tool_deltas=2201") {
 		t.Fatalf("logs = %q, want giant tool stream counters", logs.String())
+	}
+	if strings.Contains(logs.String(), "codex_tool_event") {
+		t.Fatalf("logs = %q, want default live proxy logs without per-fragment codex_tool_event spam", logs.String())
+	}
+	if got := strings.Count(logs.String(), "\n"); got > 12 {
+		t.Fatalf("log lines = %d, want compact default live proxy logging; logs=%q", got, logs.String())
 	}
 	if !upstream.WaitRequests(1, time.Second) {
 		t.Fatal("upstream did not record request")
@@ -292,6 +299,7 @@ func TestCodexUpstreamSlowStreamForwardsFirstChunkPromptly(t *testing.T) {
 func newCodexProxyApp(t *testing.T, upstreamURL string) (*fiber.App, *bytes.Buffer) {
 	t.Helper()
 
+	var logs bytes.Buffer
 	authPath, codexHome, profilePath, scaffoldPath := writeCodexClientFixtures(t)
 	client, err := codex.NewClient(codex.ClientConfig{
 		AuthPath:     authPath,
@@ -300,6 +308,7 @@ func newCodexProxyApp(t *testing.T, upstreamURL string) (*fiber.App, *bytes.Buff
 		ScaffoldPath: scaffoldPath,
 		WebsocketURL: upstreamURL,
 		Timeout:      5 * time.Second,
+		LogOutput:    &logs,
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
@@ -308,9 +317,49 @@ func newCodexProxyApp(t *testing.T, upstreamURL string) (*fiber.App, *bytes.Buff
 	cfg := config.Defaults()
 	cfg.LogBodyShape = true
 	cfg.DegenerateTurnRetryEnabled = true
-	var logs bytes.Buffer
 	app := New(cfg, WithCodexService(client), WithLogOutput(&logs), fixedServerOptions())
 	return app, &logs
+}
+
+func assertNoEmptyToolCallDeltas(t *testing.T, body string) {
+	t.Helper()
+
+	for _, event := range strings.Split(body, "\n\n") {
+		data := strings.TrimSpace(strings.TrimPrefix(event, "data: "))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					ToolCalls []struct {
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function *struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			t.Fatalf("decode SSE chunk %q: %v", data, err)
+		}
+		for _, choice := range chunk.Choices {
+			for _, toolCall := range choice.Delta.ToolCalls {
+				name := ""
+				arguments := ""
+				if toolCall.Function != nil {
+					name = toolCall.Function.Name
+					arguments = toolCall.Function.Arguments
+				}
+				if toolCall.ID == "" && toolCall.Type == "" && name == "" && arguments == "" {
+					t.Fatalf("empty tool-call delta in stream chunk: %s", data)
+				}
+			}
+		}
+	}
 }
 
 func requireLocalListener(t *testing.T) {

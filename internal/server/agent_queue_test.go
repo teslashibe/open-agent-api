@@ -13,7 +13,7 @@ func TestAgentQueuePriorityOrdersEligibleWaiters(t *testing.T) {
 	lowKey := newAgentQueueKey("test", "low")
 	highKey := newAgentQueueKey("test", "high")
 
-	releaseFirst, err := q.acquire(context.Background(), "first", firstKey, turnClassToolGenerating)
+	releaseFirst, _, err := q.acquire(context.Background(), "first", firstKey, turnClassToolGenerating)
 	if err != nil {
 		t.Fatalf("first acquire error = %v", err)
 	}
@@ -41,7 +41,7 @@ func TestAgentQueuePriorityDisabledKeepsFIFO(t *testing.T) {
 	lowKey := newAgentQueueKey("test", "low")
 	highKey := newAgentQueueKey("test", "high")
 
-	releaseFirst, err := q.acquire(context.Background(), "first", firstKey, turnClassToolGenerating)
+	releaseFirst, _, err := q.acquire(context.Background(), "first", firstKey, turnClassToolGenerating)
 	if err != nil {
 		t.Fatalf("first acquire error = %v", err)
 	}
@@ -68,7 +68,7 @@ func TestAgentQueuePriorityDoesNotBypassSameKeyActive(t *testing.T) {
 	sameKey := newAgentQueueKey("test", "same")
 	otherKey := newAgentQueueKey("test", "other")
 
-	releaseFirst, err := q.acquire(context.Background(), "first", sameKey, turnClassToolGenerating)
+	releaseFirst, _, err := q.acquire(context.Background(), "first", sameKey, turnClassToolGenerating)
 	if err != nil {
 		t.Fatalf("first acquire error = %v", err)
 	}
@@ -95,7 +95,7 @@ func TestAgentQueueCanceledPriorityWaiterIsRemoved(t *testing.T) {
 	highKey := newAgentQueueKey("test", "high")
 	lowKey := newAgentQueueKey("test", "low")
 
-	releaseFirst, err := q.acquire(context.Background(), "first", firstKey, turnClassToolGenerating)
+	releaseFirst, _, err := q.acquire(context.Background(), "first", firstKey, turnClassToolGenerating)
 	if err != nil {
 		t.Fatalf("first acquire error = %v", err)
 	}
@@ -132,7 +132,7 @@ func acquireQueueAsyncWithContext(t *testing.T, q *agentQueue, ctx context.Conte
 	t.Helper()
 	done := make(chan queueAcquireResult, 1)
 	go func() {
-		release, err := q.acquire(ctx, requestID, key, class)
+		release, _, err := q.acquire(ctx, requestID, key, class)
 		done <- queueAcquireResult{release: release, err: err}
 	}()
 	return done
