@@ -638,19 +638,17 @@ func TestChatCompletionsStreamingToolCalls(t *testing.T) {
 	}
 
 	body := readString(t, resp.Body)
-	for _, want := range []string{
-		`"role":"assistant"`,
-		`"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"codex\"}"}}]`,
-		`"finish_reason":"tool_calls"`,
-		"data: [DONE]\n\n",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("stream = %q, want %q", body, want)
-		}
-	}
-	if got := strings.Count(body, `"delta":{"tool_calls"`); got != 1 {
-		t.Fatalf("tool_calls chunks = %d, want 1 complete frame in stream %q", got, body)
-	}
+	assertExactCursorToolSSE(t, body, []openai.ToolCallDelta{
+		{
+			Index: 0,
+			ID:    "call_123",
+			Type:  "function",
+			Function: &openai.ToolCallFunctionDelta{
+				Name:      "lookup",
+				Arguments: `{"q":"codex"}`,
+			},
+		},
+	})
 }
 
 func TestChatCompletionsStreamingMapsAgentTextToReasoningContent(t *testing.T) {
@@ -745,18 +743,17 @@ func TestChatCompletionsStreamingSkipsCompletedToolCallAfterDeltas(t *testing.T)
 	}
 
 	body := readString(t, resp.Body)
-	for _, want := range []string{
-		`"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"codex\"}"}}]`,
-		`"finish_reason":"tool_calls"`,
-		"data: [DONE]\n\n",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("stream = %q, want %q", body, want)
-		}
-	}
-	if got := strings.Count(body, `"delta":{"tool_calls"`); got != 1 {
-		t.Fatalf("tool_calls chunks = %d, want 1 complete frame in stream %q", got, body)
-	}
+	assertExactCursorToolSSE(t, body, []openai.ToolCallDelta{
+		{
+			Index: 0,
+			ID:    "call_123",
+			Type:  "function",
+			Function: &openai.ToolCallFunctionDelta{
+				Name:      "lookup",
+				Arguments: `{"q":"codex"}`,
+			},
+		},
+	})
 }
 
 func TestChatCompletionsStreamingSuppressesEmptyToolCallDeltas(t *testing.T) {
@@ -786,12 +783,17 @@ func TestChatCompletionsStreamingSuppressesEmptyToolCallDeltas(t *testing.T) {
 	defer resp.Body.Close()
 
 	body := readString(t, resp.Body)
-	if got := strings.Count(body, `"delta":{"tool_calls"`); got != 1 {
-		t.Fatalf("tool_calls chunks = %d, want only useful complete frame in stream %q", got, body)
-	}
-	if !strings.Contains(body, `"id":"call_123"`) || !strings.Contains(body, `"finish_reason":"tool_calls"`) {
-		t.Fatalf("stream = %q, want complete tool call finish", body)
-	}
+	assertExactCursorToolSSE(t, body, []openai.ToolCallDelta{
+		{
+			Index: 0,
+			ID:    "call_123",
+			Type:  "function",
+			Function: &openai.ToolCallFunctionDelta{
+				Name:      "lookup",
+				Arguments: `{"q":"codex"}`,
+			},
+		},
+	})
 }
 
 func TestChatCompletionsStreamingSynthesizesStableToolCallID(t *testing.T) {
@@ -819,9 +821,17 @@ func TestChatCompletionsStreamingSynthesizesStableToolCallID(t *testing.T) {
 	defer resp.Body.Close()
 
 	body := readString(t, resp.Body)
-	if !strings.Contains(body, `"id":"call_chatcmpl-fixed_0"`) || !strings.Contains(body, `"arguments":"{}"`) {
-		t.Fatalf("stream = %q, want synthesized stable tool call ID and valid args", body)
-	}
+	assertExactCursorToolSSE(t, body, []openai.ToolCallDelta{
+		{
+			Index: 0,
+			ID:    "call_chatcmpl-fixed_0",
+			Type:  "function",
+			Function: &openai.ToolCallFunctionDelta{
+				Name:      "lookup",
+				Arguments: `{}`,
+			},
+		},
+	})
 }
 
 func TestChatCompletionsStreamingRejectsInvalidToolArguments(t *testing.T) {
@@ -851,12 +861,7 @@ func TestChatCompletionsStreamingRejectsInvalidToolArguments(t *testing.T) {
 	defer resp.Body.Close()
 
 	body := readString(t, resp.Body)
-	if strings.Contains(body, `"finish_reason":"tool_calls"`) {
-		t.Fatalf("stream = %q, want no tool_calls finish for invalid JSON", body)
-	}
-	if !strings.Contains(body, `"content":"[error: invalid upstream tool call]"`) || !strings.Contains(body, "data: [DONE]\n\n") {
-		t.Fatalf("stream = %q, want error chunk and DONE", body)
-	}
+	assertExactErrorSSE(t, body, "[error: invalid upstream tool call]")
 	if !strings.Contains(logs.String(), "tool_call_validation_error") {
 		t.Fatalf("logs = %q, want validation error", logs.String())
 	}
@@ -880,16 +885,26 @@ func TestChatCompletionsStreamingPreservesParallelToolOrder(t *testing.T) {
 	defer resp.Body.Close()
 
 	body := readString(t, resp.Body)
-	first := strings.Index(body, `"id":"call_b"`)
-	second := strings.Index(body, `"id":"call_a"`)
-	if first < 0 || second < 0 || first > second {
-		t.Fatalf("stream = %q, want stable first-seen parallel order", body)
-	}
-	for _, want := range []string{`"index":0,"id":"call_b"`, `"index":1,"id":"call_a"`, `"arguments":"{\"b\":2}"`, `"arguments":"{\"a\":1}"`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("stream = %q, want %q", body, want)
-		}
-	}
+	assertExactCursorToolSSE(t, body, []openai.ToolCallDelta{
+		{
+			Index: 0,
+			ID:    "call_b",
+			Type:  "function",
+			Function: &openai.ToolCallFunctionDelta{
+				Name:      "second",
+				Arguments: `{"b":2}`,
+			},
+		},
+		{
+			Index: 1,
+			ID:    "call_a",
+			Type:  "function",
+			Function: &openai.ToolCallFunctionDelta{
+				Name:      "first",
+				Arguments: `{"a":1}`,
+			},
+		},
+	})
 }
 
 func TestChatCompletionsStreamingToolResultContinuation(t *testing.T) {
@@ -1736,4 +1751,127 @@ func readString(t *testing.T, r io.Reader) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(data)
+}
+
+func assertExactCursorToolSSE(t *testing.T, body string, wantToolCalls []openai.ToolCallDelta) {
+	t.Helper()
+	chunks, done := parseSSEChunks(t, body)
+	wantLen := len(wantToolCalls) + 2
+	if len(chunks) != wantLen {
+		t.Fatalf("SSE chunk count = %d, want %d; body=%q", len(chunks), wantLen, body)
+	}
+	if !done {
+		t.Fatalf("SSE stream missing terminal DONE event: %q", body)
+	}
+
+	assertChunkBase(t, chunks[0])
+	if chunks[0].Choices[0].Delta.Role != "assistant" ||
+		chunks[0].Choices[0].Delta.Content != "" ||
+		chunks[0].Choices[0].Delta.ReasoningContent != "" ||
+		len(chunks[0].Choices[0].Delta.ToolCalls) != 0 ||
+		chunks[0].Choices[0].FinishReason != nil {
+		t.Fatalf("role chunk = %#v, want assistant-only delta", chunks[0])
+	}
+
+	for i, want := range wantToolCalls {
+		chunk := chunks[i+1]
+		assertChunkBase(t, chunk)
+		choice := chunk.Choices[0]
+		if choice.FinishReason != nil ||
+			choice.Delta.Role != "" ||
+			choice.Delta.Content != "" ||
+			choice.Delta.ReasoningContent != "" ||
+			len(choice.Delta.ToolCalls) != 1 {
+			t.Fatalf("tool chunk %d = %#v, want exactly one tool_call delta", i, chunk)
+		}
+		got := choice.Delta.ToolCalls[0]
+		if got.Index != want.Index ||
+			got.ID != want.ID ||
+			got.Type != want.Type ||
+			got.Function == nil ||
+			want.Function == nil ||
+			got.Function.Name != want.Function.Name ||
+			got.Function.Arguments != want.Function.Arguments {
+			t.Fatalf("tool chunk %d tool_call = %#v, want %#v", i, got, want)
+		}
+		if got.ID == "" || got.Type != "function" || got.Function.Name == "" || !json.Valid([]byte(got.Function.Arguments)) {
+			t.Fatalf("tool chunk %d is not Cursor-safe: %#v", i, got)
+		}
+	}
+
+	finish := chunks[len(chunks)-1]
+	assertChunkBase(t, finish)
+	if finish.Choices[0].FinishReason == nil ||
+		*finish.Choices[0].FinishReason != "tool_calls" ||
+		finish.Choices[0].Delta.Role != "" ||
+		finish.Choices[0].Delta.Content != "" ||
+		finish.Choices[0].Delta.ReasoningContent != "" ||
+		len(finish.Choices[0].Delta.ToolCalls) != 0 {
+		t.Fatalf("finish chunk = %#v, want empty delta with tool_calls finish", finish)
+	}
+}
+
+func assertExactErrorSSE(t *testing.T, body string, wantContent string) {
+	t.Helper()
+	chunks, done := parseSSEChunks(t, body)
+	if len(chunks) != 2 {
+		t.Fatalf("SSE chunk count = %d, want 2; body=%q", len(chunks), body)
+	}
+	if !done {
+		t.Fatalf("SSE stream missing terminal DONE event: %q", body)
+	}
+	assertChunkBase(t, chunks[0])
+	if chunks[0].Choices[0].Delta.Role != "assistant" ||
+		chunks[0].Choices[0].FinishReason != nil {
+		t.Fatalf("role chunk = %#v, want assistant-only delta", chunks[0])
+	}
+	assertChunkBase(t, chunks[1])
+	finish := chunks[1].Choices[0].FinishReason
+	if chunks[1].Choices[0].Delta.Content != wantContent ||
+		finish == nil ||
+		*finish != "stop" ||
+		len(chunks[1].Choices[0].Delta.ToolCalls) != 0 {
+		t.Fatalf("error chunk = %#v, want content %q and stop finish", chunks[1], wantContent)
+	}
+}
+
+func assertChunkBase(t *testing.T, chunk openai.ChatCompletionChunk) {
+	t.Helper()
+	if chunk.ID != "chatcmpl-fixed" ||
+		chunk.Object != "chat.completion.chunk" ||
+		chunk.Created != 123 ||
+		chunk.Model != "gpt-test" ||
+		len(chunk.Choices) != 1 ||
+		chunk.Choices[0].Index != 0 {
+		t.Fatalf("chunk base = %#v, want fixed OpenAI chat chunk envelope", chunk)
+	}
+}
+
+func parseSSEChunks(t *testing.T, body string) ([]openai.ChatCompletionChunk, bool) {
+	t.Helper()
+	events := strings.Split(strings.TrimSuffix(body, "\n\n"), "\n\n")
+	chunks := make([]openai.ChatCompletionChunk, 0, len(events))
+	done := false
+	for _, event := range events {
+		if event == "" {
+			continue
+		}
+		if !strings.HasPrefix(event, "data: ") {
+			t.Fatalf("SSE event missing data prefix: %q in body %q", event, body)
+		}
+		payload := strings.TrimPrefix(event, "data: ")
+		if payload == "[DONE]" {
+			done = true
+			continue
+		}
+		if done {
+			t.Fatalf("SSE event after DONE: %q in body %q", event, body)
+		}
+		var chunk openai.ChatCompletionChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			t.Fatalf("unmarshal SSE chunk %q: %v", payload, err)
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks, done
 }
