@@ -1,0 +1,19 @@
+# Live Cursor BYOK capture profile.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.capture.yml up -d --build api
+#   docker compose -f docker-compose.yml -f docker-compose.capture.yml logs -f api
+#
+# With public tunnel for Cursor:
+#   NGROK_DOMAIN=your-domain.ngrok-free.dev NGROK_AUTHTOKEN=... \
+#     docker compose -f docker-compose.yml -f docker-compose.capture.yml -f docker-compose.ngrok.yml up -d --build
+#
+# Look for log lines:
+#   body_shape ... tool_wire=flat|nested|mixed
+#   request_identity ...
+#   stream_response_shape ... response_content=... response_reasoning_content=... response_tool_calls=...
+
+services:
+  api:
+    environment:
+      CODEX_LOG_BODY_SHAPE: "true"
+      CODEX_LOG_REQUEST_IDENTITY: "true"
