@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -48,7 +49,7 @@ func TestManageContextTruncatesOversizedToolOutput(t *testing.T) {
 	if result.Messages[1].ToolCalls[0].ID != "call_1" || result.Messages[2].ToolCallID != "call_1" {
 		t.Fatalf("tool pairing changed: assistant=%#v tool=%#v", result.Messages[1], result.Messages[2])
 	}
-	text := rawMessageText(result.Messages[2].Content)
+	text := openai.MessageText(result.Messages[2].Content)
 	if !strings.Contains(text, "tool output truncated from 200 bytes") {
 		t.Fatalf("tool content = %q, want truncation marker", text)
 	}
@@ -76,14 +77,14 @@ func TestManageContextCompactsOlderToolOutputsAndKeepsRecentMessages(t *testing.
 	if !result.Changed || result.CompactedTools != 1 {
 		t.Fatalf("changed=%t compacted=%d, want one compaction", result.Changed, result.CompactedTools)
 	}
-	oldText := rawMessageText(result.Messages[2].Content)
+	oldText := openai.MessageText(result.Messages[2].Content)
 	if !strings.Contains(oldText, "older tool output compacted") {
 		t.Fatalf("old tool content = %q, want compaction marker", oldText)
 	}
 	if result.Messages[1].ToolCalls[0].ID != "call_old" || result.Messages[2].ToolCallID != "call_old" {
 		t.Fatalf("old pair changed: assistant=%#v tool=%#v", result.Messages[1], result.Messages[2])
 	}
-	recentText := rawMessageText(result.Messages[5].Content)
+	recentText := openai.MessageText(result.Messages[5].Content)
 	if recentText != strings.Repeat("recent", 20) {
 		t.Fatalf("recent tool content changed: %q", recentText)
 	}
@@ -105,7 +106,7 @@ func TestManageContextDoesNotCompactToolMessagesWithoutCallID(t *testing.T) {
 	if result.CompactedTools != 0 {
 		t.Fatalf("CompactedTools = %d, want 0", result.CompactedTools)
 	}
-	if rawMessageText(result.Messages[0].Content) != "orphan" {
+	if openai.MessageText(result.Messages[0].Content) != "orphan" {
 		t.Fatalf("orphan tool changed: %#v", result.Messages[0])
 	}
 }
@@ -125,8 +126,38 @@ func TestManageContextDoesNotExpandOlderSmallToolOutputs(t *testing.T) {
 	if result.CompactedTools != 0 {
 		t.Fatalf("CompactedTools = %d, want 0", result.CompactedTools)
 	}
-	if rawMessageText(result.Messages[1].Content) != "small" {
+	if openai.MessageText(result.Messages[1].Content) != "small" {
 		t.Fatalf("small tool output changed: %#v", result.Messages[1])
+	}
+}
+
+func TestManageContextTruncatesStructuredToolOutputParts(t *testing.T) {
+	large := strings.Repeat("y", 200)
+	messages := []openai.ChatMessage{
+		{Role: "user", Content: openai.TextContent("read")},
+		{
+			Role:      "assistant",
+			Content:   []byte("null"),
+			ToolCalls: []openai.ToolCall{{ID: "call_struct", Type: "function", Function: openai.ToolCallFunction{Name: "read_file", Arguments: `{}`}}},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_struct",
+			Content:    json.RawMessage(`[{"type":"input_text","text":"` + large + `"}]`),
+		},
+	}
+	cfg := contextTestConfig()
+	cfg.ContextToolOutputMaxBytes = 80
+	cfg.ContextMaxBytes = 0
+	cfg.ContextMaxMessages = 0
+
+	result := manageContext(messages, cfg)
+	if !result.Changed || result.TruncatedTools != 1 {
+		t.Fatalf("changed=%t truncated=%d, want one truncation", result.Changed, result.TruncatedTools)
+	}
+	text := openai.MessageText(result.Messages[2].Content)
+	if !strings.Contains(text, "tool output truncated from 200 bytes") {
+		t.Fatalf("tool content = %q, want truncation marker", text)
 	}
 }
 
