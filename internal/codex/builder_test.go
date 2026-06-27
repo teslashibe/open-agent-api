@@ -183,6 +183,21 @@ func TestBuildMinimalRequestIncludesClientTools(t *testing.T) {
 	}
 }
 
+func TestNormalizeCallID(t *testing.T) {
+	short := "call_MeAziM96Zep7N4zG0mWQnUjF"
+	if got := normalizeCallID(short); got != short {
+		t.Fatalf("short id changed: %q", got)
+	}
+	long := strings.Repeat("x", 94)
+	got := normalizeCallID(long)
+	if len(got) != 64 {
+		t.Fatalf("normalized length = %d, want 64", len(got))
+	}
+	if got != normalizeCallID(long) {
+		t.Fatalf("normalizeCallID not deterministic")
+	}
+}
+
 func TestBuildMinimalRequestPassesThroughFlatTools(t *testing.T) {
 	builder := fixtureBuilder()
 	payload, err := builder.buildMinimal(Request{

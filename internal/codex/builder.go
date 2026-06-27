@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"regexp"
 	"strconv"
@@ -193,7 +195,7 @@ func splitMessages(messages []openai.ChatMessage) ([]string, []any) {
 			}
 			items = append(items, map[string]any{
 				"type":    "function_call_output",
-				"call_id": message.ToolCallID,
+				"call_id": normalizeCallID(message.ToolCallID),
 				"output":  text,
 			})
 			continue
@@ -223,10 +225,21 @@ func splitMessages(messages []openai.ChatMessage) ([]string, []any) {
 func functionCallItem(toolCall openai.ToolCall) map[string]any {
 	return map[string]any{
 		"type":      "function_call",
-		"call_id":   toolCall.ID,
+		"call_id":   normalizeCallID(toolCall.ID),
 		"name":      toolCall.Function.Name,
 		"arguments": toolCall.Function.Arguments,
 	}
+}
+
+// normalizeCallID maps client tool-call IDs into Codex's 64-char limit. Cursor
+// can emit longer IDs; assistant function_call and matching function_call_output
+// items must use the same normalized value.
+func normalizeCallID(id string) string {
+	if id == "" || len(id) <= 64 {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])
 }
 
 func messageText(raw json.RawMessage) string {
