@@ -333,6 +333,19 @@ func deliverToolStream(
 	passthrough := false
 	firstTextBytes := 0
 	var firstAssistant strings.Builder
+	var preToolText strings.Builder
+	bufferPreToolText := textMode == deltaTextReasoning
+
+	flushPreToolText := func(mode deltaTextMode) bool {
+		if preToolText.Len() == 0 {
+			return true
+		}
+		if !proc.writeTextDelta(preToolText.String(), mode) {
+			return false
+		}
+		preToolText.Reset()
+		return true
+	}
 
 	for event := range events {
 		if event.Err != nil {
@@ -346,6 +359,9 @@ func deliverToolStream(
 				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
 			}
 		} else if streamEventHasToolCall(event) {
+			if bufferPreToolText && !flushPreToolText(deltaTextReasoning) {
+				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+			}
 			passthrough = true
 			if proc.handleEvent(event, true, deltaTextReasoning) {
 				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
@@ -359,8 +375,20 @@ func deliverToolStream(
 				firstTextBytes += len(event.ReasoningDelta)
 				firstAssistant.WriteString(event.ReasoningDelta)
 			}
-			if proc.handleEvent(event, true, textMode) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+			switch {
+			case bufferPreToolText && event.ReasoningDelta != "":
+				if proc.handleEvent(event, true, deltaTextReasoning) {
+					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+				}
+			case bufferPreToolText && event.Delta != "":
+				if proc.handleEvent(event, false, deltaTextDrop) {
+					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+				}
+				preToolText.WriteString(event.Delta)
+			default:
+				if proc.handleEvent(event, true, textMode) {
+					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
+				}
 			}
 		}
 		if event.Done {
@@ -370,6 +398,10 @@ func deliverToolStream(
 
 	if passthrough {
 		return finishStream()
+	}
+
+	if bufferPreToolText && !flushPreToolText(deltaTextContent) {
+		return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start
 	}
 
 	firstToolCallCount := *proc.nextToolCallIndex

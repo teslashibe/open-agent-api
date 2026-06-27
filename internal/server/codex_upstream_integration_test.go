@@ -157,6 +157,31 @@ func TestCodexUpstreamReasoningBeforeToolMapsToReasoningContent(t *testing.T) {
 	}
 }
 
+func TestCodexUpstreamUserTurnTextOnlyAnswerStreamsContent(t *testing.T) {
+	requireLocalListener(t)
+	upstream := codextest.NewUpstream(codextest.Script{
+		codexFrame(t, map[string]any{"type": "response.output_text.delta", "delta": "All done."}),
+		codexFrame(t, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-text-agent", "model": "gpt-test"}}),
+	})
+	defer upstream.Close()
+
+	app, _ := newCodexProxyApp(t, upstream.URL())
+	proxyURL := startLiveApp(t, app)
+	resp := postLiveJSON(t, proxyURL, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"summarize"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`, nil)
+	defer resp.Body.Close()
+
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"content":"All done."`) {
+		t.Fatalf("stream = %q, want text-only agent answer in content", body)
+	}
+	if strings.Contains(body, `"reasoning_content":"All done."`) {
+		t.Fatalf("stream leaked text-only answer into reasoning_content: %q", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("stream = %q, want stop finish", body)
+	}
+}
+
 func TestCodexUpstreamTextOnlyFinalStreamsContentAndStopsWithoutRetry(t *testing.T) {
 	requireLocalListener(t)
 	upstream := codextest.NewUpstream(codextest.Script{
