@@ -1009,6 +1009,54 @@ func TestAgentQueueSerializesSameKey(t *testing.T) {
 	}
 }
 
+func TestServerPassesQueueKeyAffinityToCodexRequest(t *testing.T) {
+	cfg := agentQueueTestConfig()
+	cfg.AgentQueueKeyMode = "body:session_id"
+	var mu sync.Mutex
+	var requests []codex.Request
+
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			mu.Lock()
+			requests = append(requests, req)
+			mu.Unlock()
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	app := New(cfg, WithCodexService(service), fixedServerOptions())
+
+	for range 2 {
+		resp := doJSON(t, app, `{"session_id":"same-session","messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	for i, req := range requests {
+		if req.RequestID != "chatcmpl-fixed" {
+			t.Fatalf("request %d RequestID = %q", i, req.RequestID)
+		}
+		if req.AffinityKeyMode != "body:session_id" {
+			t.Fatalf("request %d AffinityKeyMode = %q", i, req.AffinityKeyMode)
+		}
+		if req.AffinityKey == "" || req.AffinityKeyHash == "" {
+			t.Fatalf("request %d affinity = key:%q hash:%q", i, req.AffinityKey, req.AffinityKeyHash)
+		}
+	}
+	if requests[0].AffinityKey != requests[1].AffinityKey || requests[0].AffinityKeyHash != requests[1].AffinityKeyHash {
+		t.Fatalf("same queue key routed with different affinity: %#v %#v", requests[0], requests[1])
+	}
+	if strings.Contains(requests[0].AffinityKeyHash, "same-session") {
+		t.Fatalf("affinity hash leaked raw session: %q", requests[0].AffinityKeyHash)
+	}
+}
+
 func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
 	toolEvents := make(chan codex.StreamEvent)
 	toolStarted := make(chan struct{}, 1)

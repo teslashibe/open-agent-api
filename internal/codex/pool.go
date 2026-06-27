@@ -1,0 +1,143 @@
+package codex
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"os"
+)
+
+const (
+	ClientPoolUnavailableFail          = "fail"
+	ClientPoolUnavailableFallbackFirst = "fallback_first"
+)
+
+type PooledService struct {
+	clients           []pooledClient
+	unavailablePolicy string
+	logOutput         io.Writer
+}
+
+type pooledClient struct {
+	label   string
+	service Service
+}
+
+type PooledServiceConfig struct {
+	Clients           []PooledClientConfig
+	UnavailablePolicy string
+	LogOutput         io.Writer
+}
+
+type PooledClientConfig struct {
+	Label   string
+	Service Service
+}
+
+func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
+	if len(cfg.Clients) == 0 {
+		return nil, fmt.Errorf("at least one codex client is required")
+	}
+	clients := make([]pooledClient, 0, len(cfg.Clients))
+	for i, client := range cfg.Clients {
+		if client.Service == nil {
+			return nil, fmt.Errorf("codex client %d service is required", i)
+		}
+		label := client.Label
+		if label == "" {
+			label = fmt.Sprintf("client-%d", i)
+		}
+		clients = append(clients, pooledClient{
+			label:   label,
+			service: client.Service,
+		})
+	}
+	if cfg.UnavailablePolicy == "" {
+		cfg.UnavailablePolicy = ClientPoolUnavailableFail
+	}
+	switch cfg.UnavailablePolicy {
+	case ClientPoolUnavailableFail, ClientPoolUnavailableFallbackFirst:
+	default:
+		return nil, fmt.Errorf("unsupported codex client pool unavailable policy %q", cfg.UnavailablePolicy)
+	}
+	if cfg.LogOutput == nil {
+		cfg.LogOutput = os.Stdout
+	}
+	return &PooledService{
+		clients:           clients,
+		unavailablePolicy: cfg.UnavailablePolicy,
+		logOutput:         cfg.LogOutput,
+	}, nil
+}
+
+func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, error) {
+	index := p.selectIndex(req)
+	p.logSelection(req, index, false)
+	completion, err := p.clients[index].service.Complete(ctx, req)
+	if err == nil || !p.shouldFallback(index) {
+		return completion, err
+	}
+	p.logSelection(req, 0, true)
+	return p.clients[0].service.Complete(ctx, req)
+}
+
+func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
+	index := p.selectIndex(req)
+	p.logSelection(req, index, false)
+	events, err := p.clients[index].service.Stream(ctx, req)
+	if err == nil || !p.shouldFallback(index) {
+		return events, err
+	}
+	p.logSelection(req, 0, true)
+	return p.clients[0].service.Stream(ctx, req)
+}
+
+func (p *PooledService) shouldFallback(index int) bool {
+	return p.unavailablePolicy == ClientPoolUnavailableFallbackFirst && index != 0
+}
+
+func (p *PooledService) selectIndex(req Request) int {
+	if len(p.clients) == 1 {
+		return 0
+	}
+	key := req.AffinityKey
+	if key == "" {
+		key = req.AffinityKeyHash
+	}
+	if key == "" {
+		key = "global"
+	}
+	sum := sha256.Sum256([]byte(key))
+	value := binary.BigEndian.Uint64(sum[:8])
+	return int(value % uint64(len(p.clients)))
+}
+
+func (p *PooledService) logSelection(req Request, index int, fallback bool) {
+	if p.logOutput == nil {
+		return
+	}
+	keyMode := req.AffinityKeyMode
+	if keyMode == "" {
+		keyMode = "none"
+	}
+	keyHash := req.AffinityKeyHash
+	if keyHash == "" {
+		keyHash = "none"
+	}
+	requestID := req.RequestID
+	if requestID == "" {
+		requestID = "none"
+	}
+	fmt.Fprintf(
+		p.logOutput,
+		"codex_client_select request_id=%s key_mode=%s key_hash=%s shard=%d client_label=%s fallback=%t\n",
+		requestID,
+		keyMode,
+		keyHash,
+		index,
+		p.clients[index].label,
+		fallback,
+	)
+}

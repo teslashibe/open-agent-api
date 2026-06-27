@@ -33,6 +33,8 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES")
 	unsetenv(t, "CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES")
 	unsetenv(t, "CODEX_DEGENERATE_TURN_RETRY")
+	unsetenv(t, "CODEX_CLIENTS")
+	unsetenv(t, "CODEX_CLIENT_POOL_UNAVAILABLE")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -108,6 +110,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DegenerateTurnRetryEnabled != DefaultDegenerateTurnRetryEnabled {
 		t.Fatalf("DegenerateTurnRetryEnabled = %t, want %t", cfg.DegenerateTurnRetryEnabled, DefaultDegenerateTurnRetryEnabled)
 	}
+	if cfg.CodexClientPoolUnavailable != DefaultCodexClientPoolUnavailable {
+		t.Fatalf("CodexClientPoolUnavailable = %q, want %q", cfg.CodexClientPoolUnavailable, DefaultCodexClientPoolUnavailable)
+	}
+	if len(cfg.CodexClients) != 1 {
+		t.Fatalf("CodexClients length = %d, want 1", len(cfg.CodexClients))
+	}
+	if cfg.CodexClients[0].Label != "default" || cfg.CodexClients[0].AuthPath != cfg.AuthPath || cfg.CodexClients[0].CodexHome != cfg.CodexHome {
+		t.Fatalf("default codex client = %#v", cfg.CodexClients[0])
+	}
 }
 
 func TestLoadEnvironment(t *testing.T) {
@@ -133,6 +144,11 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_CONTEXT_RECENT_MESSAGES", "9")
 	t.Setenv("CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES", "456")
 	t.Setenv("CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES", "78")
+	t.Setenv("CODEX_CLIENT_POOL_UNAVAILABLE", "fallback_first")
+	t.Setenv("CODEX_CLIENTS", `[
+		{"label":"primary","codex_home":"/tmp/codex-a","profile_path":"/tmp/profile-a.json","scaffold_path":"/tmp/scaffold-a.json"},
+		{"label":"secondary","auth_path":"/tmp/auth-b.json","profile_path":"/tmp/profile-b.json","scaffold_path":"/tmp/scaffold-b.json"}
+	]`)
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -182,6 +198,18 @@ func TestLoadEnvironment(t *testing.T) {
 			cfg.ContextCompactedToolOutputMaxBytes,
 		)
 	}
+	if cfg.CodexClientPoolUnavailable != "fallback_first" {
+		t.Fatalf("CodexClientPoolUnavailable = %q", cfg.CodexClientPoolUnavailable)
+	}
+	if len(cfg.CodexClients) != 2 {
+		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
+	}
+	if cfg.CodexClients[0].Label != "primary" || cfg.CodexClients[0].AuthPath != filepath.Join("/tmp/codex-a", "auth.json") {
+		t.Fatalf("first codex client = %#v", cfg.CodexClients[0])
+	}
+	if cfg.CodexClients[1].Label != "secondary" || cfg.CodexClients[1].CodexHome != "/tmp/codex-home" || cfg.CodexClients[1].AuthPath != "/tmp/auth-b.json" {
+		t.Fatalf("second codex client = %#v", cfg.CodexClients[1])
+	}
 }
 
 func TestLoadFlagsOverrideEnvironment(t *testing.T) {
@@ -214,6 +242,8 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--context-recent-messages", "10",
 		"--context-tool-output-max-bytes", "567",
 		"--context-compacted-tool-output-max-bytes", "89",
+		"--codex-client-pool-unavailable", "fallback_first",
+		"--codex-clients", `[{"label":"flag-a","codex_home":"/tmp/flag-a"},{"label":"flag-b","auth_path":"/tmp/flag-b-auth.json"}]`,
 	})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -260,6 +290,18 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 			cfg.ContextToolOutputMaxBytes,
 			cfg.ContextCompactedToolOutputMaxBytes,
 		)
+	}
+	if cfg.CodexClientPoolUnavailable != "fallback_first" {
+		t.Fatalf("CodexClientPoolUnavailable = %q", cfg.CodexClientPoolUnavailable)
+	}
+	if len(cfg.CodexClients) != 2 {
+		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
+	}
+	if cfg.CodexClients[0].Label != "flag-a" || cfg.CodexClients[0].AuthPath != filepath.Join("/tmp/flag-a", "auth.json") {
+		t.Fatalf("first flag codex client = %#v", cfg.CodexClients[0])
+	}
+	if cfg.CodexClients[1].Label != "flag-b" || cfg.CodexClients[1].CodexHome != "/tmp/flag-codex" || cfg.CodexClients[1].AuthPath != "/tmp/flag-b-auth.json" {
+		t.Fatalf("second flag codex client = %#v", cfg.CodexClients[1])
 	}
 }
 
@@ -407,6 +449,34 @@ func TestLoadInvalidContextLimits(t *testing.T) {
 				t.Fatal("Load() error = nil, want invalid context limit error")
 			}
 		})
+	}
+}
+
+func TestLoadInvalidCodexClients(t *testing.T) {
+	tests := map[string]string{
+		"empty":           `[]`,
+		"duplicate_label": `[{"label":"same"},{"label":"same"}]`,
+		"bad_label":       `[{"label":"secret/path"}]`,
+		"bad_json":        `not-json`,
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CODEX_CLIENTS", value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid codex clients error")
+			}
+		})
+	}
+}
+
+func TestLoadInvalidCodexClientPoolUnavailable(t *testing.T) {
+	t.Setenv("CODEX_CLIENT_POOL_UNAVAILABLE", "random")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid codex client pool unavailable error")
 	}
 }
 

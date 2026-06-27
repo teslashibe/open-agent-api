@@ -258,6 +258,8 @@ Flags override environment values.
 | Codex scaffold JSON | `CODEX_SCAFFOLD_PATH` | `--codex-scaffold` | `codex_scaffold.json` |
 | Codex websocket URL | `CODEX_WEBSOCKET_URL` | `--codex-websocket-url` | `wss://chatgpt.com/backend-api/codex/responses` |
 | Codex request timeout | `CODEX_TIMEOUT` | `--codex-timeout` | `120s` |
+| Codex client pool | `CODEX_CLIENTS` | `--codex-clients` | single client from `CODEX_HOME` / `CODEX_AUTH_PATH` |
+| Codex pool unavailable policy | `CODEX_CLIENT_POOL_UNAVAILABLE` | `--codex-client-pool-unavailable` | `fail` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 | Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
 | Agent queue enabled | `CODEX_AGENT_QUEUE_ENABLED` | `--agent-queue-enabled` | `true` |
@@ -429,6 +431,47 @@ Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable queueing, or raise
 `CODEX_AGENT_MAX_ACTIVE` after validating that overlapping Agent chats are stable
 in your workspace.
 
+### Codex client pool
+
+By default, the server builds one Codex client from `CODEX_HOME` and
+`CODEX_AUTH_PATH`, preserving the historical single-client behavior. To shard
+independent conversations across multiple Codex logins, set `CODEX_CLIENTS` to a
+JSON array. Each client needs a non-sensitive `label`; omit `auth_path` to use
+`<codex_home>/auth.json`, and omit profile/scaffold paths to inherit the global
+`CODEX_PROFILE_PATH` and `CODEX_SCAFFOLD_PATH`.
+
+```bash
+CODEX_CLIENTS='[
+  {"label":"work-a","codex_home":"/home/codex/.codex-a"},
+  {"label":"work-b","auth_path":"/run/secrets/codex-b-auth.json"}
+]'
+CODEX_CLIENT_POOL_UNAVAILABLE=fail
+```
+
+For each request, the server resolves the same key used by the Agent queue and
+selects a client with deterministic affinity. Repeated turns with the same
+queue key map to the same shard; different queue keys can use different shards.
+Random per-request load balancing is unsafe and is not used.
+
+When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, an unavailable selected client returns
+the upstream/auth error. `fallback_first` retries the first configured client
+when a non-primary shard fails before a stream starts, but it can break strict
+conversation affinity after a conversation has already used that shard. Use
+`fail` unless availability is more important than shard continuity.
+
+Pool logs are redacted:
+
+```text
+codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b fallback=false
+```
+
+Do not put credentials, account IDs, auth paths, hostnames with secrets, or user
+names in client labels. Labels are intended only as safe operational aliases.
+In a multi-replica deployment, deterministic client selection is not enough by
+itself to serialize a same-chat stream across processes. Use sticky routing by
+the same queue key or a shared distributed lock/queue with
+`CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`.
+
 Long Cursor Agent conversations can accumulate large historical tool outputs.
 Context management is disabled by default. When enabled, it applies only to
 tool-capable minimal-mode requests, never rejects an oversized request, truncates
@@ -557,6 +600,7 @@ When multiple Agent chats overlap, queue diagnostics show the lifecycle:
 ```text
 agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... position=2
 agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... wait_ms=1234 active_global=2 active_key=1
+codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default fallback=false
 stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
 agent_queue_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=... run_ms=8123 active_global=1 active_key=0
