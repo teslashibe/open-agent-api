@@ -1,0 +1,2 @@
+0000000000000000000000000000000000000000 e1817981ce54776dc6df1ec0ce494debcfb9d893 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782544958 -0700	branch: Created from HEAD
+e1817981ce54776dc6df1ec0ce494debcfb9d893 a53f6b41a2af262fcfd87b475b9c8a936bee2975 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782545006 -0700	commit: Enable per-chat Agent concurrency and tighten long-context defaults.

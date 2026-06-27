@@ -1,0 +1,4 @@
+Rebase priority lanes onto post-#44 feature branch.
+
+Merge distributed lock dir support with turn classification and optional
+cross-conversation queue priority; resolve conflicts with client pool changes.
