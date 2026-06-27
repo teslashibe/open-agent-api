@@ -1,0 +1,27 @@
+0000000000000000000000000000000000000000 a923e35ad78416541d21a4a9b0f2c387f823127d teslashibe <34052452+teslashibe@users.noreply.github.com> 1782485685 -0700	commit (initial): Initial commit.
+a923e35ad78416541d21a4a9b0f2c387f823127d ffa67eb7b962a47352f929100eec3e2cd0e78af5 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782487983 -0700	pull --ff-only origin main: Fast-forward
+ffa67eb7b962a47352f929100eec3e2cd0e78af5 60d152e7d244d8affc294f1d34978efb2a3654e2 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782488958 -0700	pull --ff-only origin main: Fast-forward
+60d152e7d244d8affc294f1d34978efb2a3654e2 b592ad827dff7163f8f47dd9b5441dcebc67a0b6 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782490495 -0700	pull --ff-only origin main: Fast-forward
+b592ad827dff7163f8f47dd9b5441dcebc67a0b6 31ae897f3c49433e880240449529c6e610686cd4 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782491387 -0700	pull --ff-only origin main: Fast-forward
+31ae897f3c49433e880240449529c6e610686cd4 76b991ee77ac069a4ee737d4712f32253790d612 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782497318 -0700	pull --ff-only origin main: Fast-forward
+76b991ee77ac069a4ee737d4712f32253790d612 ded7b333a7aa0f353b20c689aa1ae1eac7573056 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782516071 -0700	pull --ff-only origin main: Fast-forward
+ded7b333a7aa0f353b20c689aa1ae1eac7573056 662c0261e41696cfd2b4c5057e5bd7ad90b67e50 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782516975 -0700	pull --ff-only origin main: Fast-forward
+662c0261e41696cfd2b4c5057e5bd7ad90b67e50 0ac873a58802b83ae0cfd2b3d58e28ea026c7fac teslashibe <34052452+teslashibe@users.noreply.github.com> 1782517633 -0700	pull --ff-only origin main: Fast-forward
+0ac873a58802b83ae0cfd2b3d58e28ea026c7fac e9fa5d4f4773a217bac03a597a5eb263b3c5ac41 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782518518 -0700	pull --ff-only origin main: Fast-forward
+e9fa5d4f4773a217bac03a597a5eb263b3c5ac41 ab1ad0c32ec6bf5ea236196ba5b128cafb5ff982 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782519347 -0700	pull --ff-only origin main: Fast-forward
+ab1ad0c32ec6bf5ea236196ba5b128cafb5ff982 afa5cbe472a30879ef6014debef77b6698afd6b3 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782520365 -0700	commit: Document Cursor compatibility and tool-call setup
+afa5cbe472a30879ef6014debef77b6698afd6b3 6c91020f340cfb52819bed7fd83490e9dfbcbdb7 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782520922 -0700	pull --ff-only origin main: Fast-forward
+6c91020f340cfb52819bed7fd83490e9dfbcbdb7 ee51dc8cca5c92016e718c6f8294eda34b1af778 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782523066 -0700	commit: Add stream lifecycle logging for chat completions
+ee51dc8cca5c92016e718c6f8294eda34b1af778 87e8378b6789259f86fb6dbf10932c18c5edb6e4 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782524142 -0700	commit: Add Docker runner and stabilize streamed tool calls
+87e8378b6789259f86fb6dbf10932c18c5edb6e4 7feff7eca57981e9ab661ed364b7dbf8b704e969 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782525982 -0700	pull --ff-only origin main: Fast-forward
+7feff7eca57981e9ab661ed364b7dbf8b704e969 45e45fb8b4a3b54005dc443981d699492fa8ef28 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782530328 -0700	pull --ff-only origin main: Fast-forward
+45e45fb8b4a3b54005dc443981d699492fa8ef28 372de64f14e8cac0ddbceacec9051aa0fa081a31 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782530622 -0700	commit: Fix keyed queue concurrency test ordering
+372de64f14e8cac0ddbceacec9051aa0fa081a31 2e59deab78f5537ba84b75d7f4ccba851dab933f teslashibe <34052452+teslashibe@users.noreply.github.com> 1782534664 -0700	commit: Normalize streamed tool call indexes.
+2e59deab78f5537ba84b75d7f4ccba851dab933f e3339b7b7c9f3c260016154f751ecc9a4fccbf97 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782535725 -0700	pull --ff-only origin main: Fast-forward
+e3339b7b7c9f3c260016154f751ecc9a4fccbf97 934a3621064538810bc0045edc54d3f6cdfefc89 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782543537 -0700	pull origin main: Fast-forward
+934a3621064538810bc0045edc54d3f6cdfefc89 e1817981ce54776dc6df1ec0ce494debcfb9d893 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782544571 -0700	pull --ff-only origin main: Fast-forward
+e1817981ce54776dc6df1ec0ce494debcfb9d893 f8cac5cddc9d2f81d3dced57e1987d1f304ebd2a teslashibe <34052452+teslashibe@users.noreply.github.com> 1782545014 -0700	pull --ff-only origin main: Fast-forward
+f8cac5cddc9d2f81d3dced57e1987d1f304ebd2a eebea2032e768d98bf12314e4d6fa157bb89def4 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782549219 -0700	pull --ff-only origin main: Fast-forward
+eebea2032e768d98bf12314e4d6fa157bb89def4 0cf21bbd26e5f21ce1240c3c6aed5d1d2602fb1e teslashibe <34052452+teslashibe@users.noreply.github.com> 1782573095 -0700	pull --ff-only origin main: Fast-forward
+0cf21bbd26e5f21ce1240c3c6aed5d1d2602fb1e 97121b1af61fd0d4af2dcddb9c97c01c49902eba teslashibe <34052452+teslashibe@users.noreply.github.com> 1782573393 -0700	pull --ff-only origin main: Fast-forward
+97121b1af61fd0d4af2dcddb9c97c01c49902eba 75a41452f7c0d963b466e817cde29a8cdf91a831 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782574293 -0700	pull --ff-only origin main: Fast-forward

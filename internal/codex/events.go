@@ -90,7 +90,15 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 			return StreamEvent{ToolCalls: []ToolCall{toolCall}}, false, nil
 		}
 		return StreamEvent{}, false, nil
-	case "response.function_call_arguments.done", "response.output_item.done":
+	case "response.function_call_arguments.done":
+		if delta, ok := event.toolCallArgumentsDoneDelta(); ok {
+			return StreamEvent{ToolCallDelta: &delta}, false, nil
+		}
+		return StreamEvent{}, false, nil
+	case "response.output_item.done":
+		if toolCall, ok := event.fullToolCall(); ok {
+			return StreamEvent{ToolCalls: []ToolCall{toolCall}}, false, nil
+		}
 		return StreamEvent{}, false, nil
 	case "response.completed":
 		done := StreamEvent{Done: true}
@@ -155,6 +163,30 @@ func (e codexEvent) toolCallArgumentsDelta() (ToolCallDelta, bool) {
 			Name:      name,
 			Arguments: arguments,
 		},
+	}, true
+}
+
+func (e codexEvent) toolCallArgumentsDoneDelta() (ToolCallDelta, bool) {
+	arguments := firstNonEmpty(e.Arguments, e.ArgumentsDelta, e.Delta)
+	if arguments == "" {
+		return ToolCallDelta{}, false
+	}
+	item := e.toolItem()
+	id := ""
+	name := ""
+	if item != nil {
+		id = firstNonEmpty(item.CallID, item.ID, e.ItemID)
+		name = item.toolName()
+	}
+	return ToolCallDelta{
+		Index: e.OutputIndex,
+		ID:    id,
+		Type:  "function",
+		Function: ToolCallFunctionDelta{
+			Name:      name,
+			Arguments: arguments,
+		},
+		Final: true,
 	}, true
 }
 

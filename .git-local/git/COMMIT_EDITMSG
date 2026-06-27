@@ -1,0 +1,3 @@
+Merge throughput stack into main
+
+Bring the Docker-tested Cursor throughput stack up to date with main after the harness and wire-capture PRs landed.

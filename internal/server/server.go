@@ -335,13 +335,6 @@ func durationMillis(duration time.Duration) int64 {
 	return duration.Milliseconds()
 }
 
-func skipCompletedToolCallDelta(index int, toolCall codex.ToolCall, streamedIDs map[string]bool, streamedIndexes map[int]bool) bool {
-	if toolCall.ID != "" && streamedIDs[toolCall.ID] {
-		return true
-	}
-	return streamedIndexes[index]
-}
-
 func streamFinish(outcome string, toolCallEmitted bool) string {
 	if outcome != "completed" {
 		return "none"
@@ -372,33 +365,6 @@ func openAIToolCalls(toolCalls []codex.ToolCall) []openai.ToolCall {
 		})
 	}
 	return out
-}
-
-func openAIToolCallDelta(delta codex.ToolCallDelta) openai.ToolCallDelta {
-	out := openai.ToolCallDelta{
-		Index: delta.Index,
-		ID:    delta.ID,
-		Type:  delta.Type,
-	}
-	if delta.Function.Name != "" || delta.Function.Arguments != "" {
-		out.Function = &openai.ToolCallFunctionDelta{
-			Name:      delta.Function.Name,
-			Arguments: delta.Function.Arguments,
-		}
-	}
-	return out
-}
-
-func openAIToolCallFullDelta(index int, toolCall codex.ToolCall) openai.ToolCallDelta {
-	return openai.ToolCallDelta{
-		Index: index,
-		ID:    toolCall.ID,
-		Type:  defaultString(toolCall.Type, "function"),
-		Function: &openai.ToolCallFunctionDelta{
-			Name:      toolCall.Function.Name,
-			Arguments: toolCall.Function.Arguments,
-		},
-	}
 }
 
 func requestLogger(opts options) fiber.Handler {

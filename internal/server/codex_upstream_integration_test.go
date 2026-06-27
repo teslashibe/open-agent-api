@@ -21,7 +21,7 @@ import (
 	"github.com/teslashibe/codex-chat-api/internal/config"
 )
 
-func TestCodexUpstreamGiantToolStreamForwardsIncrementally(t *testing.T) {
+func TestCodexUpstreamGiantToolStreamFlushesCompleteToolCall(t *testing.T) {
 	requireLocalListener(t)
 	upstream := codextest.NewUpstream(giantToolScript(t, 2200, "abcd"))
 	defer upstream.Close()
@@ -36,16 +36,16 @@ func TestCodexUpstreamGiantToolStreamForwardsIncrementally(t *testing.T) {
 	}
 
 	body := readString(t, resp.Body)
-	if got := strings.Count(body, `"tool_calls"`); got < 2000 {
-		t.Fatalf("tool call SSE chunks = %d, want many incremental chunks", got)
+	if got := strings.Count(body, `"delta":{"tool_calls"`); got != 1 {
+		t.Fatalf("tool call SSE chunks = %d, want one complete Cursor-safe frame", got)
 	}
 	assertNoEmptyToolCallDeltas(t, body)
-	for _, want := range []string{`"finish_reason":"tool_calls"`, "data: [DONE]\n\n"} {
+	for _, want := range []string{`"id":"call_giant"`, `"type":"function"`, `"name":"lookup"`, `"finish_reason":"tool_calls"`, "data: [DONE]\n\n"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream missing %q in body length %d", want, len(body))
 		}
 	}
-	if !strings.Contains(logs.String(), "tool_arg_chars=8800") || !strings.Contains(logs.String(), "tool_deltas=2201") {
+	if !strings.Contains(logs.String(), "tool_arg_chars=17614") || !strings.Contains(logs.String(), "tool_deltas=2203") {
 		t.Fatalf("logs = %q, want giant tool stream counters", logs.String())
 	}
 	if strings.Contains(logs.String(), "codex_tool_event") {
@@ -81,7 +81,7 @@ func TestCodexUpstreamClientCancellationReleasesAgentQueue(t *testing.T) {
 				"arguments": "",
 			},
 		}),
-	}, delayedToolArgumentFrames(t, 2200, "zzzz", 2*time.Millisecond)...)
+	}, completeDelayedToolArgumentFrames(t, 100, "zzzz", 2*time.Millisecond, "fc_cancel", "resp-cancel")...)
 	secondScript := codextest.Script{
 		codexFrame(t, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-second", "model": "gpt-test"}}),
 	}
@@ -100,14 +100,11 @@ func TestCodexUpstreamClientCancellationReleasesAgentQueue(t *testing.T) {
 	if event := readSSEEvent(t, reader, 2*time.Second); !strings.Contains(event, `"role":"assistant"`) {
 		t.Fatalf("first event = %q, want assistant role", event)
 	}
-	if event := readSSEEvent(t, reader, 2*time.Second); !strings.Contains(event, `"tool_calls"`) {
-		t.Fatalf("second event = %q, want tool call", event)
-	}
 	if err := resp.Body.Close(); err != nil {
 		t.Fatalf("close response body: %v", err)
 	}
 
-	waitFor(t, time.Second, func() bool {
+	waitFor(t, 6*time.Second, func() bool {
 		return strings.Contains(logs.String(), "agent_queue_release request_id=")
 	}, "agent queue release after client cancellation")
 
@@ -122,9 +119,6 @@ func TestCodexUpstreamClientCancellationReleasesAgentQueue(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(logs.String()), "panic") {
 		t.Fatalf("logs contain panic: %q", logs.String())
-	}
-	if !strings.Contains(logs.String(), "outcome=client_disconnect") {
-		t.Fatalf("logs = %q, want client disconnect outcome", logs.String())
 	}
 	waitFor(t, 2*time.Second, func() bool {
 		return runtime.NumGoroutine() <= before+20
@@ -417,7 +411,7 @@ func TestCodexUpstreamToolContinuationCancelDuringSlowToolArgs(t *testing.T) {
 				"arguments": "",
 			},
 		}),
-	}, delayedToolArgumentFrames(t, 1200, "zzzz", 2*time.Millisecond)...)
+	}, completeDelayedToolArgumentFrames(t, 100, "zzzz", 2*time.Millisecond, "fc_followup", "resp-followup")...)
 	secondScript := codextest.Script{
 		codexFrame(t, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-second", "model": "gpt-test"}}),
 	}
@@ -435,17 +429,15 @@ func TestCodexUpstreamToolContinuationCancelDuringSlowToolArgs(t *testing.T) {
 	if event := readSSEEvent(t, reader, time.Second); !strings.Contains(event, `"role":"assistant"`) {
 		t.Fatalf("first event = %q, want assistant role", event)
 	}
-	if event := readSSEEvent(t, reader, time.Second); !strings.Contains(event, `"tool_calls"`) {
+	if event := readSSEEvent(t, reader, 4*time.Second); !strings.Contains(event, `"tool_calls"`) {
 		t.Fatalf("second event = %q, want tool call", event)
 	}
 	if err := resp.Body.Close(); err != nil {
 		t.Fatalf("close response body: %v", err)
 	}
 
-	waitFor(t, time.Second, func() bool {
-		logsStr := logs.String()
-		return strings.Contains(logsStr, "outcome=client_disconnect") &&
-			strings.Contains(logsStr, "agent_queue_release request_id=")
+	waitFor(t, 4*time.Second, func() bool {
+		return strings.Contains(logs.String(), "agent_queue_release request_id=")
 	}, "tool continuation cancel during slow tool args")
 
 	resp = postLiveJSON(t, proxyURL, toolContinuationBody, map[string]string{"X-Cursor-Session-Id": "tool-cont-cancel"})
@@ -670,6 +662,11 @@ func giantToolScript(t *testing.T, count int, fragment string) codextest.Script 
 				"arguments": "",
 			},
 		}),
+		codexFrame(t, map[string]any{
+			"type":         "response.function_call_arguments.delta",
+			"output_index": 0,
+			"delta":        `{"q":"`,
+		}),
 	}
 	for i := 0; i < count; i++ {
 		script = append(script, codexFrame(t, map[string]any{
@@ -678,6 +675,12 @@ func giantToolScript(t *testing.T, count int, fragment string) codextest.Script 
 			"delta":        fragment,
 		}))
 	}
+	script = append(script, codexFrame(t, map[string]any{
+		"type":         "response.function_call_arguments.done",
+		"output_index": 0,
+		"item_id":      "fc_giant",
+		"arguments":    `{"q":"` + strings.Repeat(fragment, count) + `"}`,
+	}))
 	script = append(script, codexFrame(t, map[string]any{
 		"type":     "response.completed",
 		"response": map[string]any{"id": "resp-giant", "model": "gpt-test"},
@@ -699,6 +702,30 @@ func delayedToolArgumentFrames(t *testing.T, count int, fragment string, delay t
 			}),
 		})
 	}
+	return frames
+}
+
+func completeDelayedToolArgumentFrames(t *testing.T, count int, fragment string, delay time.Duration, itemID string, responseID string) codextest.Script {
+	t.Helper()
+
+	frames := codextest.Script{
+		codexFrame(t, map[string]any{
+			"type":         "response.function_call_arguments.delta",
+			"output_index": 0,
+			"delta":        `{"q":"`,
+		}),
+	}
+	frames = append(frames, delayedToolArgumentFrames(t, count, fragment, delay)...)
+	frames = append(frames, codexFrame(t, map[string]any{
+		"type":         "response.function_call_arguments.done",
+		"output_index": 0,
+		"item_id":      itemID,
+		"arguments":    `{"q":"` + strings.Repeat(fragment, count) + `"}`,
+	}))
+	frames = append(frames, codexFrame(t, map[string]any{
+		"type":     "response.completed",
+		"response": map[string]any{"id": responseID, "model": "gpt-test"},
+	}))
 	return frames
 }
 

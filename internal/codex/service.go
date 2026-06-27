@@ -65,6 +65,7 @@ type ToolCallDelta struct {
 	ID       string                `json:"id,omitempty"`
 	Type     string                `json:"type,omitempty"`
 	Function ToolCallFunctionDelta `json:"function,omitempty"`
+	Final    bool                  `json:"-"`
 }
 
 type ToolCallFunctionDelta struct {
