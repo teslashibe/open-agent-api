@@ -17,7 +17,44 @@ codex login
 ```
 
 The old Python prototype has been removed. The Go server is the supported runtime
-for `v0.0.1`.
+(current release: `v0.0.4`).
+
+## Quick Start (Cursor)
+
+1. Log in to Codex and start the API locally:
+
+```bash
+codex login
+go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+```
+
+2. Expose it with a public HTTPS tunnel (required for most Cursor BYOK paths):
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8088
+```
+
+Copy the `https://<random>.trycloudflare.com` URL from the tunnel output.
+
+3. In **Cursor → Settings → Models**, enable the OpenAI API key override:
+
+| Field | Value |
+| --- | --- |
+| OpenAI API Key | `local-codex-chat-api` (any non-empty string) |
+| Override OpenAI Base URL | `https://<tunnel-host>/v1` |
+| Model | `gpt-5.5` |
+
+4. Open a **new** Agent chat and try:
+
+```text
+List the files in this repo.
+```
+
+Cursor Agent should emit tool calls, execute them locally, and return a final
+answer based on real repo data.
+
+See [Cursor compatibility](#cursor-compatibility) for Ask vs Agent mode, tunnel
+options, troubleshooting, and validation prompts.
 
 ## Run
 
@@ -177,64 +214,79 @@ Request body options beyond the core OpenAI chat schema:
 | --- | --- | --- |
 | `reasoning_effort` | `low`, `medium`, `high` | `medium` |
 | `verbosity` | `low`, `medium`, `high` | `medium` |
-| `faithful` | `true`, `false` | `true` |
-| `prewarm` | `true`, `false` | `true` |
+| `faithful` | `true`, `false` | `true` when the client does not send `tools`; otherwise `false` |
+| `prewarm` | `true`, `false` | follows `faithful` |
 
-## Cursor Local-Model Setup
+When the client sends `tools` (Cursor Agent always does), the server automatically
+uses **minimal mode**: no faithful CLI profile injection and no prewarm turn.
+This avoids upstream Codex errors from conflicting tool definitions. Explicit
+`faithful` / `prewarm` request fields still override the default.
 
-Cursor can be pointed at this API the same way it is pointed at local
-OpenAI-compatible servers such as Ollama, LM Studio, or LiteLLM. The local HTTP
-API ignores the client `Authorization` value, but Cursor generally requires a
-non-empty OpenAI API key field.
+## Cursor Compatibility
 
-Direct localhost settings to try first:
+Cursor can use this API as a custom OpenAI-compatible endpoint for **Chat**,
+**Cmd+K**, and **Agent** mode. Cursor Tab autocomplete does not use custom
+endpoints.
+
+### What is supported
+
+| Feature | Status |
+| --- | --- |
+| `GET /health` | Supported |
+| `GET /v1/models` | Supported (returns `gpt-5.5`) |
+| `POST /v1/chat/completions` (non-streaming) | Supported |
+| `POST /v1/chat/completions` (streaming SSE) | Supported |
+| Cursor Ask mode (text only) | Supported |
+| Cursor Agent mode (tool calls) | Supported (`v0.0.4+`) |
+| Tool-call streaming (`delta.tool_calls`) | Supported |
+| Tool-result continuation (`role:"tool"`) | Supported |
+| `POST /v1/responses` | Not implemented |
+| Cursor Tab autocomplete | Not expected to work |
+
+### Cursor settings
+
+Cursor requires a non-empty OpenAI API key even though this API ignores it.
+Upstream Codex authentication comes from `~/.codex/auth.json` (`codex login`).
 
 ```text
-OpenAI API Key: local-codex-chat-api
-Override OpenAI Base URL: http://127.0.0.1:8088/v1
-Model: gpt-5.5
+OpenAI API Key:        local-codex-chat-api
+Override Base URL:     https://<tunnel-host>/v1
+Model:                 gpt-5.5
 ```
 
-Also test this base URL if Cursor does not hit the API:
+The model ID is exact and case-sensitive. Cursor may display it as "GPT-5.5" in
+the UI, but the API model string is `gpt-5.5`.
+
+### Localhost vs HTTPS tunnel
+
+Try localhost first if your Cursor build routes BYOK requests directly:
 
 ```text
+http://127.0.0.1:8088/v1
 http://localhost:8088/v1
 ```
 
-The model ID is exact and case-sensitive: use `gpt-5.5`. Confirm Cursor reaches
-the local API by watching server logs. Successful probes should show entries for
-`GET /v1/models` and `POST /v1/chat/completions`, with
-`authorization_present=true` when Cursor sends the dummy key. Chat request logs
-also include the selected model, `stream` flag, and whether `tools` were present.
-The bearer token value and message content are never printed.
+Many Cursor BYOK paths route through Cursor-managed servers. In that case
+localhost fails with errors like:
 
-For extra diagnostics, enable redacted body-shape logging:
-
-```bash
-CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+```text
+Access to private networks is forbidden
 ```
 
-This prints field names, message count, message roles, and tool count, but not
-message content or authorization values.
+or Cursor reports an OpenAI API key error **without any request appearing in
+these server logs**. When that happens, expose the local API with a public HTTPS
+tunnel and point Cursor at the tunnel URL instead.
 
-Tool-call event parsing and manual tool-call validation examples are documented
-in `docs/codex-tool-events.md`. With body-shape logging enabled, Codex
-tool/function-call websocket events are logged as redacted structural summaries
-without argument content.
+### HTTPS tunnel setup
 
-### Cursor Through HTTPS Tunnel
-
-Some Cursor paths may construct requests through Cursor-managed servers. In that
-case `localhost` and `127.0.0.1` are not reachable from Cursor's route, and a
-public HTTPS tunnel is required. Bind the API locally, then expose port `8088`
-with one of these:
-
-```bash
-ngrok http 8088
-```
+Bind the API to `127.0.0.1:8088`, then run one of:
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:8088
+```
+
+```bash
+ngrok http 8088
 ```
 
 ```bash
@@ -244,24 +296,75 @@ tailscale funnel 8088
 Use the tunnel host as the Cursor base URL:
 
 ```text
-OpenAI API Key: local-codex-chat-api
-Override OpenAI Base URL: https://<tunnel-host>/v1
-Model: gpt-5.5
+https://<tunnel-host>/v1
+```
+
+Example with Cloudflare's quick tunnel:
+
+```bash
+# terminal 1
+go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+
+# terminal 2
+cloudflared tunnel --url http://127.0.0.1:8088
+# → https://something-random.trycloudflare.com
+```
+
+Cursor base URL: `https://something-random.trycloudflare.com/v1`
+
+Verify routing before testing in Cursor:
+
+```bash
+curl -s https://<tunnel-host>/health
+curl -s https://<tunnel-host>/v1/models
 ```
 
 Keep the API bound to `127.0.0.1` unless your tunnel tool requires otherwise.
-The dummy Cursor key is not used for upstream Codex authentication; upstream
-credentials still come from `~/.codex/auth.json`.
 
-### Cursor Agent Validation
+### Ask vs Agent mode
 
-Use Cursor Agent mode with the custom OpenAI-compatible model configured above.
+**Ask mode** works for plain Q&A through the tunnel.
+
+**Agent mode** always sends `tools` in the request body. The server:
+
+1. Switches to minimal Codex mode automatically.
+2. Converts Cursor's Chat Completions tool schema into Codex's Responses API
+   tool shape.
+3. Streams OpenAI-compatible `delta.tool_calls` when Codex requests a tool.
+4. Accepts continuation requests with prior `tool_calls` and `role:"tool"`
+   results, then returns a final assistant answer.
+
 Agent mode should send `tools` in the first request, receive an assistant
 `tool_calls` response, execute the tool locally, then send a continuation request
 containing the prior assistant `tool_calls` and matching `role:"tool"` results.
 The final response should be normal assistant text with `finish_reason:"stop"`.
 
-Known-good validation prompts:
+### Tool-call protocol notes
+
+Cursor sends OpenAI **Chat Completions** tools:
+
+```json
+{"type":"function","function":{"name":"list_dir","description":"...","parameters":{...}}}
+```
+
+Codex expects **Responses API** tools with function fields flattened:
+
+```json
+{"type":"function","name":"list_dir","description":"...","parameters":{...}}
+```
+
+The server converts between these formats automatically (`v0.0.4+`).
+
+Codex also enforces a **64-character maximum** on `call_id`. Cursor can emit
+longer `tool_call_id` values; the server hashes long IDs deterministically so
+matching assistant `function_call` and tool `function_call_output` items stay
+paired.
+
+Tool-call websocket event shapes are documented in `docs/codex-tool-events.md`.
+
+### Validation prompts
+
+Use these in a **new** Agent chat after configuring the tunnel:
 
 ```text
 List the files in this repo.
@@ -275,148 +378,69 @@ Read go.mod and summarize the module name and direct dependencies.
 First list the files in this repo, then read go.mod, then summarize what you found.
 ```
 
-With `CODEX_LOG_BODY_SHAPE=true`, expected evidence includes at least one
-`POST /v1/chat/completions` log with `tools_present=true`, followed by another
-chat completion log whose `message_roles` include `assistant,tool`. For tunnel
-validation, record the exact tunnel command, the Cursor base URL, and whether
-Cursor also probed `GET /v1/models` or any unsupported endpoint.
+A successful run should:
 
-### Cursor Compatibility Notes
+- Execute real local tools (for example `rg --files`, file reads).
+- Return answers that reflect actual repo contents, not hallucinated paths.
+- Show `tools_present=true` in server logs for Agent requests.
 
-- Cursor Chat, Cmd+K, and Agent mode are the expected local/custom endpoint
-  surfaces when Cursor routes them to the configured OpenAI-compatible endpoint.
-- Cursor Tab autocomplete is not expected to use local/custom endpoints.
-- Some Cursor modes or BYOK paths may still use Cursor-managed routes and may
-  require HTTPS tunneling.
-- Cursor may probe `GET /v1/models`, `POST /v1/chat/completions`, or other
-  endpoints such as `/v1/responses`. This service currently implements
-  `/v1/models` and `/v1/chat/completions`; `/v1/responses` is not implemented.
-- If Cursor reports an OpenAI API key authorization error and no request appears
-  in these server logs, the failure occurred before reaching this API.
+Validated in `v0.0.4`: Cursor Agent executed `rg --files` against a real repo
+through a Cloudflare tunnel and returned actual top-level files.
 
-### Issue 16 Validation Results
+### Diagnostics
 
-Recorded on 2026-06-26 in the issue #16 worktree.
-
-Automated validation:
-
-```text
-GOCACHE=$PWD/.gocache go test ./...
-?   	github.com/teslashibe/codex-chat-api/cmd/codex-chat-api	[no test files]
-ok  	github.com/teslashibe/codex-chat-api/internal/auth	0.874s
-ok  	github.com/teslashibe/codex-chat-api/internal/codex	0.354s
-ok  	github.com/teslashibe/codex-chat-api/internal/config	0.656s
-ok  	github.com/teslashibe/codex-chat-api/internal/openai	0.507s
-ok  	github.com/teslashibe/codex-chat-api/internal/server	1.156s
-ok  	github.com/teslashibe/codex-chat-api/internal/sse	0.890s
-
-GOCACHE=$PWD/.gocache go vet ./...
-pass, no output
-
-GOCACHE=$PWD/.gocache go build ./...
-pass, no output
-```
-
-Continuation coverage added for issue #16 verifies:
-
-- OpenAI request parsing preserves multiple assistant `tool_calls` and matching
-  `role:"tool"` messages with `tool_call_id`.
-- Codex request building emits `function_call` and `function_call_output` input
-  items for tool-result continuation turns, including two sequential call/result
-  pairs.
-- Non-streaming continuation requests return final assistant text with
-  `finish_reason:"stop"`.
-- Streaming continuation requests return final assistant text deltas and a final
-  `finish_reason:"stop"` without emitting another tool-call finish.
-- Server-level continuation coverage verifies a two-step tool sequence
-  (`list_dir` result followed by `read_file` result) returns final assistant text
-  containing the real tool outputs instead of stalling or ending with another
-  tool-call finish.
-
-Manual Cursor Agent tunnel validation could not be completed in this automated
-worktree because the sandbox rejects binding a local listener, which is required
-before starting `cloudflared` or connecting Cursor:
-
-```text
-GOCACHE=$PWD/.gocache CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 18088
-codex-chat-api: failed to listen: listen tcp4 127.0.0.1:18088: bind: operation not permitted
-```
-
-Run the Cursor Agent validation prompts above in an interactive developer
-environment with port binding enabled and record the observed tool activity,
-final assistant answers, tunnel command, and Cursor base URL in the PR notes.
-
-### Issue 11 Validation Results
-
-Recorded on 2026-06-26 in the issue #11 worktree.
-
-Automated validation:
-
-```text
-GOCACHE=$PWD/.gocache go test ./...
-?   	github.com/teslashibe/codex-chat-api/cmd/codex-chat-api	[no test files]
-ok  	github.com/teslashibe/codex-chat-api/internal/auth
-ok  	github.com/teslashibe/codex-chat-api/internal/codex
-ok  	github.com/teslashibe/codex-chat-api/internal/config
-?   	github.com/teslashibe/codex-chat-api/internal/openai	[no test files]
-ok  	github.com/teslashibe/codex-chat-api/internal/server
-ok  	github.com/teslashibe/codex-chat-api/internal/sse
-
-GOCACHE=$PWD/.gocache go vet ./...
-pass, no output
-
-GOCACHE=$PWD/.gocache go build ./...
-pass, no output
-```
-
-Handler-level coverage added in `internal/server/server_test.go` verifies:
-
-- `GET /v1/models` returns a model list containing `gpt-5.5`.
-- `POST /v1/chat/completions` accepts an arbitrary
-  `Authorization: Bearer local-codex-chat-api` header and reaches the Codex
-  service layer.
-- Request diagnostics include method, path, status, 404 visibility, auth
-  presence, chat model, stream mode, and tool presence without logging bearer
-  values or message content.
-
-Live curl validation could not be completed in the automated sandbox because the
-environment rejects listening on the local test port:
-
-```text
-GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
-codex-chat-api: failed to listen: listen tcp4 127.0.0.1:8088: bind: operation not permitted
-```
-
-Run these live checks in a developer environment with port binding enabled and a
-valid `codex login`:
+Enable redacted request logging:
 
 ```bash
-curl -s http://127.0.0.1:8088/v1/models | jq .
-
-curl -s http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-codex-chat-api' \
-  -H 'content-type: application/json' \
-  -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Say hi"}]}' | jq .
+CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
 ```
 
-Cursor validation status for this automated run:
+Successful Cursor probes should log:
 
-| Cursor base URL | Result | Observed server probes |
+- `GET /v1/models`
+- `POST /v1/chat/completions` with `authorization_present=true`
+- `chat_completion model=gpt-5.5 stream=... tools_present=...`
+
+Body-shape logs include field names, message count, message roles, and tool count.
+Bearer tokens and message content are never printed. Codex tool websocket events
+are logged as redacted structural summaries when body-shape logging is enabled.
+
+Upstream Codex errors are logged server-side as `stream_error` or
+`complete_error` with the real payload. Clients still receive the sanitized
+`[error: upstream error]` message.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `http://127.0.0.1:8088/v1` | Not runnable in sandbox because the server could not bind to `127.0.0.1:8088`. | Not observed in sandbox. |
-| `http://localhost:8088/v1` | Not runnable in sandbox because the server could not bind to `127.0.0.1:8088`. | Not observed in sandbox. |
-| `https://<tunnel-host>/v1` | Not runnable in sandbox because a local listener is required before starting a tunnel. | Not observed in sandbox. |
+| `Unauthorized User Openai API key` and **no server log entry** | Cursor failed before reaching this API | Use a non-empty dummy key; confirm `GET /v1/models` works through the tunnel |
+| `Access to private networks is forbidden` | Cursor cannot reach localhost | Use `cloudflared` / `ngrok` / `tailscale funnel` and a `https://.../v1` base URL |
+| `[error: upstream error]` on first Agent turn | Old build before `v0.0.4`, or missing `codex login` | Upgrade to `v0.0.4+`, run `codex login`, check `stream_error` logs |
+| `[error: upstream error]` in an **existing** chat | Poisoned history (failed tool turns, long `call_id`s) | Start a **new** Agent chat |
+| Agent describes tools but does not run them | Ask mode, wrong model, or Cursor not using the custom endpoint | Use Agent mode, model `gpt-5.5`, confirm requests hit server logs |
+| `tools[0].name` missing (in logs) | Pre-`v0.0.4` tool-format bug | Upgrade to `v0.0.4+` |
+| `call_id` string too long (in logs) | Long Cursor IDs in continuation history | Upgrade to `v0.0.4+` and start a fresh chat |
 
-For manual Cursor sign-off, record whether Cursor hits `GET /v1/models`,
-`POST /v1/chat/completions`, and any unexpected endpoint such as
-`/v1/responses`. If direct localhost produces no request logs, expose the same
-local process with one tunnel command from the tunnel section above and record
-the exact command and Cursor base URL that worked.
+If direct localhost produces no request logs, the tunnel path is required for your
+Cursor build.
+
+### Compatibility limitations
+
+- Cursor may probe `/v1/responses`; this service does not implement it.
+- Cursor Tab autocomplete is not expected to use local/custom endpoints.
+- Some Cursor modes may still use Cursor-managed routes regardless of settings.
+- Faithful Codex fingerprint mode (`faithful:true`) is disabled automatically when
+  the client sends `tools`. Use explicit `"faithful": true` only for non-Cursor
+  plain chat requests without client tools.
 
 ## Fingerprint: codex-exact by default
 
 By default (`faithful: true`) the API reproduces the real Codex CLI request at the
-application layer, verified against a live capture:
+application layer for **plain chat without client tools**. Cursor Agent and other
+clients that send their own `tools` automatically use minimal mode instead (see
+[Cursor Compatibility](#cursor-compatibility)).
+
+In faithful mode, verified against a live capture:
 
 - All 12 Codex app headers, in Codex order and with Codex values
   (`x-codex-beta-features`, `x-client-request-id`, `session-id`, `thread-id`,
@@ -445,11 +469,7 @@ small Rust sidecar. Set `"faithful": false` for the minimal plain-chat request.
 
 ## Release Validation
 
-Run and record these checks in the PR body before merging a release-readiness
-change. Issue #1 can be closed only after the local checks and live curl checks
-below have passing results in the PR notes.
-
-Local validation:
+Run before tagging a release:
 
 ```bash
 GOCACHE=$PWD/.gocache go test ./...
@@ -457,39 +477,32 @@ GOCACHE=$PWD/.gocache go vet ./...
 GOCACHE=$PWD/.gocache go build ./...
 ```
 
-Live curl validation must be run with the Go server and a valid `codex login`.
-Start the server:
-
-```bash
-GOCACHE=$PWD/.gocache go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
-```
-
-Then run and record these probes:
+Live checks with `codex login` and the server running on `127.0.0.1:8088`:
 
 ```bash
 curl -s http://127.0.0.1:8088/health
-
 curl -s http://127.0.0.1:8088/v1/models | jq .
-
 curl -s http://127.0.0.1:8088/v1/chat/completions \
   -H 'authorization: Bearer local-codex-chat-api' \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Say hi in 5 words"}]}' | jq .
-
 curl -N http://127.0.0.1:8088/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"Count to 5"}]}'
 ```
 
-The PR notes should include:
+For Cursor compatibility releases (`v0.0.2+`), also validate through an HTTPS
+tunnel with Agent mode using the prompts in
+[Validation prompts](#validation-prompts).
 
-- `go test ./...`: passing output.
-- `go vet ./...`: passing output or "pass, no output".
-- `go build ./...`: passing output or "pass, no output".
-- `/health`: observed `{"status":"ok"}` response.
-- `/v1/models`: observed OpenAI-compatible model list containing `gpt-5.5`.
-- Non-streaming chat: observed `chat.completion` response with assistant content.
-- Streaming chat: observed SSE chunks ending in `data: [DONE]`.
+## Releases
+
+| Version | Highlights |
+| --- | --- |
+| `v0.0.4` | Cursor Agent tool-format fix (Chat Completions → Responses API), long `call_id` normalization, upstream error logging |
+| `v0.0.3` | Cursor Agent tool-call compatibility: OpenAI tool types, Codex tool events, tool-result continuation |
+| `v0.0.2` | Cursor local-model setup: `/v1/models`, dummy API key, diagnostics, tunnel docs |
+| `v0.0.1` | Initial Go refactor from Python prototype |
 
 ## Notes
 
@@ -498,5 +511,6 @@ The PR notes should include:
   by the Codex app are picked up. If you get 401s, run `codex login` again.
 - In faithful mode the model is told it is the Codex coding agent and is offered
   Codex tools. For plain Q&A it usually answers normally, but it may emit a tool
-  call that this API ignores. Use `faithful:false` for clean assistant-style chat.
+  call that this API ignores. Use `faithful:false` for clean assistant-style chat,
+  or let the server auto-switch when the client sends `tools`.
 - Requests are subject to your ChatGPT plan's rate limits.
