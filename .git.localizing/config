@@ -1,0 +1,43 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+	ignorecase = true
+	precomposeunicode = true
+[remote "origin"]
+	url = https://github.com/teslashibe/codex-chat-api.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+	vscode-merge-base = origin/main
+[branch "add-long-context-diagnostics"]
+	vscode-merge-base = origin/main
+[branch "agent-codex-29-1782541528"]
+	remote = origin
+	merge = refs/heads/agent-codex-29-1782541528
+	vscode-merge-base = origin/main
+[branch "harden-context-management-defaults"]
+	vscode-merge-base = origin/main
+	remote = origin
+	merge = refs/heads/harden-context-management-defaults
+[branch "per-chat-concurrency-and-tuning"]
+	remote = origin
+	merge = refs/heads/per-chat-concurrency-and-tuning
+[branch "codex-upstream-harness"]
+	vscode-merge-base = origin/main
+[branch "agent-codex-35-1782549588"]
+	vscode-merge-base = origin/main
+	remote = origin
+	merge = refs/heads/agent-codex-35-1782549588
+[branch "issue-39-harness-blind-spots"]
+	vscode-merge-base = origin/main
+	remote = origin
+	merge = refs/heads/issue-39-harness-blind-spots
+[branch "cursor-wire-capture"]
+	vscode-merge-base = origin/main
+	remote = origin
+	merge = refs/heads/cursor-wire-capture
+[branch "agent-codex-43-1782577140"]
+	vscode-merge-base = origin/main

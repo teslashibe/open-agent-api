@@ -95,8 +95,8 @@ NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok
 Cursor base URL: `https://icebound-melida-unstoppably.ngrok-free.dev/v1`
 
 The Docker Compose service enables the Agent queue by default. Tool-capable
-Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`
-with `CODEX_AGENT_MAX_ACTIVE=2` and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while
+Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=cursor` with
+`CODEX_AGENT_MAX_ACTIVE=2` and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while
 Ask/text-only requests bypass the queue.
 
 ## Validate
@@ -263,7 +263,7 @@ Flags override environment values.
 | Agent queue enabled | `CODEX_AGENT_QUEUE_ENABLED` | `--agent-queue-enabled` | `true` |
 | Agent max active requests | `CODEX_AGENT_MAX_ACTIVE` | `--agent-max-active` | `2` |
 | Agent max active per key | `CODEX_AGENT_MAX_ACTIVE_PER_KEY` | `--agent-max-active-per-key` | `1` |
-| Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `header:x-cursor-session-id` |
+| Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `cursor` |
 | Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
 | Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `false` |
@@ -409,10 +409,13 @@ containing the prior assistant `tool_calls` and matching `role:"tool"` results.
 The final response should be normal assistant text with `finish_reason:"stop"`.
 
 By default, requests that include `tools` enter an Agent queue keyed by
-`CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`. This allows up to
-`CODEX_AGENT_MAX_ACTIVE` concurrent Agent streams across different Cursor chats
-while keeping one active stream per chat/session key. Requests without
-`tools`, including Ask mode, bypass the queue.
+`CODEX_AGENT_QUEUE_KEY_MODE=cursor`. This mode prefers real Cursor conversation
+identifiers when present, then uses a deterministic non-content conversation
+fingerprint from stable message and tool-call IDs, and finally falls back to
+forwarded IP/request fingerprint diagnostics when no conversation anchor exists.
+This allows up to `CODEX_AGENT_MAX_ACTIVE` concurrent Agent streams across
+different Cursor chats while keeping one active stream per derived chat key.
+Requests without `tools`, including Ask mode, bypass the queue.
 
 Tune the queue with:
 
@@ -420,7 +423,7 @@ Tune the queue with:
 CODEX_AGENT_QUEUE_ENABLED=true
 CODEX_AGENT_MAX_ACTIVE=2
 CODEX_AGENT_MAX_ACTIVE_PER_KEY=1
-CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id
+CODEX_AGENT_QUEUE_KEY_MODE=cursor
 CODEX_AGENT_QUEUE_LIMIT=20
 CODEX_AGENT_QUEUE_TIMEOUT=5m
 ```
@@ -457,6 +460,7 @@ Queue key modes:
 
 | Mode | Behavior |
 | --- | --- |
+| `cursor` | Cursor-aware mode. Prefers `x-cursor-session-id`, stable body or `metadata` IDs, then a deterministic conversation fingerprint from message/tool-call IDs. If none are present, falls back to `x-forwarded-for` or request fingerprint. |
 | `global` | Fallback when a header/body key is missing. All unmatched Agent traffic shares one key. |
 | `auth_hash` | All requests using the same API key serialize. The raw key is never logged. |
 | `header:<name>` | Queue by a selected request header, for example `header:x-cursor-session-id`, if real traffic shows it is stable. |
@@ -464,8 +468,10 @@ Queue key modes:
 | `request_fingerprint` | Queue by a redacted fingerprint of authorization hash, user agent hash, and remote IP. This is not a proven per-chat key. |
 
 Configured header/body modes fall back to the global key when the selected value
-is missing. The default `header:x-cursor-session-id` mode queues per Cursor chat
-when that header is present.
+is missing. The default `cursor` mode logs source-specific modes such as
+`cursor:metadata:thread_id`, `cursor:conversation_fingerprint`, or
+`cursor:fallback:x-forwarded-for`; logs include only the mode and `key_hash`,
+never the raw identifier, prompt text, tool arguments, or request body.
 
 ### Tool-call protocol notes
 
@@ -552,12 +558,18 @@ request bodies.
 When multiple Agent chats overlap, queue diagnostics show the lifecycle:
 
 ```text
-agent_queue_wait request_id=... key_mode=header:x-cursor-session-id key_hash=... position=2
-agent_queue_acquire request_id=... key_mode=header:x-cursor-session-id key_hash=... wait_ms=1234 active_global=2 active_key=1
+agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... position=2
+agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... wait_ms=1234 active_global=2 active_key=1
 stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
-agent_queue_release request_id=... key_mode=header:x-cursor-session-id key_hash=... run_ms=8123 active_global=1 active_key=0
+agent_queue_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=... run_ms=8123 active_global=1 active_key=0
 ```
+
+For live Cursor/ngrok validation, open two side-by-side Agent chats and confirm
+their queue lines show different `key_hash` values with `key_mode=cursor:*`.
+For repeated turns in one chat, confirm the `key_hash` remains stable and
+`active_key` never exceeds `1`. Tool-call responses should still include
+non-empty `delta.tool_calls` chunks and `finish_reason:"tool_calls"`.
 
 If the queue is full or a request waits longer than `CODEX_AGENT_QUEUE_TIMEOUT`,
 the API returns an OpenAI-shaped `429` error and logs `agent_queue_full` or
@@ -576,7 +588,7 @@ Upstream Codex errors are logged server-side as `stream_error` or
 | `[error: upstream error]` on first Agent turn | Old build before `v0.0.4`, or missing `codex login` | Upgrade to `v0.0.4+`, run `codex login`, check `stream_error` logs |
 | `[error: upstream error]` in an **existing** chat | Poisoned history (failed tool turns, long `call_id`s) | Start a **new** Agent chat |
 | Agent describes tools but does not run them | Ask mode, wrong model, or Cursor not using the custom endpoint | Use Agent mode, model `gpt-5.5` or a documented alias, confirm requests hit server logs |
-| Agent chats stall when several run at once | Queue disabled, wrong key mode, or concurrency set too high for one workspace | Keep `CODEX_AGENT_QUEUE_ENABLED=true`, `CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`, and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; confirm queue logs |
+| Agent chats stall when several run at once | Queue disabled, wrong key mode, or concurrency set too high for one workspace | Keep `CODEX_AGENT_QUEUE_ENABLED=true`, `CODEX_AGENT_QUEUE_KEY_MODE=cursor`, and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; confirm queue logs |
 | `tools[0].name` missing (in logs) | Pre-`v0.0.4` tool-format bug | Upgrade to `v0.0.4+` |
 | `call_id` string too long (in logs) | Long Cursor IDs in continuation history | Upgrade to `v0.0.4+` and start a fresh chat |
 
