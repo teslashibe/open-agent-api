@@ -25,21 +25,12 @@ func run(args []string) error {
 		return err
 	}
 
-	codexClient, err := codex.NewClient(codex.ClientConfig{
-		AuthPath:     cfg.AuthPath,
-		CodexHome:    cfg.CodexHome,
-		ProfilePath:  cfg.CodexProfilePath,
-		ScaffoldPath: cfg.CodexScaffoldPath,
-		WebsocketURL: cfg.CodexWebsocketURL,
-		Timeout:      cfg.CodexTimeout,
-		LogOutput:    os.Stdout,
-		LogBodyShape: cfg.LogBodyShape,
-	})
+	codexService, err := buildCodexService(cfg)
 	if err != nil {
 		return err
 	}
 
-	app := server.New(cfg, server.WithCodexService(codexClient))
+	app := server.New(cfg, server.WithCodexService(codexService))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -61,4 +52,33 @@ func run(args []string) error {
 		}
 		return nil
 	}
+}
+
+func buildCodexService(cfg config.Config) (codex.Service, error) {
+	clients := make([]codex.PooledClientConfig, 0, len(cfg.CodexClients))
+	for _, clientCfg := range cfg.CodexClients {
+		client, err := codex.NewClient(codex.ClientConfig{
+			AuthPath:      clientCfg.AuthPath,
+			CodexHome:     clientCfg.CodexHome,
+			ProfilePath:   clientCfg.CodexProfilePath,
+			ScaffoldPath:  clientCfg.CodexScaffoldPath,
+			WebsocketURL:  cfg.CodexWebsocketURL,
+			Timeout:       cfg.CodexTimeout,
+			LogOutput:     os.Stdout,
+			LogBodyShape:  cfg.LogBodyShape,
+			LogToolEvents: cfg.LogCodexToolEvents,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create codex client %q: %w", clientCfg.Label, err)
+		}
+		clients = append(clients, codex.PooledClientConfig{
+			Label:   clientCfg.Label,
+			Service: client,
+		})
+	}
+	return codex.NewPooledService(codex.PooledServiceConfig{
+		Clients:           clients,
+		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
+		LogOutput:         os.Stdout,
+	})
 }

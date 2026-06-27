@@ -95,7 +95,7 @@ NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok
 Cursor base URL: `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1`
 
 The Docker Compose service enables the Agent queue by default. Tool-capable
-Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`
+Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=cursor`
 with `CODEX_AGENT_MAX_ACTIVE=2` and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while
 Ask/text-only requests bypass the queue.
 
@@ -258,20 +258,25 @@ Flags override environment values.
 | Codex scaffold JSON | `CODEX_SCAFFOLD_PATH` | `--codex-scaffold` | `codex_scaffold.json` |
 | Codex websocket URL | `CODEX_WEBSOCKET_URL` | `--codex-websocket-url` | `wss://chatgpt.com/backend-api/codex/responses` |
 | Codex request timeout | `CODEX_TIMEOUT` | `--codex-timeout` | `120s` |
+| Codex client pool | `CODEX_CLIENTS` | `--codex-clients` | single client from `CODEX_HOME` / `CODEX_AUTH_PATH` |
+| Codex pool unavailable policy | `CODEX_CLIENT_POOL_UNAVAILABLE` | `--codex-client-pool-unavailable` | `fail` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 | Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
+| Redacted Codex tool-event logging | `CODEX_LOG_CODEX_TOOL_EVENTS` | `--log-codex-tool-events` | `false` |
 | Agent queue enabled | `CODEX_AGENT_QUEUE_ENABLED` | `--agent-queue-enabled` | `true` |
 | Agent max active requests | `CODEX_AGENT_MAX_ACTIVE` | `--agent-max-active` | `2` |
 | Agent max active per key | `CODEX_AGENT_MAX_ACTIVE_PER_KEY` | `--agent-max-active-per-key` | `1` |
-| Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `header:x-cursor-session-id` |
+| Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `cursor` |
 | Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
-| Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `false` |
-| Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `262144` |
-| Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `150` |
-| Context recent messages kept | `CODEX_CONTEXT_RECENT_MESSAGES` | `--context-recent-messages` | `40` |
-| Tool output max bytes | `CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES` | `--context-tool-output-max-bytes` | `65536` |
-| Compacted tool output max bytes | `CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES` | `--context-compacted-tool-output-max-bytes` | `1024` |
+| Agent queue shared lock directory | `CODEX_AGENT_QUEUE_LOCK_DIR` | `--agent-queue-lock-dir` | disabled; set explicitly for multi-replica or multi-client pools |
+| Agent queue priority experiment | `CODEX_AGENT_QUEUE_PRIORITY_ENABLED` | `--agent-queue-priority-enabled` | `false` |
+| Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `true` |
+| Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `196608` |
+| Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `120` |
+| Context recent messages kept | `CODEX_CONTEXT_RECENT_MESSAGES` | `--context-recent-messages` | `24` |
+| Tool output max bytes | `CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES` | `--context-tool-output-max-bytes` | `32768` |
+| Compacted tool output max bytes | `CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES` | `--context-compacted-tool-output-max-bytes` | `512` |
 
 Request body options beyond the core OpenAI chat schema:
 
@@ -409,7 +414,7 @@ containing the prior assistant `tool_calls` and matching `role:"tool"` results.
 The final response should be normal assistant text with `finish_reason:"stop"`.
 
 By default, requests that include `tools` enter an Agent queue keyed by
-`CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`. This allows up to
+`CODEX_AGENT_QUEUE_KEY_MODE=cursor`. This allows up to
 `CODEX_AGENT_MAX_ACTIVE` concurrent Agent streams across different Cursor chats
 while keeping one active stream per chat/session key. Requests without
 `tools`, including Ask mode, bypass the queue.
@@ -420,32 +425,90 @@ Tune the queue with:
 CODEX_AGENT_QUEUE_ENABLED=true
 CODEX_AGENT_MAX_ACTIVE=2
 CODEX_AGENT_MAX_ACTIVE_PER_KEY=1
-CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id
+CODEX_AGENT_QUEUE_KEY_MODE=cursor
 CODEX_AGENT_QUEUE_LIMIT=20
 CODEX_AGENT_QUEUE_TIMEOUT=5m
+CODEX_AGENT_QUEUE_LOCK_DIR=/tmp/codex-chat-api-agent-locks
+CODEX_AGENT_QUEUE_PRIORITY_ENABLED=false
 ```
 
-Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable queueing, or raise
-`CODEX_AGENT_MAX_ACTIVE` after validating that overlapping Agent chats are stable
-in your workspace.
+Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable the in-process wait queue and
+global active-request limit, or raise `CODEX_AGENT_MAX_ACTIVE` after validating
+that overlapping Agent chats are stable in your workspace. Tool-capable requests
+still use the per-key shared lock when `CODEX_AGENT_QUEUE_LOCK_DIR` is set, so
+the same derived conversation key is not streamed concurrently.
+
+### Codex client pool
+
+By default, the server builds one Codex client from `CODEX_HOME` and
+`CODEX_AUTH_PATH`, preserving the historical single-client behavior. To shard
+independent conversations across multiple Codex logins, set `CODEX_CLIENTS` to a
+JSON array. Each client needs a non-sensitive `label`; omit `auth_path` to use
+`<codex_home>/auth.json`, and omit profile/scaffold paths to inherit the global
+`CODEX_PROFILE_PATH` and `CODEX_SCAFFOLD_PATH`.
+
+```bash
+CODEX_CLIENTS='[
+  {"label":"work-a","codex_home":"/home/codex/.codex-a"},
+  {"label":"work-b","auth_path":"/run/secrets/codex-b-auth.json"}
+]'
+CODEX_CLIENT_POOL_UNAVAILABLE=fail
+```
+
+For each request, the server resolves the same key used by the Agent queue and
+selects a client with deterministic affinity. Repeated turns with the same
+queue key map to the same shard; different queue keys can use different shards.
+Random per-request load balancing is unsafe and is not used.
+
+When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, an unavailable selected client returns
+the upstream/auth error. `fallback_first` retries the first configured client
+when a non-primary shard fails before a stream starts, but it can break strict
+conversation affinity after a conversation has already used that shard. Use
+`fail` unless availability is more important than shard continuity.
+
+Pool logs are redacted:
+
+```text
+codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b fallback=false
+```
+
+Do not put credentials, account IDs, auth paths, hostnames with secrets, or user
+names in client labels. Labels are intended only as safe operational aliases.
+The Agent queue also creates one shared lock file per queue-key hash in
+`CODEX_AGENT_QUEUE_LOCK_DIR`. Multiple API replicas must point this setting at
+the same writable shared volume so the same chat cannot stream concurrently in
+different processes. Keep `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; sticky routing by
+the same queue key is still recommended to reduce lock contention.
+The supplied Docker Compose file mounts this path on a named volume by default
+at `/var/lib/codex-chat-api/agent-locks`, so replicas started from that Compose
+project share locks without extra volume wiring.
+
+The queue classifies request shapes as `tool_generating`,
+`tool_result_continuation`, `final_prose_continuation`, or `simple_no_tool` and
+logs the class as `turn_class=...`. The optional priority experiment can reorder
+eligible waiters across different conversation keys so a
+`tool_result_continuation` can run before a lower-priority tool-generating turn.
+It never bypasses `CODEX_AGENT_MAX_ACTIVE_PER_KEY`; no same-chat priority lane is
+enabled because request shape alone does not prove concurrent upstream streams
+for one conversation are safe.
 
 Long Cursor Agent conversations can accumulate large historical tool outputs.
-Context management is disabled by default. When enabled, it applies only to
-tool-capable minimal-mode requests, never rejects an oversized request, truncates
+Context management is enabled by default for tool-capable minimal-mode requests
+such as Cursor Agent traffic. It never rejects an oversized request, truncates
 oversized individual tool outputs with an explicit marker, and compacts older
 tool outputs once the configured byte or message threshold is exceeded. The most
 recent `CODEX_CONTEXT_RECENT_MESSAGES` messages are left unchanged, and assistant
 `tool_calls` plus matching `role:"tool"` / `tool_call_id` messages stay paired.
 
-Enable it conservatively:
+Tune it conservatively:
 
 ```bash
 CODEX_CONTEXT_MANAGEMENT_ENABLED=true
-CODEX_CONTEXT_MAX_BYTES=262144
-CODEX_CONTEXT_MAX_MESSAGES=150
-CODEX_CONTEXT_RECENT_MESSAGES=40
-CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES=65536
-CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES=1024
+CODEX_CONTEXT_MAX_BYTES=196608
+CODEX_CONTEXT_MAX_MESSAGES=120
+CODEX_CONTEXT_RECENT_MESSAGES=24
+CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES=32768
+CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES=512
 ```
 
 When context management changes a request, the server logs one redacted
@@ -453,10 +516,15 @@ When context management changes a request, the server logs one redacted
 output counts, and truncation/compaction counts. It does not log prompt text,
 tool arguments, or tool output content.
 
+Every chat completion also logs one redacted `request_timing` line with
+`context_ms`, `queue_wait_ms`, `upstream_stream_ms`, `first_delta_ms`, and
+`total_ms`. Non-streaming requests use `first_delta_ms=-1`.
+
 Queue key modes:
 
 | Mode | Behavior |
 | --- | --- |
+| `cursor` | Prefer stable Cursor conversation identifiers from metadata/body, then stable Cursor/session headers, then a deterministic conversation fingerprint anchored on the earliest tool-call ID (or hashed first user message before tools appear), then `x-forwarded-for` or `remote_ip` as safe fallbacks. |
 | `global` | Fallback when a header/body key is missing. All unmatched Agent traffic shares one key. |
 | `auth_hash` | All requests using the same API key serialize. The raw key is never logged. |
 | `header:<name>` | Queue by a selected request header, for example `header:x-cursor-session-id`, if real traffic shows it is stable. |
@@ -464,8 +532,10 @@ Queue key modes:
 | `request_fingerprint` | Queue by a redacted fingerprint of authorization hash, user agent hash, and remote IP. This is not a proven per-chat key. |
 
 Configured header/body modes fall back to the global key when the selected value
-is missing. The default `header:x-cursor-session-id` mode queues per Cursor chat
-when that header is present.
+is missing. The default `cursor` mode logs the source in `key_mode`, such as
+`cursor:metadata`, `cursor:conversation_fingerprint`, `cursor:x-forwarded-for`,
+`cursor:remote_ip`, and logs only `key_hash`, never raw identifiers,
+prompt text, tool arguments, tool outputs, or request bodies.
 
 ### Tool-call protocol notes
 
@@ -535,7 +605,7 @@ Successful Cursor probes should log:
 - `GET /v1/models`
 - `POST /v1/chat/completions` with `authorization_present=true`
 - `request_identity request_id=... method=POST path=/v1/chat/completions ...`
-- `chat_completion model=gpt-5.5-high stream=... tools_present=...`
+- `chat_completion model=gpt-5.5-high stream=... tools_present=... turn_class=...`
 - `agent_queue_acquire request_id=...` before queued Agent stream starts
 - `agent_queue_release request_id=...` after the stream fully ends
 
@@ -552,16 +622,29 @@ request bodies.
 When multiple Agent chats overlap, queue diagnostics show the lifecycle:
 
 ```text
-agent_queue_wait request_id=... key_mode=header:x-cursor-session-id key_hash=... position=2
-agent_queue_acquire request_id=... key_mode=header:x-cursor-session-id key_hash=... wait_ms=1234 active_global=2 active_key=1
+agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... position=2
+agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... wait_ms=1234 active_global=2 active_key=1
+agent_queue_lock_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... lock_wait_ms=1234
+codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default fallback=false
 stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
-agent_queue_release request_id=... key_mode=header:x-cursor-session-id key_hash=... run_ms=8123 active_global=1 active_key=0
+agent_queue_lock_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=...
+agent_queue_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=... run_ms=8123 active_global=1 active_key=0
+agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... turn_class=tool_generating priority=0 position=2
+agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... turn_class=tool_generating priority=0 wait_ms=1234 active_global=2 active_key=1
+agent_queue_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=... turn_class=tool_generating priority=0 run_ms=8123 active_global=1 active_key=0
 ```
 
 If the queue is full or a request waits longer than `CODEX_AGENT_QUEUE_TIMEOUT`,
 the API returns an OpenAI-shaped `429` error and logs `agent_queue_full` or
 `agent_queue_timeout`.
+
+For live Cursor/ngrok validation, start two side-by-side Cursor Agent chats and
+confirm their queue lines show different `key_hash` values with
+`key_mode=cursor:metadata` or `key_mode=cursor:conversation_fingerprint`.
+Repeated turns in the same chat should keep the same `key_hash`. Tool-call
+streams should still include valid `delta.tool_calls` frames and finish with
+`finish_reason:"tool_calls"`.
 
 Upstream Codex errors are logged server-side as `stream_error` or
 `complete_error` with the real payload. Clients still receive the sanitized
@@ -576,7 +659,7 @@ Upstream Codex errors are logged server-side as `stream_error` or
 | `[error: upstream error]` on first Agent turn | Old build before `v0.0.4`, or missing `codex login` | Upgrade to `v0.0.4+`, run `codex login`, check `stream_error` logs |
 | `[error: upstream error]` in an **existing** chat | Poisoned history (failed tool turns, long `call_id`s) | Start a **new** Agent chat |
 | Agent describes tools but does not run them | Ask mode, wrong model, or Cursor not using the custom endpoint | Use Agent mode, model `gpt-5.5` or a documented alias, confirm requests hit server logs |
-| Agent chats stall when several run at once | Queue disabled, wrong key mode, or concurrency set too high for one workspace | Keep `CODEX_AGENT_QUEUE_ENABLED=true`, `CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`, and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; confirm queue logs |
+| Agent chats stall when several run at once | Queue disabled, wrong key mode, or concurrency set too high for one workspace | Keep `CODEX_AGENT_QUEUE_ENABLED=true`, `CODEX_AGENT_QUEUE_KEY_MODE=cursor`, and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; confirm queue logs |
 | `tools[0].name` missing (in logs) | Pre-`v0.0.4` tool-format bug | Upgrade to `v0.0.4+` |
 | `call_id` string too long (in logs) | Long Cursor IDs in continuation history | Upgrade to `v0.0.4+` and start a fresh chat |
 
@@ -653,6 +736,8 @@ curl -N http://127.0.0.1:8088/v1/chat/completions \
 For Cursor compatibility releases (`v0.0.2+`), also validate through an HTTPS
 tunnel with Agent mode using the prompts in
 [Validation prompts](#validation-prompts).
+For issue #45 latency/logging changes, record the live Cursor BYOK evidence in
+[Issue 45 Live Validation](docs/issue-45-live-validation.md).
 
 ## Releases
 

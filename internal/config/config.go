@@ -1,11 +1,13 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,15 +23,18 @@ const (
 	DefaultAgentQueueEnabled                  = true
 	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
-	DefaultAgentQueueKeyMode                  = "header:x-cursor-session-id"
+	DefaultAgentQueueKeyMode                  = "cursor"
 	DefaultAgentQueueLimit                    = 20
 	DefaultAgentQueueTimeout                  = 5 * time.Minute
-	DefaultContextMaxBytes                    = 256 * 1024
-	DefaultContextMaxMessages                 = 150
-	DefaultContextRecentMessages              = 40
-	DefaultContextToolOutputMaxBytes          = 64 * 1024
-	DefaultContextCompactedToolOutputMaxBytes = 1024
-	DefaultDegenerateTurnRetryEnabled       = true
+	DefaultAgentQueuePriorityEnabled          = false
+	DefaultContextManagementEnabled           = true
+	DefaultContextMaxBytes                    = 192 * 1024
+	DefaultContextMaxMessages                 = 120
+	DefaultContextRecentMessages              = 24
+	DefaultContextToolOutputMaxBytes          = 32 * 1024
+	DefaultContextCompactedToolOutputMaxBytes = 512
+	DefaultDegenerateTurnRetryEnabled         = true
+	DefaultCodexClientPoolUnavailable         = "fail"
 )
 
 type Config struct {
@@ -43,23 +48,37 @@ type Config struct {
 	CodexTimeout                       time.Duration
 	LogBodyShape                       bool
 	LogRequestIdentity                 bool
+	LogCodexToolEvents                 bool
 	AgentQueueEnabled                  bool
 	AgentMaxActive                     int
 	AgentMaxActivePerKey               int
 	AgentQueueKeyMode                  string
 	AgentQueueLimit                    int
 	AgentQueueTimeout                  time.Duration
+	AgentQueueLockDir                  string
+	AgentQueuePriorityEnabled          bool
 	ContextManagementEnabled           bool
 	ContextMaxBytes                    int
 	ContextMaxMessages                 int
 	ContextRecentMessages              int
 	ContextToolOutputMaxBytes          int
 	ContextCompactedToolOutputMaxBytes int
-	DegenerateTurnRetryEnabled           bool
+	DegenerateTurnRetryEnabled         bool
+	CodexClients                       []CodexClient
+	CodexClientPoolUnavailable         string
+}
+
+type CodexClient struct {
+	Label             string `json:"label"`
+	CodexHome         string `json:"codex_home"`
+	AuthPath          string `json:"auth_path"`
+	CodexProfilePath  string `json:"profile_path"`
+	CodexScaffoldPath string `json:"scaffold_path"`
 }
 
 func Load(args []string) (Config, error) {
 	cfg := Defaults()
+	clientsJSON := ""
 
 	if err := loadDotEnv(".env"); err != nil {
 		return Config{}, err
@@ -122,6 +141,13 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.LogRequestIdentity = logRequestIdentity
 	}
+	if value := os.Getenv("CODEX_LOG_CODEX_TOOL_EVENTS"); value != "" {
+		logCodexToolEvents, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_LOG_CODEX_TOOL_EVENTS: %w", err)
+		}
+		cfg.LogCodexToolEvents = logCodexToolEvents
+	}
 	if value := os.Getenv("CODEX_AGENT_QUEUE_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -159,6 +185,16 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CODEX_AGENT_QUEUE_TIMEOUT: %w", err)
 		}
 		cfg.AgentQueueTimeout = timeout
+	}
+	if value := os.Getenv("CODEX_AGENT_QUEUE_LOCK_DIR"); value != "" {
+		cfg.AgentQueueLockDir = value
+	}
+	if value := os.Getenv("CODEX_AGENT_QUEUE_PRIORITY_ENABLED"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_AGENT_QUEUE_PRIORITY_ENABLED: %w", err)
+		}
+		cfg.AgentQueuePriorityEnabled = enabled
 	}
 	if value := os.Getenv("CODEX_CONTEXT_MANAGEMENT_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
@@ -209,6 +245,12 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.DegenerateTurnRetryEnabled = enabled
 	}
+	if value := os.Getenv("CODEX_CLIENTS"); value != "" {
+		clientsJSON = value
+	}
+	if value := os.Getenv("CODEX_CLIENT_POOL_UNAVAILABLE"); value != "" {
+		cfg.CodexClientPoolUnavailable = value
+	}
 
 	fs := flag.NewFlagSet("codex-chat-api", flag.ContinueOnError)
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "host address to bind")
@@ -221,12 +263,15 @@ func Load(args []string) (Config, error) {
 	fs.DurationVar(&cfg.CodexTimeout, "codex-timeout", cfg.CodexTimeout, "Codex websocket request timeout")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
+	fs.BoolVar(&cfg.LogCodexToolEvents, "log-codex-tool-events", cfg.LogCodexToolEvents, "log redacted upstream Codex tool-event diagnostics")
 	fs.BoolVar(&cfg.AgentQueueEnabled, "agent-queue-enabled", cfg.AgentQueueEnabled, "enable Agent queue for requests with tools")
 	fs.IntVar(&cfg.AgentMaxActive, "agent-max-active", cfg.AgentMaxActive, "maximum concurrent tool-capable Agent requests")
 	fs.IntVar(&cfg.AgentMaxActivePerKey, "agent-max-active-per-key", cfg.AgentMaxActivePerKey, "maximum concurrent tool-capable Agent requests per queue key")
-	fs.StringVar(&cfg.AgentQueueKeyMode, "agent-queue-key-mode", cfg.AgentQueueKeyMode, "Agent queue key mode: global, auth_hash, request_fingerprint, header:<name>, or body:<field>")
+	fs.StringVar(&cfg.AgentQueueKeyMode, "agent-queue-key-mode", cfg.AgentQueueKeyMode, "Agent queue key mode: cursor, global, auth_hash, request_fingerprint, header:<name>, or body:<field>")
 	fs.IntVar(&cfg.AgentQueueLimit, "agent-queue-limit", cfg.AgentQueueLimit, "maximum waiting tool-capable Agent requests")
 	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue")
+	fs.StringVar(&cfg.AgentQueueLockDir, "agent-queue-lock-dir", cfg.AgentQueueLockDir, "directory for cross-process Agent queue key locks")
+	fs.BoolVar(&cfg.AgentQueuePriorityEnabled, "agent-queue-priority-enabled", cfg.AgentQueuePriorityEnabled, "experimentally prioritize low-risk eligible Agent queue waiters")
 	fs.BoolVar(&cfg.ContextManagementEnabled, "context-management-enabled", cfg.ContextManagementEnabled, "enable context management for tool-capable minimal-mode requests")
 	fs.IntVar(&cfg.ContextMaxBytes, "context-max-bytes", cfg.ContextMaxBytes, "approximate message context byte threshold before compaction")
 	fs.IntVar(&cfg.ContextMaxMessages, "context-max-messages", cfg.ContextMaxMessages, "message count threshold before compaction")
@@ -234,6 +279,8 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.ContextToolOutputMaxBytes, "context-tool-output-max-bytes", cfg.ContextToolOutputMaxBytes, "maximum bytes to keep from an individual tool output before adding a truncation marker")
 	fs.IntVar(&cfg.ContextCompactedToolOutputMaxBytes, "context-compacted-tool-output-max-bytes", cfg.ContextCompactedToolOutputMaxBytes, "maximum bytes to keep from an older compacted tool output")
 	fs.BoolVar(&cfg.DegenerateTurnRetryEnabled, "degenerate-turn-retry", cfg.DegenerateTurnRetryEnabled, "retry tool-capable turns that finish with text-only stop using tool_choice required")
+	fs.StringVar(&clientsJSON, "codex-clients", clientsJSON, "JSON array of Codex clients with non-sensitive labels and optional codex_home, auth_path, profile_path, and scaffold_path")
+	fs.StringVar(&cfg.CodexClientPoolUnavailable, "codex-client-pool-unavailable", cfg.CodexClientPoolUnavailable, "Codex client pool unavailable policy: fail or fallback_first")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -248,6 +295,15 @@ func Load(args []string) (Config, error) {
 	if cfg.AuthPath == "" {
 		cfg.AuthPath = filepath.Join(cfg.CodexHome, "auth.json")
 	}
+	if clientsJSON != "" {
+		clients, err := parseCodexClients(clientsJSON, cfg)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.CodexClients = clients
+	} else {
+		cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -256,7 +312,7 @@ func Load(args []string) (Config, error) {
 
 func Defaults() Config {
 	codexHome := defaultCodexHome()
-	return Config{
+	cfg := Config{
 		Host:                               DefaultHost,
 		Port:                               DefaultPort,
 		CodexHome:                          codexHome,
@@ -271,13 +327,19 @@ func Defaults() Config {
 		AgentQueueKeyMode:                  DefaultAgentQueueKeyMode,
 		AgentQueueLimit:                    DefaultAgentQueueLimit,
 		AgentQueueTimeout:                  DefaultAgentQueueTimeout,
+		AgentQueueLockDir:                  "",
+		AgentQueuePriorityEnabled:          DefaultAgentQueuePriorityEnabled,
+		ContextManagementEnabled:           DefaultContextManagementEnabled,
 		ContextMaxBytes:                    DefaultContextMaxBytes,
 		ContextMaxMessages:                 DefaultContextMaxMessages,
 		ContextRecentMessages:              DefaultContextRecentMessages,
 		ContextToolOutputMaxBytes:          DefaultContextToolOutputMaxBytes,
 		ContextCompactedToolOutputMaxBytes: DefaultContextCompactedToolOutputMaxBytes,
-		DegenerateTurnRetryEnabled:       DefaultDegenerateTurnRetryEnabled,
+		DegenerateTurnRetryEnabled:         DefaultDegenerateTurnRetryEnabled,
+		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
 	}
+	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
+	return cfg
 }
 
 func (c Config) Addr() string {
@@ -339,12 +401,100 @@ func (c Config) Validate() error {
 	if c.ContextCompactedToolOutputMaxBytes < 0 {
 		return errors.New("context compacted tool output max bytes must be non-negative")
 	}
+	if err := validateCodexClientPoolUnavailable(c.CodexClientPoolUnavailable); err != nil {
+		return err
+	}
+	if err := validateCodexClients(c.CodexClients); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c Config) defaultCodexClient() CodexClient {
+	return CodexClient{
+		Label:             "default",
+		CodexHome:         c.CodexHome,
+		AuthPath:          c.AuthPath,
+		CodexProfilePath:  c.CodexProfilePath,
+		CodexScaffoldPath: c.CodexScaffoldPath,
+	}
+}
+
+func parseCodexClients(raw string, defaults Config) ([]CodexClient, error) {
+	var clients []CodexClient
+	if err := json.Unmarshal([]byte(raw), &clients); err != nil {
+		return nil, fmt.Errorf("CODEX_CLIENTS: invalid JSON: %w", err)
+	}
+	for i := range clients {
+		if clients[i].Label == "" {
+			clients[i].Label = fmt.Sprintf("client-%d", i)
+		}
+		if clients[i].CodexHome == "" {
+			clients[i].CodexHome = defaults.CodexHome
+		}
+		if clients[i].AuthPath == "" && clients[i].CodexHome != "" {
+			clients[i].AuthPath = filepath.Join(clients[i].CodexHome, "auth.json")
+		}
+		if clients[i].CodexProfilePath == "" {
+			clients[i].CodexProfilePath = defaults.CodexProfilePath
+		}
+		if clients[i].CodexScaffoldPath == "" {
+			clients[i].CodexScaffoldPath = defaults.CodexScaffoldPath
+		}
+	}
+	return clients, nil
+}
+
+func validateCodexClientPoolUnavailable(policy string) error {
+	switch policy {
+	case "fail", "fallback_first":
+		return nil
+	default:
+		return fmt.Errorf("unsupported codex client pool unavailable policy %q", policy)
+	}
+}
+
+func validateCodexClients(clients []CodexClient) error {
+	if len(clients) == 0 {
+		return errors.New("at least one codex client is required")
+	}
+	seen := map[string]bool{}
+	for i, client := range clients {
+		if err := validateCodexClientLabel(client.Label); err != nil {
+			return fmt.Errorf("codex client %d label: %w", i, err)
+		}
+		if seen[client.Label] {
+			return fmt.Errorf("duplicate codex client label %q", client.Label)
+		}
+		seen[client.Label] = true
+		if client.CodexHome == "" {
+			return fmt.Errorf("codex client %q codex home is required", client.Label)
+		}
+		if client.AuthPath == "" {
+			return fmt.Errorf("codex client %q auth path is required", client.Label)
+		}
+		if client.CodexProfilePath == "" {
+			return fmt.Errorf("codex client %q profile path is required", client.Label)
+		}
+		if client.CodexScaffoldPath == "" {
+			return fmt.Errorf("codex client %q scaffold path is required", client.Label)
+		}
+	}
+	return nil
+}
+
+var codexClientLabelPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+func validateCodexClientLabel(label string) error {
+	if !codexClientLabelPattern.MatchString(label) {
+		return errors.New("must be 1-64 characters of letters, digits, underscore, dot, or dash")
+	}
 	return nil
 }
 
 func validateAgentQueueKeyMode(mode string) error {
 	switch {
-	case mode == "global", mode == "auth_hash", mode == "request_fingerprint":
+	case mode == "cursor", mode == "global", mode == "auth_hash", mode == "request_fingerprint":
 		return nil
 	case strings.HasPrefix(mode, "header:"):
 		if strings.TrimSpace(strings.TrimPrefix(mode, "header:")) == "" {

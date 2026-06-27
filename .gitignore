@@ -13,3 +13,4 @@ dist/
 coverage.out
 *.test
 .localgit/
+.git-local/

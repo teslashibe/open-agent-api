@@ -15,6 +15,7 @@ func TestManageContextDisabledLeavesMessagesUnchanged(t *testing.T) {
 		{Role: "tool", ToolCallID: "call_1", Content: openai.TextContent(strings.Repeat("x", 100))},
 	}
 	cfg := config.Defaults()
+	cfg.ContextManagementEnabled = false
 	cfg.ContextToolOutputMaxBytes = 10
 
 	result := manageContext(messages, cfg)
@@ -128,6 +129,47 @@ func TestManageContextDoesNotExpandOlderSmallToolOutputs(t *testing.T) {
 	}
 	if openai.MessageText(result.Messages[1].Content) != "small" {
 		t.Fatalf("small tool output changed: %#v", result.Messages[1])
+	}
+}
+
+func TestDefaultContextManagementCompactsOlderToolOutputs(t *testing.T) {
+	messages := []openai.ChatMessage{{Role: "user", Content: openai.TextContent("first")}}
+	for i := 0; i < 8; i++ {
+		callID := "call_old_" + string(rune('a'+i))
+		messages = append(messages,
+			openai.ChatMessage{Role: "assistant", Content: []byte("null"), ToolCalls: []openai.ToolCall{{ID: callID, Type: "function", Function: openai.ToolCallFunction{Name: "list", Arguments: `{}`}}}},
+			openai.ChatMessage{Role: "tool", ToolCallID: callID, Content: openai.TextContent(strings.Repeat("old", 20000))},
+		)
+	}
+	for i := 0; i < config.DefaultContextRecentMessages; i++ {
+		messages = append(messages, openai.ChatMessage{Role: "user", Content: openai.TextContent("filler")})
+	}
+	messages = append(messages,
+		openai.ChatMessage{Role: "user", Content: openai.TextContent("second")},
+		openai.ChatMessage{Role: "assistant", Content: []byte("null"), ToolCalls: []openai.ToolCall{{ID: "call_recent", Type: "function", Function: openai.ToolCallFunction{Name: "read", Arguments: `{}`}}}},
+		openai.ChatMessage{Role: "tool", ToolCallID: "call_recent", Content: openai.TextContent("recent result")},
+	)
+	cfg := config.Defaults()
+
+	result := manageContext(messages, cfg)
+	if !result.Changed {
+		t.Fatal("Changed = false, want default context management to compact oversized Cursor-style context")
+	}
+	if result.TruncatedTools != 8 || result.CompactedTools != 8 {
+		t.Fatalf("truncated=%d compacted=%d, want eight truncations and older compactions", result.TruncatedTools, result.CompactedTools)
+	}
+	oldText := openai.MessageText(result.Messages[2].Content)
+	if !strings.Contains(oldText, "older tool output compacted") {
+		t.Fatalf("old tool content = %q, want compaction marker", oldText)
+	}
+	if len(oldText) > config.DefaultContextCompactedToolOutputMaxBytes+200 {
+		t.Fatalf("old tool content len = %d, want compact default near %d", len(oldText), config.DefaultContextCompactedToolOutputMaxBytes)
+	}
+	if result.Messages[1].ToolCalls[0].ID != "call_old_a" || result.Messages[2].ToolCallID != "call_old_a" {
+		t.Fatalf("old tool pair changed: assistant=%#v tool=%#v", result.Messages[1], result.Messages[2])
+	}
+	if got := openai.MessageText(result.Messages[len(result.Messages)-1].Content); got != "recent result" {
+		t.Fatalf("recent tool content = %q, want unchanged", got)
 	}
 }
 
