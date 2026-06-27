@@ -201,7 +201,8 @@ func TestChatCompletionsStreamingModelAlias(t *testing.T) {
 			return events, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
 	resp := doJSON(t, app, `{"model":"gpt-5.5-fast","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	defer resp.Body.Close()
@@ -235,7 +236,8 @@ func TestChatCompletionsNonStreamingSuccess(t *testing.T) {
 			}, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
 	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`)
 	defer resp.Body.Close()
@@ -255,6 +257,19 @@ func TestChatCompletionsNonStreamingSuccess(t *testing.T) {
 	}
 	if body.Usage.TotalTokens != 5 {
 		t.Fatalf("usage = %#v", body.Usage)
+	}
+	logBody := logs.String()
+	for _, want := range []string{
+		"request_timing request_id=chatcmpl-fixed",
+		"context_ms=0",
+		"queue_wait_ms=0",
+		"upstream_stream_ms=0",
+		"first_delta_ms=-1",
+		"total_ms=0",
+	} {
+		if !strings.Contains(logBody, want) {
+			t.Fatalf("logs = %q, want %q", logBody, want)
+		}
 	}
 }
 
@@ -289,7 +304,8 @@ func TestChatCompletionsNonStreamingToolCalls(t *testing.T) {
 			}, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
 	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Look up things","parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}}],"tool_choice":{"type":"function","function":{"name":"lookup"}},"parallel_tool_calls":true}`)
 	defer resp.Body.Close()
@@ -781,7 +797,8 @@ func TestChatCompletionsStreamingToolResultContinuation(t *testing.T) {
 			return events, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
 	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_123","content":"module github.com/teslashibe/codex-chat-api"}],"tools":[{"type":"function","function":{"name":"read_file"}}]}`)
 	defer resp.Body.Close()
@@ -803,6 +820,22 @@ func TestChatCompletionsStreamingToolResultContinuation(t *testing.T) {
 	}
 	if strings.Contains(body, `"tool_calls"`) || strings.Contains(body, `"finish_reason":"tool_calls"`) {
 		t.Fatalf("stream = %q, want final text without tool calls", body)
+	}
+	logBody := logs.String()
+	if strings.Contains(logBody, "degenerate_turn") {
+		t.Fatalf("logs = %q, want no degenerate_turn for valid final prose", logBody)
+	}
+	for _, want := range []string{
+		"request_timing request_id=chatcmpl-fixed",
+		"context_ms=",
+		"queue_wait_ms=",
+		"upstream_stream_ms=",
+		"first_delta_ms=",
+		"total_ms=",
+	} {
+		if !strings.Contains(logBody, want) {
+			t.Fatalf("logs = %q, want %q", logBody, want)
+		}
 	}
 }
 
@@ -1064,7 +1097,7 @@ func TestAgentQueueSharedLockSerializesSameKeyAcrossQueues(t *testing.T) {
 	q2 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
 	key := newAgentQueueKey("body:session_id", "same-session")
 
-	releaseFirst, err := q1.acquire(context.Background(), "request-1", key, turnClassToolGenerating)
+	releaseFirst, _, err := q1.acquire(context.Background(), "request-1", key, turnClassToolGenerating)
 	if err != nil {
 		t.Fatalf("first acquire error = %v", err)
 	}
@@ -1072,7 +1105,7 @@ func TestAgentQueueSharedLockSerializesSameKeyAcrossQueues(t *testing.T) {
 	acquiredSecond := make(chan func(), 1)
 	errs := make(chan error, 1)
 	go func() {
-		releaseSecond, err := q2.acquire(context.Background(), "request-2", key, turnClassToolGenerating)
+		releaseSecond, _, err := q2.acquire(context.Background(), "request-2", key, turnClassToolGenerating)
 		if err != nil {
 			errs <- err
 			return
@@ -1107,7 +1140,7 @@ func TestAgentQueueDisabledStillUsesSharedLockForSameKey(t *testing.T) {
 	q2 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
 	key := newAgentQueueKey("body:session_id", "same-session")
 
-	releaseFirst, err := q1.acquire(context.Background(), "request-1", key, turnClassToolGenerating)
+	releaseFirst, _, err := q1.acquire(context.Background(), "request-1", key, turnClassToolGenerating)
 	if err != nil {
 		t.Fatalf("first acquire error = %v", err)
 	}
@@ -1115,7 +1148,7 @@ func TestAgentQueueDisabledStillUsesSharedLockForSameKey(t *testing.T) {
 	acquiredSecond := make(chan func(), 1)
 	errs := make(chan error, 1)
 	go func() {
-		releaseSecond, err := q2.acquire(context.Background(), "request-2", key, turnClassToolGenerating)
+		releaseSecond, _, err := q2.acquire(context.Background(), "request-2", key, turnClassToolGenerating)
 		if err != nil {
 			errs <- err
 			return

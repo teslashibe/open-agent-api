@@ -262,6 +262,7 @@ Flags override environment values.
 | Codex pool unavailable policy | `CODEX_CLIENT_POOL_UNAVAILABLE` | `--codex-client-pool-unavailable` | `fail` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 | Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
+| Redacted Codex tool-event logging | `CODEX_LOG_CODEX_TOOL_EVENTS` | `--log-codex-tool-events` | `false` |
 | Agent queue enabled | `CODEX_AGENT_QUEUE_ENABLED` | `--agent-queue-enabled` | `true` |
 | Agent max active requests | `CODEX_AGENT_MAX_ACTIVE` | `--agent-max-active` | `2` |
 | Agent max active per key | `CODEX_AGENT_MAX_ACTIVE_PER_KEY` | `--agent-max-active-per-key` | `1` |
@@ -270,12 +271,12 @@ Flags override environment values.
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
 | Agent queue shared lock directory | `CODEX_AGENT_QUEUE_LOCK_DIR` | `--agent-queue-lock-dir` | disabled; set explicitly for multi-replica or multi-client pools |
 | Agent queue priority experiment | `CODEX_AGENT_QUEUE_PRIORITY_ENABLED` | `--agent-queue-priority-enabled` | `false` |
-| Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `false` |
-| Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `262144` |
-| Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `150` |
-| Context recent messages kept | `CODEX_CONTEXT_RECENT_MESSAGES` | `--context-recent-messages` | `40` |
-| Tool output max bytes | `CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES` | `--context-tool-output-max-bytes` | `65536` |
-| Compacted tool output max bytes | `CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES` | `--context-compacted-tool-output-max-bytes` | `1024` |
+| Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `true` |
+| Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `196608` |
+| Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `120` |
+| Context recent messages kept | `CODEX_CONTEXT_RECENT_MESSAGES` | `--context-recent-messages` | `24` |
+| Tool output max bytes | `CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES` | `--context-tool-output-max-bytes` | `32768` |
+| Compacted tool output max bytes | `CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES` | `--context-compacted-tool-output-max-bytes` | `512` |
 
 Request body options beyond the core OpenAI chat schema:
 
@@ -492,28 +493,32 @@ enabled because request shape alone does not prove concurrent upstream streams
 for one conversation are safe.
 
 Long Cursor Agent conversations can accumulate large historical tool outputs.
-Context management is disabled by default. When enabled, it applies only to
-tool-capable minimal-mode requests, never rejects an oversized request, truncates
+Context management is enabled by default for tool-capable minimal-mode requests
+such as Cursor Agent traffic. It never rejects an oversized request, truncates
 oversized individual tool outputs with an explicit marker, and compacts older
 tool outputs once the configured byte or message threshold is exceeded. The most
 recent `CODEX_CONTEXT_RECENT_MESSAGES` messages are left unchanged, and assistant
 `tool_calls` plus matching `role:"tool"` / `tool_call_id` messages stay paired.
 
-Enable it conservatively:
+Tune it conservatively:
 
 ```bash
 CODEX_CONTEXT_MANAGEMENT_ENABLED=true
-CODEX_CONTEXT_MAX_BYTES=262144
-CODEX_CONTEXT_MAX_MESSAGES=150
-CODEX_CONTEXT_RECENT_MESSAGES=40
-CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES=65536
-CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES=1024
+CODEX_CONTEXT_MAX_BYTES=196608
+CODEX_CONTEXT_MAX_MESSAGES=120
+CODEX_CONTEXT_RECENT_MESSAGES=24
+CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES=32768
+CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES=512
 ```
 
 When context management changes a request, the server logs one redacted
 `context_manage` line with before/after message counts, approximate bytes, tool
 output counts, and truncation/compaction counts. It does not log prompt text,
 tool arguments, or tool output content.
+
+Every chat completion also logs one redacted `request_timing` line with
+`context_ms`, `queue_wait_ms`, `upstream_stream_ms`, `first_delta_ms`, and
+`total_ms`. Non-streaming requests use `first_delta_ms=-1`.
 
 Queue key modes:
 
@@ -731,6 +736,8 @@ curl -N http://127.0.0.1:8088/v1/chat/completions \
 For Cursor compatibility releases (`v0.0.2+`), also validate through an HTTPS
 tunnel with Agent mode using the prompts in
 [Validation prompts](#validation-prompts).
+For issue #45 latency/logging changes, record the live Cursor BYOK evidence in
+[Issue 45 Live Validation](docs/issue-45-live-validation.md).
 
 ## Releases
 
