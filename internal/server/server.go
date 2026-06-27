@@ -294,9 +294,14 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				outcome = "upstream_error"
 				break
 			}
-			if event.ID != "" {
-				id = event.ID
-			}
+			// Do NOT adopt the upstream codex id (e.g. resp_...) for the SSE
+			// chunk id. The OpenAI streaming contract requires every chunk in a
+			// response to share one stable id; codex only sends its id on the
+			// terminal response.completed event, so adopting it would flip the
+			// final finish_reason chunk's id away from the chatcmpl- id used by
+			// all prior chunks. Clients (Cursor) reconcile the assembled
+			// tool_calls/message by chunk id and hang when the closing chunk's
+			// id doesn't match. Keep id == requestID for the whole stream.
 			if event.Model != "" {
 				model = event.Model
 			}
