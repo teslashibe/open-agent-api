@@ -201,7 +201,8 @@ func TestChatCompletionsStreamingModelAlias(t *testing.T) {
 			return events, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
 	resp := doJSON(t, app, `{"model":"gpt-5.5-fast","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	defer resp.Body.Close()
@@ -235,7 +236,8 @@ func TestChatCompletionsNonStreamingSuccess(t *testing.T) {
 			}, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
 	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`)
 	defer resp.Body.Close()
@@ -255,6 +257,19 @@ func TestChatCompletionsNonStreamingSuccess(t *testing.T) {
 	}
 	if body.Usage.TotalTokens != 5 {
 		t.Fatalf("usage = %#v", body.Usage)
+	}
+	logBody := logs.String()
+	for _, want := range []string{
+		"request_timing request_id=chatcmpl-fixed",
+		"context_ms=0",
+		"queue_wait_ms=0",
+		"upstream_stream_ms=0",
+		"first_delta_ms=-1",
+		"total_ms=0",
+	} {
+		if !strings.Contains(logBody, want) {
+			t.Fatalf("logs = %q, want %q", logBody, want)
+		}
 	}
 }
 
@@ -289,7 +304,8 @@ func TestChatCompletionsNonStreamingToolCalls(t *testing.T) {
 			}, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
 	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Look up things","parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}}],"tool_choice":{"type":"function","function":{"name":"lookup"}},"parallel_tool_calls":true}`)
 	defer resp.Body.Close()
@@ -927,7 +943,8 @@ func TestChatCompletionsStreamingToolResultContinuation(t *testing.T) {
 			return events, nil
 		},
 	}
-	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
 	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_123","content":"module github.com/teslashibe/codex-chat-api"}],"tools":[{"type":"function","function":{"name":"read_file"}}]}`)
 	defer resp.Body.Close()
@@ -949,6 +966,22 @@ func TestChatCompletionsStreamingToolResultContinuation(t *testing.T) {
 	}
 	if strings.Contains(body, `"tool_calls"`) || strings.Contains(body, `"finish_reason":"tool_calls"`) {
 		t.Fatalf("stream = %q, want final text without tool calls", body)
+	}
+	logBody := logs.String()
+	if strings.Contains(logBody, "degenerate_turn") {
+		t.Fatalf("logs = %q, want no degenerate_turn for valid final prose", logBody)
+	}
+	for _, want := range []string{
+		"request_timing request_id=chatcmpl-fixed",
+		"context_ms=",
+		"queue_wait_ms=",
+		"upstream_stream_ms=",
+		"first_delta_ms=",
+		"total_ms=",
+	} {
+		if !strings.Contains(logBody, want) {
+			t.Fatalf("logs = %q, want %q", logBody, want)
+		}
 	}
 }
 
@@ -1155,6 +1188,140 @@ func TestAgentQueueSerializesSameKey(t *testing.T) {
 	}
 }
 
+func TestServerPassesQueueKeyAffinityToCodexRequest(t *testing.T) {
+	cfg := agentQueueTestConfig()
+	cfg.AgentQueueKeyMode = "body:session_id"
+	var mu sync.Mutex
+	var requests []codex.Request
+
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			mu.Lock()
+			requests = append(requests, req)
+			mu.Unlock()
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	app := New(cfg, WithCodexService(service), fixedServerOptions())
+
+	for range 2 {
+		resp := doJSON(t, app, `{"session_id":"same-session","messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	for i, req := range requests {
+		if req.RequestID != "chatcmpl-fixed" {
+			t.Fatalf("request %d RequestID = %q", i, req.RequestID)
+		}
+		if req.AffinityKeyMode != "body:session_id" {
+			t.Fatalf("request %d AffinityKeyMode = %q", i, req.AffinityKeyMode)
+		}
+		if req.AffinityKey == "" || req.AffinityKeyHash == "" {
+			t.Fatalf("request %d affinity = key:%q hash:%q", i, req.AffinityKey, req.AffinityKeyHash)
+		}
+	}
+	if requests[0].AffinityKey != requests[1].AffinityKey || requests[0].AffinityKeyHash != requests[1].AffinityKeyHash {
+		t.Fatalf("same queue key routed with different affinity: %#v %#v", requests[0], requests[1])
+	}
+	if strings.Contains(requests[0].AffinityKeyHash, "same-session") {
+		t.Fatalf("affinity hash leaked raw session: %q", requests[0].AffinityKeyHash)
+	}
+}
+
+func TestAgentQueueSharedLockSerializesSameKeyAcrossQueues(t *testing.T) {
+	lockDir := t.TempDir()
+	logf := func(string, ...any) {}
+	q1 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
+	q2 := newAgentQueue(true, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
+	key := newAgentQueueKey("body:session_id", "same-session")
+
+	releaseFirst, _, err := q1.acquire(context.Background(), "request-1", key, turnClassToolGenerating)
+	if err != nil {
+		t.Fatalf("first acquire error = %v", err)
+	}
+
+	acquiredSecond := make(chan func(), 1)
+	errs := make(chan error, 1)
+	go func() {
+		releaseSecond, _, err := q2.acquire(context.Background(), "request-2", key, turnClassToolGenerating)
+		if err != nil {
+			errs <- err
+			return
+		}
+		acquiredSecond <- releaseSecond
+	}()
+
+	select {
+	case releaseSecond := <-acquiredSecond:
+		releaseSecond()
+		t.Fatal("second queue acquired same key before first shared lock released")
+	case err := <-errs:
+		t.Fatalf("second acquire error = %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseFirst()
+	select {
+	case releaseSecond := <-acquiredSecond:
+		releaseSecond()
+	case err := <-errs:
+		t.Fatalf("second acquire error after release = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("second queue did not acquire same key after first shared lock released")
+	}
+}
+
+func TestAgentQueueDisabledStillUsesSharedLockForSameKey(t *testing.T) {
+	lockDir := t.TempDir()
+	logf := func(string, ...any) {}
+	q1 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
+	q2 := newAgentQueue(false, 1, 1, 10, time.Second, lockDir, false, time.Now, logf)
+	key := newAgentQueueKey("body:session_id", "same-session")
+
+	releaseFirst, _, err := q1.acquire(context.Background(), "request-1", key, turnClassToolGenerating)
+	if err != nil {
+		t.Fatalf("first acquire error = %v", err)
+	}
+
+	acquiredSecond := make(chan func(), 1)
+	errs := make(chan error, 1)
+	go func() {
+		releaseSecond, _, err := q2.acquire(context.Background(), "request-2", key, turnClassToolGenerating)
+		if err != nil {
+			errs <- err
+			return
+		}
+		acquiredSecond <- releaseSecond
+	}()
+
+	select {
+	case releaseSecond := <-acquiredSecond:
+		releaseSecond()
+		t.Fatal("second disabled queue acquired same key before first shared lock released")
+	case err := <-errs:
+		t.Fatalf("second acquire error = %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseFirst()
+	select {
+	case releaseSecond := <-acquiredSecond:
+		releaseSecond()
+	case err := <-errs:
+		t.Fatalf("second acquire error after release = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("second disabled queue did not acquire same key after first shared lock released")
+	}
+}
+
 func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
 	toolEvents := make(chan codex.StreamEvent)
 	toolStarted := make(chan struct{}, 1)
@@ -1199,6 +1366,85 @@ func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
 	}
 }
 
+func TestAgentQueuePriorityOrdersDifferentKeysViaHandler(t *testing.T) {
+	cfg := agentQueueTestConfig()
+	cfg.AgentMaxActive = 1
+	cfg.AgentQueueKeyMode = "header:x-cursor-session-id"
+	cfg.AgentQueuePriorityEnabled = true
+
+	releases := map[string]chan struct{}{
+		"first": make(chan struct{}),
+		"low":   make(chan struct{}),
+		"high":  make(chan struct{}),
+	}
+	started := make(chan string, 3)
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			label := strings.TrimSpace(openai.MessageText(req.Messages[0].Content))
+			started <- label
+			select {
+			case <-releases[label]:
+			case <-ctx.Done():
+				return codex.Completion{}, ctx.Err()
+			}
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
+
+	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"first"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-a"})
+	if got := waitStartedLabel(t, started, time.Second); got != "first" {
+		t.Fatalf("first started = %q, want first", got)
+	}
+
+	lowDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"low"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-b"})
+	waitFor(t, time.Second, func() bool {
+		return strings.Count(logs.String(), "agent_queue_wait request_id=") == 1
+	}, "low-priority waiter to queue")
+	highDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"high"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_high","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_high","content":"result"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`, map[string]string{"X-Cursor-Session-Id": "session-c"})
+	waitFor(t, time.Second, func() bool {
+		return strings.Count(logs.String(), "agent_queue_wait request_id=") == 2
+	}, "high-priority waiter to queue")
+
+	close(releases["first"])
+	resp := waitResponse(t, firstDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := waitStartedLabel(t, started, time.Second); got != "high" {
+		t.Fatalf("next started = %q, want high-priority continuation", got)
+	}
+	select {
+	case got := <-started:
+		t.Fatalf("low-priority request started while high was active: %q", got)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	close(releases["high"])
+	resp = waitResponse(t, highDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("high status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := waitStartedLabel(t, started, time.Second); got != "low" {
+		t.Fatalf("last started = %q, want low", got)
+	}
+	close(releases["low"])
+	resp = waitResponse(t, lowDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("low status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	for _, want := range []string{"turn_class=tool_result_continuation", "priority=10", "turn_class=tool_generating", "priority=0"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want %q", logs.String(), want)
+		}
+	}
+}
+
 func TestAgentQueueFullReturns429(t *testing.T) {
 	cfg := agentQueueTestConfig()
 	cfg.AgentQueueLimit = 0
@@ -1213,13 +1459,13 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 	var logs bytes.Buffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
-	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"}],"tools":[{"type":"function"}]}`)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("first request did not start")
 	}
-	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"},{"role":"user","content":"follow up"}],"tools":[{"type":"function"}]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
@@ -1228,7 +1474,7 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue full") {
 		t.Fatalf("body = %q, want OpenAI-shaped queue full error", body)
 	}
-	for _, want := range []string{"agent_queue_full request_id=", "key_mode=header:x-cursor-session-id", "key_hash=", "limit=0"} {
+	for _, want := range []string{"agent_queue_full request_id=", "key_mode=cursor:conversation_fingerprint", "key_hash=", "limit=0"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}
@@ -1254,13 +1500,13 @@ func TestAgentQueueTimeoutReturns429(t *testing.T) {
 	var logs bytes.Buffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
-	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"}],"tools":[{"type":"function"}]}`)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("first request did not start")
 	}
-	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"},{"role":"user","content":"follow up"}],"tools":[{"type":"function"}]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
@@ -1269,7 +1515,7 @@ func TestAgentQueueTimeoutReturns429(t *testing.T) {
 	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue timeout") {
 		t.Fatalf("body = %q, want OpenAI-shaped queue timeout error", body)
 	}
-	for _, want := range []string{"agent_queue_timeout request_id=", "key_mode=header:x-cursor-session-id", "key_hash=", "wait_ms="} {
+	for _, want := range []string{"agent_queue_timeout request_id=", "key_mode=cursor:conversation_fingerprint", "key_hash=", "wait_ms="} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}
@@ -1348,7 +1594,7 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 	req, err := http.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
-		bytes.NewBufferString(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"`+prompt+`"}],"tools":[{"type":"function"}]}`),
+		bytes.NewBufferString(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"`+prompt+`"}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}`),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1377,7 +1623,9 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 		"message_roles=user",
 		"tools_present=true",
 		"tools_count=1",
-		"chat_completion model=gpt-test stream=true tools_present=true",
+		"tool_wire=flat",
+		"tool_choice=absent",
+		"chat_completion model=gpt-test stream=true tools_present=true turn_class=tool_generating",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("logs = %q, want %q", body, want)
@@ -1730,6 +1978,17 @@ func waitStarted(t *testing.T, started <-chan int, timeout time.Duration) int {
 	case <-time.After(timeout):
 		t.Fatalf("timed out waiting for stream call")
 		return 0
+	}
+}
+
+func waitStartedLabel(t *testing.T, started <-chan string, timeout time.Duration) string {
+	t.Helper()
+	select {
+	case got := <-started:
+		return got
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for service call")
+		return ""
 	}
 }
 
