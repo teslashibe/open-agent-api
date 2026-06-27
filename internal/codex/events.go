@@ -103,7 +103,11 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 		if status == 0 {
 			status = http.StatusBadGateway
 		}
-		return StreamEvent{}, true, NewError(ErrorKindUpstream, status, "codex backend error", fmt.Errorf("codex event type %s", event.Type))
+		detail := strings.TrimSpace(string(event.Error))
+		if detail == "" || detail == "null" {
+			detail = fmt.Sprintf("codex event type %s", event.Type)
+		}
+		return StreamEvent{}, true, NewError(ErrorKindUpstream, status, "codex backend error", fmt.Errorf("codex %s: %s", event.Type, detail))
 	default:
 		return StreamEvent{}, false, nil
 	}

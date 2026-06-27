@@ -143,6 +143,7 @@ func chatCompletions(opts options) fiber.Handler {
 
 		completion, err := opts.codexService.Complete(ctx, serviceReq)
 		if err != nil {
+			logLine(opts, "complete_error model=%s err=%s\n", model, detailedError(err))
 			return mapServiceError(c, err)
 		}
 
@@ -205,6 +206,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 
 		for event := range events {
 			if event.Err != nil {
+				logLine(opts, "stream_error model=%s err=%s\n", defaultString(event.Model, model), detailedError(event.Err))
 				_ = writeSSE(ctx, cancel, w, errorChunk(id, created, defaultString(event.Model, model), publicErrorMessage(event.Err)))
 				break
 			}
@@ -355,6 +357,20 @@ func logLine(opts options, format string, args ...any) {
 		return
 	}
 	_, _ = fmt.Fprintf(opts.logOutput, format, args...)
+}
+
+func detailedError(err error) string {
+	if err == nil {
+		return ""
+	}
+	parts := []string{err.Error()}
+	for unwrapped := errors.Unwrap(err); unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
+		msg := unwrapped.Error()
+		if msg != "" && msg != parts[len(parts)-1] {
+			parts = append(parts, msg)
+		}
+	}
+	return strings.Join(parts, ": ")
 }
 
 func redactedBodyShape(raw []byte) string {
