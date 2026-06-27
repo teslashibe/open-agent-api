@@ -13,7 +13,7 @@ func TestModelAliases(t *testing.T) {
 	for _, alias := range aliases {
 		got = append(got, alias.ID)
 	}
-	want := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast"}
+	want := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModelAliases IDs = %#v, want %#v", got, want)
 	}
@@ -52,6 +52,22 @@ func TestResolveModelAlias(t *testing.T) {
 			name:          "fast alias",
 			model:         "gpt-5.5-fast",
 			wantID:        "gpt-5.5-fast",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "low",
+			wantVerbosity: "low",
+		},
+		{
+			name:          "spark alias",
+			model:         "gpt-5.3-codex-spark",
+			wantID:        "gpt-5.3-codex-spark",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "low",
+			wantVerbosity: "low",
+		},
+		{
+			name:          "spark preview alias",
+			model:         "gpt-5.3-codex-spark-preview",
+			wantID:        "gpt-5.3-codex-spark-preview",
 			wantUpstream:  DefaultModel,
 			wantEffort:    "low",
 			wantVerbosity: "low",
