@@ -26,6 +26,12 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_AGENT_QUEUE_KEY_MODE")
 	unsetenv(t, "CODEX_AGENT_QUEUE_LIMIT")
 	unsetenv(t, "CODEX_AGENT_QUEUE_TIMEOUT")
+	unsetenv(t, "CODEX_CONTEXT_MANAGEMENT_ENABLED")
+	unsetenv(t, "CODEX_CONTEXT_MAX_BYTES")
+	unsetenv(t, "CODEX_CONTEXT_MAX_MESSAGES")
+	unsetenv(t, "CODEX_CONTEXT_RECENT_MESSAGES")
+	unsetenv(t, "CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES")
+	unsetenv(t, "CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -81,6 +87,23 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentQueueTimeout != DefaultAgentQueueTimeout {
 		t.Fatalf("AgentQueueTimeout = %s, want %s", cfg.AgentQueueTimeout, DefaultAgentQueueTimeout)
 	}
+	if cfg.ContextManagementEnabled {
+		t.Fatal("ContextManagementEnabled = true, want false")
+	}
+	if cfg.ContextMaxBytes != DefaultContextMaxBytes ||
+		cfg.ContextMaxMessages != DefaultContextMaxMessages ||
+		cfg.ContextRecentMessages != DefaultContextRecentMessages ||
+		cfg.ContextToolOutputMaxBytes != DefaultContextToolOutputMaxBytes ||
+		cfg.ContextCompactedToolOutputMaxBytes != DefaultContextCompactedToolOutputMaxBytes {
+		t.Fatalf("context config = enabled:%t max_bytes:%d max_messages:%d recent:%d tool_max:%d compacted_max:%d",
+			cfg.ContextManagementEnabled,
+			cfg.ContextMaxBytes,
+			cfg.ContextMaxMessages,
+			cfg.ContextRecentMessages,
+			cfg.ContextToolOutputMaxBytes,
+			cfg.ContextCompactedToolOutputMaxBytes,
+		)
+	}
 }
 
 func TestLoadEnvironment(t *testing.T) {
@@ -100,6 +123,12 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_AGENT_QUEUE_KEY_MODE", "header:x-cursor-session-id")
 	t.Setenv("CODEX_AGENT_QUEUE_LIMIT", "7")
 	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "9s")
+	t.Setenv("CODEX_CONTEXT_MANAGEMENT_ENABLED", "true")
+	t.Setenv("CODEX_CONTEXT_MAX_BYTES", "12345")
+	t.Setenv("CODEX_CONTEXT_MAX_MESSAGES", "77")
+	t.Setenv("CODEX_CONTEXT_RECENT_MESSAGES", "9")
+	t.Setenv("CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES", "456")
+	t.Setenv("CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES", "78")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -134,6 +163,21 @@ func TestLoadEnvironment(t *testing.T) {
 	if cfg.AgentMaxActive != 2 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "header:x-cursor-session-id" || cfg.AgentQueueLimit != 7 || cfg.AgentQueueTimeout != 9*time.Second {
 		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
 	}
+	if !cfg.ContextManagementEnabled ||
+		cfg.ContextMaxBytes != 12345 ||
+		cfg.ContextMaxMessages != 77 ||
+		cfg.ContextRecentMessages != 9 ||
+		cfg.ContextToolOutputMaxBytes != 456 ||
+		cfg.ContextCompactedToolOutputMaxBytes != 78 {
+		t.Fatalf("context config = enabled:%t max_bytes:%d max_messages:%d recent:%d tool_max:%d compacted_max:%d",
+			cfg.ContextManagementEnabled,
+			cfg.ContextMaxBytes,
+			cfg.ContextMaxMessages,
+			cfg.ContextRecentMessages,
+			cfg.ContextToolOutputMaxBytes,
+			cfg.ContextCompactedToolOutputMaxBytes,
+		)
+	}
 }
 
 func TestLoadFlagsOverrideEnvironment(t *testing.T) {
@@ -160,6 +204,12 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--agent-queue-key-mode", "body:session_id",
 		"--agent-queue-limit", "8",
 		"--agent-queue-timeout", "10s",
+		"--context-management-enabled",
+		"--context-max-bytes", "23456",
+		"--context-max-messages", "88",
+		"--context-recent-messages", "10",
+		"--context-tool-output-max-bytes", "567",
+		"--context-compacted-tool-output-max-bytes", "89",
 	})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -191,6 +241,21 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if cfg.AgentMaxActive != 3 || cfg.AgentMaxActivePerKey != 2 || cfg.AgentQueueKeyMode != "body:session_id" || cfg.AgentQueueLimit != 8 || cfg.AgentQueueTimeout != 10*time.Second {
 		t.Fatalf("agent queue config = enabled:%t max:%d max_per_key:%d key_mode:%q limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentMaxActivePerKey, cfg.AgentQueueKeyMode, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
+	}
+	if !cfg.ContextManagementEnabled ||
+		cfg.ContextMaxBytes != 23456 ||
+		cfg.ContextMaxMessages != 88 ||
+		cfg.ContextRecentMessages != 10 ||
+		cfg.ContextToolOutputMaxBytes != 567 ||
+		cfg.ContextCompactedToolOutputMaxBytes != 89 {
+		t.Fatalf("context config = enabled:%t max_bytes:%d max_messages:%d recent:%d tool_max:%d compacted_max:%d",
+			cfg.ContextManagementEnabled,
+			cfg.ContextMaxBytes,
+			cfg.ContextMaxMessages,
+			cfg.ContextRecentMessages,
+			cfg.ContextToolOutputMaxBytes,
+			cfg.ContextCompactedToolOutputMaxBytes,
+		)
 	}
 }
 
@@ -303,6 +368,35 @@ func TestLoadInvalidAgentQueueTimeout(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid agent queue timeout error")
+	}
+}
+
+func TestLoadInvalidContextManagementEnabled(t *testing.T) {
+	t.Setenv("CODEX_CONTEXT_MANAGEMENT_ENABLED", "definitely")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid context management enabled error")
+	}
+}
+
+func TestLoadInvalidContextLimits(t *testing.T) {
+	tests := map[string]string{
+		"CODEX_CONTEXT_MAX_BYTES":                       "-1",
+		"CODEX_CONTEXT_MAX_MESSAGES":                    "-1",
+		"CODEX_CONTEXT_RECENT_MESSAGES":                 "-1",
+		"CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES":           "-1",
+		"CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES": "-1",
+	}
+	for key, value := range tests {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid context limit error")
+			}
+		})
 	}
 }
 

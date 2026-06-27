@@ -14,35 +14,46 @@ import (
 )
 
 const (
-	DefaultHost                 = "127.0.0.1"
-	DefaultPort                 = 8088
-	DefaultCodexWebsocketURL    = "wss://chatgpt.com/backend-api/codex/responses"
-	DefaultCodexTimeout         = 120 * time.Second
-	DefaultAgentQueueEnabled    = true
-	DefaultAgentMaxActive       = 1
-	DefaultAgentMaxActivePerKey = 1
-	DefaultAgentQueueKeyMode    = "global"
-	DefaultAgentQueueLimit      = 20
-	DefaultAgentQueueTimeout    = 5 * time.Minute
+	DefaultHost                               = "127.0.0.1"
+	DefaultPort                               = 8088
+	DefaultCodexWebsocketURL                  = "wss://chatgpt.com/backend-api/codex/responses"
+	DefaultCodexTimeout                       = 120 * time.Second
+	DefaultAgentQueueEnabled                  = true
+	DefaultAgentMaxActive                     = 1
+	DefaultAgentMaxActivePerKey               = 1
+	DefaultAgentQueueKeyMode                  = "global"
+	DefaultAgentQueueLimit                    = 20
+	DefaultAgentQueueTimeout                  = 5 * time.Minute
+	DefaultContextMaxBytes                    = 512 * 1024
+	DefaultContextMaxMessages                 = 200
+	DefaultContextRecentMessages              = 40
+	DefaultContextToolOutputMaxBytes          = 64 * 1024
+	DefaultContextCompactedToolOutputMaxBytes = 1024
 )
 
 type Config struct {
-	Host                 string
-	Port                 int
-	CodexHome            string
-	AuthPath             string
-	CodexProfilePath     string
-	CodexScaffoldPath    string
-	CodexWebsocketURL    string
-	CodexTimeout         time.Duration
-	LogBodyShape         bool
-	LogRequestIdentity   bool
-	AgentQueueEnabled    bool
-	AgentMaxActive       int
-	AgentMaxActivePerKey int
-	AgentQueueKeyMode    string
-	AgentQueueLimit      int
-	AgentQueueTimeout    time.Duration
+	Host                               string
+	Port                               int
+	CodexHome                          string
+	AuthPath                           string
+	CodexProfilePath                   string
+	CodexScaffoldPath                  string
+	CodexWebsocketURL                  string
+	CodexTimeout                       time.Duration
+	LogBodyShape                       bool
+	LogRequestIdentity                 bool
+	AgentQueueEnabled                  bool
+	AgentMaxActive                     int
+	AgentMaxActivePerKey               int
+	AgentQueueKeyMode                  string
+	AgentQueueLimit                    int
+	AgentQueueTimeout                  time.Duration
+	ContextManagementEnabled           bool
+	ContextMaxBytes                    int
+	ContextMaxMessages                 int
+	ContextRecentMessages              int
+	ContextToolOutputMaxBytes          int
+	ContextCompactedToolOutputMaxBytes int
 }
 
 func Load(args []string) (Config, error) {
@@ -147,6 +158,48 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.AgentQueueTimeout = timeout
 	}
+	if value := os.Getenv("CODEX_CONTEXT_MANAGEMENT_ENABLED"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CONTEXT_MANAGEMENT_ENABLED: %w", err)
+		}
+		cfg.ContextManagementEnabled = enabled
+	}
+	if value := os.Getenv("CODEX_CONTEXT_MAX_BYTES"); value != "" {
+		maxBytes, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CONTEXT_MAX_BYTES: %w", err)
+		}
+		cfg.ContextMaxBytes = maxBytes
+	}
+	if value := os.Getenv("CODEX_CONTEXT_MAX_MESSAGES"); value != "" {
+		maxMessages, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CONTEXT_MAX_MESSAGES: %w", err)
+		}
+		cfg.ContextMaxMessages = maxMessages
+	}
+	if value := os.Getenv("CODEX_CONTEXT_RECENT_MESSAGES"); value != "" {
+		recentMessages, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CONTEXT_RECENT_MESSAGES: %w", err)
+		}
+		cfg.ContextRecentMessages = recentMessages
+	}
+	if value := os.Getenv("CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES"); value != "" {
+		maxBytes, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES: %w", err)
+		}
+		cfg.ContextToolOutputMaxBytes = maxBytes
+	}
+	if value := os.Getenv("CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES"); value != "" {
+		maxBytes, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES: %w", err)
+		}
+		cfg.ContextCompactedToolOutputMaxBytes = maxBytes
+	}
 
 	fs := flag.NewFlagSet("codex-chat-api", flag.ContinueOnError)
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "host address to bind")
@@ -165,6 +218,12 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.AgentQueueKeyMode, "agent-queue-key-mode", cfg.AgentQueueKeyMode, "Agent queue key mode: global, auth_hash, request_fingerprint, header:<name>, or body:<field>")
 	fs.IntVar(&cfg.AgentQueueLimit, "agent-queue-limit", cfg.AgentQueueLimit, "maximum waiting tool-capable Agent requests")
 	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue")
+	fs.BoolVar(&cfg.ContextManagementEnabled, "context-management-enabled", cfg.ContextManagementEnabled, "enable context management for tool-capable minimal-mode requests")
+	fs.IntVar(&cfg.ContextMaxBytes, "context-max-bytes", cfg.ContextMaxBytes, "approximate message context byte threshold before compaction")
+	fs.IntVar(&cfg.ContextMaxMessages, "context-max-messages", cfg.ContextMaxMessages, "message count threshold before compaction")
+	fs.IntVar(&cfg.ContextRecentMessages, "context-recent-messages", cfg.ContextRecentMessages, "recent messages to leave unchanged during compaction")
+	fs.IntVar(&cfg.ContextToolOutputMaxBytes, "context-tool-output-max-bytes", cfg.ContextToolOutputMaxBytes, "maximum bytes to keep from an individual tool output before adding a truncation marker")
+	fs.IntVar(&cfg.ContextCompactedToolOutputMaxBytes, "context-compacted-tool-output-max-bytes", cfg.ContextCompactedToolOutputMaxBytes, "maximum bytes to keep from an older compacted tool output")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -188,20 +247,25 @@ func Load(args []string) (Config, error) {
 func Defaults() Config {
 	codexHome := defaultCodexHome()
 	return Config{
-		Host:                 DefaultHost,
-		Port:                 DefaultPort,
-		CodexHome:            codexHome,
-		AuthPath:             filepath.Join(codexHome, "auth.json"),
-		CodexProfilePath:     "codex_profile.json",
-		CodexScaffoldPath:    "codex_scaffold.json",
-		CodexWebsocketURL:    DefaultCodexWebsocketURL,
-		CodexTimeout:         DefaultCodexTimeout,
-		AgentQueueEnabled:    DefaultAgentQueueEnabled,
-		AgentMaxActive:       DefaultAgentMaxActive,
-		AgentMaxActivePerKey: DefaultAgentMaxActivePerKey,
-		AgentQueueKeyMode:    DefaultAgentQueueKeyMode,
-		AgentQueueLimit:      DefaultAgentQueueLimit,
-		AgentQueueTimeout:    DefaultAgentQueueTimeout,
+		Host:                               DefaultHost,
+		Port:                               DefaultPort,
+		CodexHome:                          codexHome,
+		AuthPath:                           filepath.Join(codexHome, "auth.json"),
+		CodexProfilePath:                   "codex_profile.json",
+		CodexScaffoldPath:                  "codex_scaffold.json",
+		CodexWebsocketURL:                  DefaultCodexWebsocketURL,
+		CodexTimeout:                       DefaultCodexTimeout,
+		AgentQueueEnabled:                  DefaultAgentQueueEnabled,
+		AgentMaxActive:                     DefaultAgentMaxActive,
+		AgentMaxActivePerKey:               DefaultAgentMaxActivePerKey,
+		AgentQueueKeyMode:                  DefaultAgentQueueKeyMode,
+		AgentQueueLimit:                    DefaultAgentQueueLimit,
+		AgentQueueTimeout:                  DefaultAgentQueueTimeout,
+		ContextMaxBytes:                    DefaultContextMaxBytes,
+		ContextMaxMessages:                 DefaultContextMaxMessages,
+		ContextRecentMessages:              DefaultContextRecentMessages,
+		ContextToolOutputMaxBytes:          DefaultContextToolOutputMaxBytes,
+		ContextCompactedToolOutputMaxBytes: DefaultContextCompactedToolOutputMaxBytes,
 	}
 }
 
@@ -248,6 +312,21 @@ func (c Config) Validate() error {
 	}
 	if c.AgentQueueEnabled && c.AgentQueueTimeout <= 0 {
 		return errors.New("agent queue timeout must be positive")
+	}
+	if c.ContextMaxBytes < 0 {
+		return errors.New("context max bytes must be non-negative")
+	}
+	if c.ContextMaxMessages < 0 {
+		return errors.New("context max messages must be non-negative")
+	}
+	if c.ContextRecentMessages < 0 {
+		return errors.New("context recent messages must be non-negative")
+	}
+	if c.ContextToolOutputMaxBytes < 0 {
+		return errors.New("context tool output max bytes must be non-negative")
+	}
+	if c.ContextCompactedToolOutputMaxBytes < 0 {
+		return errors.New("context compacted tool output max bytes must be non-negative")
 	}
 	return nil
 }

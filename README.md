@@ -297,6 +297,12 @@ Flags override environment values.
 | Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `global` |
 | Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
+| Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `false` |
+| Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `524288` |
+| Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `200` |
+| Context recent messages kept | `CODEX_CONTEXT_RECENT_MESSAGES` | `--context-recent-messages` | `40` |
+| Tool output max bytes | `CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES` | `--context-tool-output-max-bytes` | `65536` |
+| Compacted tool output max bytes | `CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES` | `--context-compacted-tool-output-max-bytes` | `1024` |
 
 Request body options beyond the core OpenAI chat schema:
 
@@ -453,6 +459,30 @@ CODEX_AGENT_QUEUE_TIMEOUT=5m
 Set `CODEX_AGENT_QUEUE_ENABLED=false` to disable queueing, or raise
 `CODEX_AGENT_MAX_ACTIVE` after validating that overlapping Agent chats are stable
 in your workspace.
+
+Long Cursor Agent conversations can accumulate large historical tool outputs.
+Context management is disabled by default. When enabled, it applies only to
+tool-capable minimal-mode requests, never rejects an oversized request, truncates
+oversized individual tool outputs with an explicit marker, and compacts older
+tool outputs once the configured byte or message threshold is exceeded. The most
+recent `CODEX_CONTEXT_RECENT_MESSAGES` messages are left unchanged, and assistant
+`tool_calls` plus matching `role:"tool"` / `tool_call_id` messages stay paired.
+
+Enable it conservatively:
+
+```bash
+CODEX_CONTEXT_MANAGEMENT_ENABLED=true
+CODEX_CONTEXT_MAX_BYTES=524288
+CODEX_CONTEXT_MAX_MESSAGES=200
+CODEX_CONTEXT_RECENT_MESSAGES=40
+CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES=65536
+CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES=1024
+```
+
+When context management changes a request, the server logs one redacted
+`context_manage` line with before/after message counts, approximate bytes, tool
+output counts, and truncation/compaction counts. It does not log prompt text,
+tool arguments, or tool output content.
 
 Queue key modes:
 

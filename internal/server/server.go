@@ -35,6 +35,7 @@ type options struct {
 	logRequestIdentity bool
 	agentQueueKeyMode  string
 	agentQueue         *agentQueue
+	contextConfig      config.Config
 }
 
 func WithCodexService(service codex.Service) Option {
@@ -63,6 +64,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		logBodyShape:       cfg.LogBodyShape,
 		logRequestIdentity: cfg.LogRequestIdentity,
 		agentQueueKeyMode:  cfg.AgentQueueKeyMode,
+		contextConfig:      cfg,
 	}
 	for _, setter := range setters {
 		setter(&opts)
@@ -151,9 +153,32 @@ func chatCompletions(opts options) fiber.Handler {
 		// injects the captured CLI profile/tools and often makes those requests fail upstream.
 		faithful := defaultBool(req.Faithful, !toolsPresent)
 		prewarm := defaultBool(req.Prewarm, faithful)
+		messages := req.Messages
+		if toolsPresent && !faithful {
+			managed := manageContext(req.Messages, opts.contextConfig)
+			if managed.Changed {
+				logLine(
+					opts,
+					"context_manage request_id=%s before_messages=%d before_bytes=%d before_tool_outputs=%d before_oversized_tool_outputs=%d after_messages=%d after_bytes=%d after_tool_outputs=%d after_oversized_tool_outputs=%d truncated_tools=%d compacted_tools=%d recent_messages_kept=%d\n",
+					requestID,
+					managed.Before.Messages,
+					managed.Before.Bytes,
+					managed.Before.ToolOutputs,
+					managed.Before.OversizedToolOutputs,
+					managed.After.Messages,
+					managed.After.Bytes,
+					managed.After.ToolOutputs,
+					managed.After.OversizedToolOutputs,
+					managed.TruncatedTools,
+					managed.CompactedTools,
+					opts.contextConfig.ContextRecentMessages,
+				)
+			}
+			messages = managed.Messages
+		}
 		serviceReq := codex.Request{
 			Model:             modelAlias.UpstreamModel,
-			Messages:          req.Messages,
+			Messages:          messages,
 			Tools:             req.Tools,
 			ToolChoice:        req.ToolChoice,
 			ParallelToolCalls: req.ParallelToolCalls,
