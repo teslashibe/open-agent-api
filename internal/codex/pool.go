@@ -119,9 +119,16 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 }
 
 func (p *PooledService) shouldFallback(index int, err error) bool {
-	return p.unavailablePolicy == ClientPoolUnavailableFallbackFirst &&
-		index != 0 &&
-		errors.Is(err, ErrClientUnavailable)
+	if p.unavailablePolicy != ClientPoolUnavailableFallbackFirst || index == 0 {
+		return false
+	}
+	if errors.Is(err, ErrClientUnavailable) {
+		return true
+	}
+	if codexErr, ok := ErrorAs(err); ok {
+		return codexErr.Kind == ErrorKindAuth || codexErr.Kind == ErrorKindUpstream
+	}
+	return false
 }
 
 func (p *PooledService) selectIndex(req Request) int {

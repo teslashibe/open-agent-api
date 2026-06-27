@@ -93,6 +93,27 @@ func TestPooledServiceUnavailableClientFallbackFirst(t *testing.T) {
 	}
 }
 
+func TestPooledServiceFallbackFirstRetriesPreStreamAuthError(t *testing.T) {
+	authErr := NewError(ErrorKindAuth, 401, "load codex credentials", errors.New("missing auth"))
+	pool, calls := testPool(t, ClientPoolUnavailableFallbackFirst, 2, map[string]error{"client-1": authErr})
+	req := Request{AffinityKey: "body:session-a", AffinityKeyHash: "hash-a", AffinityKeyMode: "body:session_id"}
+	for pool.selectIndex(req) != 1 {
+		req.AffinityKey += "-next"
+	}
+
+	completion, err := pool.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if completion.Text != "client-0" {
+		t.Fatalf("completion text = %q, want fallback client", completion.Text)
+	}
+	called := calledLabels(calls)
+	if len(called) != 2 || !called["client-1"] || !called["client-0"] {
+		t.Fatalf("called labels = %v, want selected and fallback clients", called)
+	}
+}
+
 func TestPooledServiceFallbackFirstDoesNotRetryOrdinaryStartError(t *testing.T) {
 	ordinary := errors.New("ordinary upstream error")
 	pool, calls := testPool(t, ClientPoolUnavailableFallbackFirst, 2, map[string]error{"client-1": ordinary})
@@ -143,6 +164,9 @@ func testPool(t *testing.T, policy string, count int, fail map[string]error) (*P
 				mu.Unlock()
 				if err := fail[label]; err != nil {
 					if errors.Is(err, ErrClientUnavailable) || strings.Contains(err.Error(), "ordinary") {
+						return nil, err
+					}
+					if codexErr, ok := ErrorAs(err); ok && codexErr.Kind == ErrorKindAuth {
 						return nil, err
 					}
 					events := make(chan StreamEvent, 1)
