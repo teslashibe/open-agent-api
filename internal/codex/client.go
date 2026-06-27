@@ -271,7 +271,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {
-				sendStreamEvent(context.Background(), events, StreamEvent{Err: ctx.Err()})
+				trySendStreamEvent(events, StreamEvent{Err: ctx.Err()})
 				return
 			}
 			sendStreamEvent(ctx, events, StreamEvent{Err: NewError(ErrorKindUpstream, http.StatusBadGateway, "read codex websocket", err)})
@@ -286,7 +286,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		}
 		if hasStreamEvent(event) {
 			if !sendStreamEvent(ctx, events, event) {
-				sendStreamEvent(context.Background(), events, StreamEvent{Err: ctx.Err()})
+				trySendStreamEvent(events, StreamEvent{Err: ctx.Err()})
 				return
 			}
 		}
@@ -370,6 +370,15 @@ func sendStreamEvent(ctx context.Context, events chan<- StreamEvent, event Strea
 	case events <- event:
 		return true
 	case <-ctx.Done():
+		return false
+	}
+}
+
+func trySendStreamEvent(events chan<- StreamEvent, event StreamEvent) bool {
+	select {
+	case events <- event:
+		return true
+	default:
 		return false
 	}
 }
