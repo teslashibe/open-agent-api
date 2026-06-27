@@ -6,6 +6,57 @@ const (
 	DefaultModel = "gpt-5.5"
 )
 
+type ModelAlias struct {
+	ID              string
+	UpstreamModel   string
+	ReasoningEffort string
+	Verbosity       string
+}
+
+var modelAliases = []ModelAlias{
+	{ID: DefaultModel, UpstreamModel: DefaultModel, ReasoningEffort: "medium", Verbosity: "medium"},
+	{ID: "gpt-5.5-low", UpstreamModel: DefaultModel, ReasoningEffort: "low", Verbosity: "medium"},
+	{ID: "gpt-5.5-high", UpstreamModel: DefaultModel, ReasoningEffort: "high", Verbosity: "medium"},
+	{ID: "gpt-5.5-fast", UpstreamModel: DefaultModel, ReasoningEffort: "low", Verbosity: "low"},
+}
+
+func ModelAliases() []ModelAlias {
+	aliases := make([]ModelAlias, len(modelAliases))
+	copy(aliases, modelAliases)
+	return aliases
+}
+
+func Models() []Model {
+	aliases := ModelAliases()
+	models := make([]Model, 0, len(aliases))
+	for _, alias := range aliases {
+		models = append(models, Model{
+			ID:      alias.ID,
+			Object:  "model",
+			Created: 0,
+			OwnedBy: "codex-chat-api",
+		})
+	}
+	return models
+}
+
+func ResolveModelAlias(model string) ModelAlias {
+	if model == "" {
+		model = DefaultModel
+	}
+	for _, alias := range modelAliases {
+		if alias.ID == model {
+			return alias
+		}
+	}
+	return ModelAlias{
+		ID:              model,
+		UpstreamModel:   model,
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+	}
+}
+
 type ChatCompletionRequest struct {
 	Model             string          `json:"model"`
 	Messages          []ChatMessage   `json:"messages"`

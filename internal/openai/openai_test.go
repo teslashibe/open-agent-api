@@ -6,6 +6,75 @@ import (
 	"testing"
 )
 
+func TestResolveModelAlias(t *testing.T) {
+	tests := []struct {
+		name          string
+		model         string
+		wantID        string
+		wantUpstream  string
+		wantEffort    string
+		wantVerbosity string
+	}{
+		{
+			name:          "default",
+			model:         "",
+			wantID:        DefaultModel,
+			wantUpstream:  DefaultModel,
+			wantEffort:    "medium",
+			wantVerbosity: "medium",
+		},
+		{
+			name:          "high",
+			model:         "gpt-5.5-high",
+			wantID:        "gpt-5.5-high",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "high",
+			wantVerbosity: "medium",
+		},
+		{
+			name:          "fast",
+			model:         "gpt-5.5-fast",
+			wantID:        "gpt-5.5-fast",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "low",
+			wantVerbosity: "low",
+		},
+		{
+			name:          "unknown passthrough",
+			model:         "custom-model",
+			wantID:        "custom-model",
+			wantUpstream:  "custom-model",
+			wantEffort:    "medium",
+			wantVerbosity: "medium",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveModelAlias(tt.model)
+			if got.ID != tt.wantID ||
+				got.UpstreamModel != tt.wantUpstream ||
+				got.ReasoningEffort != tt.wantEffort ||
+				got.Verbosity != tt.wantVerbosity {
+				t.Fatalf("ResolveModelAlias(%q) = %#v", tt.model, got)
+			}
+		})
+	}
+}
+
+func TestModelsReturnsAliases(t *testing.T) {
+	models := Models()
+	want := []string{DefaultModel, "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast"}
+	if len(models) != len(want) {
+		t.Fatalf("Models() len = %d, want %d", len(models), len(want))
+	}
+	for i, model := range models {
+		if model.ID != want[i] || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
+			t.Fatalf("Models()[%d] = %#v", i, model)
+		}
+	}
+}
+
 func TestChatCompletionRequestParsesToolCallFields(t *testing.T) {
 	var req ChatCompletionRequest
 	raw := []byte(`{

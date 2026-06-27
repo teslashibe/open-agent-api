@@ -42,7 +42,7 @@ Copy the `https://<random>.trycloudflare.com` URL from the tunnel output.
 | --- | --- |
 | OpenAI API Key | `local-codex-chat-api` (any non-empty string) |
 | Override OpenAI Base URL | `https://<tunnel-host>/v1` |
-| Model | `gpt-5.5` |
+| Model | `gpt-5.5` or an alias such as `gpt-5.5-high` |
 
 4. Open a **new** Agent chat and try:
 
@@ -117,10 +117,38 @@ Expected response:
       "object": "model",
       "created": 0,
       "owned_by": "codex-chat-api"
+    },
+    {
+      "id": "gpt-5.5-low",
+      "object": "model",
+      "created": 0,
+      "owned_by": "codex-chat-api"
+    },
+    {
+      "id": "gpt-5.5-high",
+      "object": "model",
+      "created": 0,
+      "owned_by": "codex-chat-api"
+    },
+    {
+      "id": "gpt-5.5-fast",
+      "object": "model",
+      "created": 0,
+      "owned_by": "codex-chat-api"
     }
   ]
 }
 ```
+
+The alias models are Cursor-selectable convenience IDs. They all send upstream
+model `gpt-5.5` while applying server-side defaults:
+
+| Public model ID | Upstream model | Reasoning effort | Verbosity |
+| --- | --- | --- | --- |
+| `gpt-5.5` | `gpt-5.5` | `medium` | `medium` |
+| `gpt-5.5-low` | `gpt-5.5` | `low` | `medium` |
+| `gpt-5.5-high` | `gpt-5.5` | `high` | `medium` |
+| `gpt-5.5-fast` | `gpt-5.5` | `low` | `low` |
 
 ### Non-Streaming Chat
 
@@ -217,6 +245,10 @@ Request body options beyond the core OpenAI chat schema:
 | `faithful` | `true`, `false` | `true` when the client does not send `tools`; otherwise `false` |
 | `prewarm` | `true`, `false` | follows `faithful` |
 
+When the selected model is an alias, its reasoning and verbosity values become
+the defaults for that request. Explicit `reasoning_effort` and `verbosity`
+fields still override alias defaults for clients that send them.
+
 When the client sends `tools` (Cursor Agent always does), the server automatically
 uses **minimal mode**: no faithful CLI profile injection and no prewarm turn.
 This avoids upstream Codex errors from conflicting tool definitions. Explicit
@@ -233,7 +265,7 @@ endpoints.
 | Feature | Status |
 | --- | --- |
 | `GET /health` | Supported |
-| `GET /v1/models` | Supported (returns `gpt-5.5`) |
+| `GET /v1/models` | Supported (returns `gpt-5.5` and alias models) |
 | `POST /v1/chat/completions` (non-streaming) | Supported |
 | `POST /v1/chat/completions` (streaming SSE) | Supported |
 | Cursor Ask mode (text only) | Supported |
@@ -251,11 +283,12 @@ Upstream Codex authentication comes from `~/.codex/auth.json` (`codex login`).
 ```text
 OpenAI API Key:        local-codex-chat-api
 Override Base URL:     https://<tunnel-host>/v1
-Model:                 gpt-5.5
+Model:                 gpt-5.5-high
 ```
 
-The model ID is exact and case-sensitive. Cursor may display it as "GPT-5.5" in
-the UI, but the API model string is `gpt-5.5`.
+The model ID is exact and case-sensitive. Cursor may display model names with
+different capitalization in the UI, but the API model strings are `gpt-5.5`,
+`gpt-5.5-low`, `gpt-5.5-high`, and `gpt-5.5-fast`.
 
 ### Localhost vs HTTPS tunnel
 
@@ -399,7 +432,8 @@ Successful Cursor probes should log:
 
 - `GET /v1/models`
 - `POST /v1/chat/completions` with `authorization_present=true`
-- `chat_completion model=gpt-5.5 stream=... tools_present=...`
+- `chat_completion model=gpt-5.5-high stream=... tools_present=...` or the
+  selected alias model
 
 Body-shape logs include field names, message count, message roles, and tool count.
 Bearer tokens and message content are never printed. Codex tool websocket events
@@ -417,7 +451,7 @@ Upstream Codex errors are logged server-side as `stream_error` or
 | `Access to private networks is forbidden` | Cursor cannot reach localhost | Use `cloudflared` / `ngrok` / `tailscale funnel` and a `https://.../v1` base URL |
 | `[error: upstream error]` on first Agent turn | Old build before `v0.0.4`, or missing `codex login` | Upgrade to `v0.0.4+`, run `codex login`, check `stream_error` logs |
 | `[error: upstream error]` in an **existing** chat | Poisoned history (failed tool turns, long `call_id`s) | Start a **new** Agent chat |
-| Agent describes tools but does not run them | Ask mode, wrong model, or Cursor not using the custom endpoint | Use Agent mode, model `gpt-5.5`, confirm requests hit server logs |
+| Agent describes tools but does not run them | Ask mode, wrong model, or Cursor not using the custom endpoint | Use Agent mode, model `gpt-5.5` or a documented alias, confirm requests hit server logs |
 | `tools[0].name` missing (in logs) | Pre-`v0.0.4` tool-format bug | Upgrade to `v0.0.4+` |
 | `call_id` string too long (in logs) | Long Cursor IDs in continuation history | Upgrade to `v0.0.4+` and start a fresh chat |
 
