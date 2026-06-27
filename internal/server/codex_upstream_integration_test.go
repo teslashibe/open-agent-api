@@ -74,7 +74,7 @@ func TestCodexUpstreamClientCancellationReleasesAgentQueue(t *testing.T) {
 				"arguments": "",
 			},
 		}),
-	}, delayedToolArgumentFrames(t, 400, "zzzz", 2*time.Millisecond)...)
+	}, delayedToolArgumentFrames(t, 2200, "zzzz", 2*time.Millisecond)...)
 	secondScript := codextest.Script{
 		codexFrame(t, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-second", "model": "gpt-test"}}),
 	}
