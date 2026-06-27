@@ -31,6 +31,7 @@ type options struct {
 	newID          func() string
 	logOutput      io.Writer
 	logBodyShape   bool
+	agentQueue     *agentQueue
 }
 
 func WithCodexService(service codex.Service) Option {
@@ -60,6 +61,18 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	}
 	for _, setter := range setters {
 		setter(&opts)
+	}
+	if opts.agentQueue == nil {
+		opts.agentQueue = newAgentQueue(
+			cfg.AgentQueueEnabled,
+			cfg.AgentMaxActive,
+			cfg.AgentQueueLimit,
+			cfg.AgentQueueTimeout,
+			opts.now,
+			func(format string, args ...any) {
+				logLine(opts, format, args...)
+			},
+		)
 	}
 
 	app := fiber.New(fiber.Config{
@@ -124,6 +137,7 @@ func chatCompletions(opts options) fiber.Handler {
 		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t\n", model, req.Stream, toolsPresent)
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
+		requestID := opts.newID()
 		// Cursor and other OpenAI clients send their own tools. Faithful Codex mode
 		// injects the captured CLI profile/tools and often makes those requests fail upstream.
 		faithful := defaultBool(req.Faithful, !toolsPresent)
@@ -140,10 +154,21 @@ func chatCompletions(opts options) fiber.Handler {
 			Prewarm:           prewarm,
 		}
 
+		releaseQueue := func() {}
+		if toolsPresent {
+			release, err := opts.agentQueue.acquire(ctx, requestID)
+			if err != nil {
+				cancel()
+				return mapAgentQueueError(c, err)
+			}
+			releaseQueue = release
+		}
+
 		if req.Stream {
-			return streamChatCompletion(c, opts, ctx, cancel, serviceReq)
+			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, requestID, releaseQueue)
 		}
 		defer cancel()
+		defer releaseQueue()
 
 		completion, err := opts.codexService.Complete(ctx, serviceReq)
 		if err != nil {
@@ -163,7 +188,7 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 
 		return c.JSON(openai.ChatCompletionResponse{
-			ID:      completionID(completion.ID, opts.newID),
+			ID:      completionID(completion.ID, func() string { return requestID }),
 			Object:  "chat.completion",
 			Created: opts.now().Unix(),
 			Model:   defaultString(completion.Model, model),
@@ -179,14 +204,15 @@ func chatCompletions(opts options) fiber.Handler {
 	}
 }
 
-func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request) error {
+func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, requestID string, releaseQueue func()) error {
 	events, err := opts.codexService.Stream(ctx, req)
 	if err != nil {
 		cancel()
+		releaseQueue()
 		return mapServiceError(c, err)
 	}
 
-	id := opts.newID()
+	id := requestID
 	created := opts.now().Unix()
 	model := req.Model
 	streamID := id
@@ -195,6 +221,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 	c.Set(fiber.HeaderCacheControl, "no-cache")
 	c.Set(fiber.HeaderConnection, "keep-alive")
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer releaseQueue()
 		defer cancel()
 
 		start := opts.now()
@@ -525,6 +552,17 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 		return writeError(c, status, errorType, publicServiceMessage(serviceErr.Kind))
 	}
 	return writeError(c, fiber.StatusInternalServerError, "api_error", "internal server error")
+}
+
+func mapAgentQueueError(c *fiber.Ctx, err error) error {
+	switch {
+	case errors.Is(err, errAgentQueueFull):
+		return writeError(c, fiber.StatusTooManyRequests, "rate_limit_error", "agent queue full")
+	case errors.Is(err, errAgentQueueTimeout):
+		return writeError(c, fiber.StatusTooManyRequests, "rate_limit_error", "agent queue timeout")
+	default:
+		return mapServiceError(c, err)
+	}
 }
 
 func writeError(c *fiber.Ctx, status int, errorType string, message string) error {

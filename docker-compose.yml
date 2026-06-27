@@ -7,6 +7,10 @@ services:
     environment:
       CODEX_HOME: /home/codex/.codex
       CODEX_LOG_BODY_SHAPE: "${CODEX_LOG_BODY_SHAPE:-true}"
+      CODEX_AGENT_QUEUE_ENABLED: "${CODEX_AGENT_QUEUE_ENABLED:-true}"
+      CODEX_AGENT_MAX_ACTIVE: "${CODEX_AGENT_MAX_ACTIVE:-1}"
+      CODEX_AGENT_QUEUE_LIMIT: "${CODEX_AGENT_QUEUE_LIMIT:-20}"
+      CODEX_AGENT_QUEUE_TIMEOUT: "${CODEX_AGENT_QUEUE_TIMEOUT:-5m}"
     volumes:
       - "${HOME}/.codex:/home/codex/.codex:ro"
     ports:

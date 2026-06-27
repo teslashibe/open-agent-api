@@ -17,6 +17,10 @@ const (
 	DefaultPort              = 8088
 	DefaultCodexWebsocketURL = "wss://chatgpt.com/backend-api/codex/responses"
 	DefaultCodexTimeout      = 120 * time.Second
+	DefaultAgentQueueEnabled = true
+	DefaultAgentMaxActive    = 1
+	DefaultAgentQueueLimit   = 20
+	DefaultAgentQueueTimeout = 5 * time.Minute
 )
 
 type Config struct {
@@ -29,6 +33,10 @@ type Config struct {
 	CodexWebsocketURL string
 	CodexTimeout      time.Duration
 	LogBodyShape      bool
+	AgentQueueEnabled bool
+	AgentMaxActive    int
+	AgentQueueLimit   int
+	AgentQueueTimeout time.Duration
 }
 
 func Load(args []string) (Config, error) {
@@ -88,6 +96,34 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.LogBodyShape = logBodyShape
 	}
+	if value := os.Getenv("CODEX_AGENT_QUEUE_ENABLED"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_AGENT_QUEUE_ENABLED: %w", err)
+		}
+		cfg.AgentQueueEnabled = enabled
+	}
+	if value := os.Getenv("CODEX_AGENT_MAX_ACTIVE"); value != "" {
+		maxActive, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_AGENT_MAX_ACTIVE: %w", err)
+		}
+		cfg.AgentMaxActive = maxActive
+	}
+	if value := os.Getenv("CODEX_AGENT_QUEUE_LIMIT"); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_AGENT_QUEUE_LIMIT: %w", err)
+		}
+		cfg.AgentQueueLimit = limit
+	}
+	if value := os.Getenv("CODEX_AGENT_QUEUE_TIMEOUT"); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_AGENT_QUEUE_TIMEOUT: %w", err)
+		}
+		cfg.AgentQueueTimeout = timeout
+	}
 
 	fs := flag.NewFlagSet("codex-chat-api", flag.ContinueOnError)
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "host address to bind")
@@ -99,6 +135,10 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.CodexWebsocketURL, "codex-websocket-url", cfg.CodexWebsocketURL, "Codex websocket URL")
 	fs.DurationVar(&cfg.CodexTimeout, "codex-timeout", cfg.CodexTimeout, "Codex websocket request timeout")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
+	fs.BoolVar(&cfg.AgentQueueEnabled, "agent-queue-enabled", cfg.AgentQueueEnabled, "enable global Agent queue for requests with tools")
+	fs.IntVar(&cfg.AgentMaxActive, "agent-max-active", cfg.AgentMaxActive, "maximum concurrent tool-capable Agent requests")
+	fs.IntVar(&cfg.AgentQueueLimit, "agent-queue-limit", cfg.AgentQueueLimit, "maximum waiting tool-capable Agent requests")
+	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -130,6 +170,10 @@ func Defaults() Config {
 		CodexScaffoldPath: "codex_scaffold.json",
 		CodexWebsocketURL: DefaultCodexWebsocketURL,
 		CodexTimeout:      DefaultCodexTimeout,
+		AgentQueueEnabled: DefaultAgentQueueEnabled,
+		AgentMaxActive:    DefaultAgentMaxActive,
+		AgentQueueLimit:   DefaultAgentQueueLimit,
+		AgentQueueTimeout: DefaultAgentQueueTimeout,
 	}
 }
 
@@ -161,6 +205,15 @@ func (c Config) Validate() error {
 	}
 	if c.CodexTimeout <= 0 {
 		return errors.New("codex timeout must be positive")
+	}
+	if c.AgentMaxActive < 1 {
+		return errors.New("agent max active must be at least 1")
+	}
+	if c.AgentQueueLimit < 0 {
+		return errors.New("agent queue limit must be non-negative")
+	}
+	if c.AgentQueueEnabled && c.AgentQueueTimeout <= 0 {
+		return errors.New("agent queue timeout must be positive")
 	}
 	return nil
 }
