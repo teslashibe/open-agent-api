@@ -418,6 +418,103 @@ func TestChatCompletionsNonStreamingSequentialToolResultContinuation(t *testing.
 	}
 }
 
+func TestChatCompletionsManagesToolPresentContext(t *testing.T) {
+	const secretToolOutput = "secret-tool-output"
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			if len(req.Messages) != 3 {
+				t.Fatalf("Messages len = %d, want 3", len(req.Messages))
+			}
+			assistant := req.Messages[1]
+			if assistant.Role != "assistant" || len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call_123" {
+				t.Fatalf("assistant message = %#v, want preserved tool call", assistant)
+			}
+			tool := req.Messages[2]
+			if tool.Role != "tool" || tool.ToolCallID != "call_123" {
+				t.Fatalf("tool message = %#v, want preserved tool_call_id", tool)
+			}
+			text := rawMessageText(tool.Content)
+			if !strings.Contains(text, "tool output truncated from") {
+				t.Fatalf("tool content = %q, want truncation marker", text)
+			}
+			if strings.Contains(text, secretToolOutput) {
+				t.Fatalf("tool content leaked untruncated secret output: %q", text)
+			}
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.ContextManagementEnabled = true
+	cfg.ContextToolOutputMaxBytes = 70
+	cfg.ContextMaxBytes = 0
+	cfg.ContextMaxMessages = 0
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
+
+	body := mustJSON(t, openai.ChatCompletionRequest{
+		Model: "gpt-test",
+		Messages: []openai.ChatMessage{
+			{Role: "user", Content: openai.TextContent("read")},
+			{Role: "assistant", Content: json.RawMessage("null"), ToolCalls: []openai.ToolCall{{ID: "call_123", Type: "function", Function: openai.ToolCallFunction{Name: "read_file", Arguments: `{"path":"big.txt"}`}}}},
+			{Role: "tool", ToolCallID: "call_123", Content: openai.TextContent(strings.Repeat(secretToolOutput, 20))},
+		},
+		Tools: json.RawMessage(`[{"type":"function","function":{"name":"read_file"}}]`),
+	})
+	resp := doJSON(t, app, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	logBody := logs.String()
+	for _, want := range []string{
+		"context_manage request_id=chatcmpl-fixed",
+		"before_messages=3",
+		"after_messages=3",
+		"truncated_tools=1",
+		"compacted_tools=0",
+	} {
+		if !strings.Contains(logBody, want) {
+			t.Fatalf("logs = %q, want %q", logBody, want)
+		}
+	}
+	if strings.Contains(logBody, secretToolOutput) || strings.Contains(logBody, "big.txt") {
+		t.Fatalf("context management logs leaked request content: %q", logBody)
+	}
+}
+
+func TestChatCompletionsContextManagementSkipsPlainRequests(t *testing.T) {
+	const toolLikeSecret = "tool-like-secret"
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			if got := rawMessageText(req.Messages[1].Content); got != strings.Repeat(toolLikeSecret, 10) {
+				t.Fatalf("plain request message changed: %q", got)
+			}
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.ContextManagementEnabled = true
+	cfg.ContextToolOutputMaxBytes = 10
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
+
+	body := mustJSON(t, openai.ChatCompletionRequest{
+		Model: "gpt-test",
+		Messages: []openai.ChatMessage{
+			{Role: "user", Content: openai.TextContent("hi")},
+			{Role: "tool", ToolCallID: "call_123", Content: openai.TextContent(strings.Repeat(toolLikeSecret, 10))},
+		},
+	})
+	resp := doJSON(t, app, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if strings.Contains(logs.String(), "context_manage") {
+		t.Fatalf("logs = %q, want no context management log for plain request", logs.String())
+	}
+}
+
 func TestChatCompletionsAcceptsArbitraryAuthorization(t *testing.T) {
 	var called bool
 	service := fakeCodexService{
@@ -1389,6 +1486,15 @@ func doJSON(t *testing.T, app interface {
 		t.Fatalf("app.Test() error = %v", err)
 	}
 	return resp
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func postJSONAsync(t *testing.T, app interface {
