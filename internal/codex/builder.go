@@ -243,24 +243,7 @@ func normalizeCallID(id string) string {
 }
 
 func messageText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		return text
-	}
-	var parts []map[string]any
-	if err := json.Unmarshal(raw, &parts); err == nil {
-		var b strings.Builder
-		for _, part := range parts {
-			if value, ok := part["text"].(string); ok {
-				b.WriteString(value)
-			}
-		}
-		return b.String()
-	}
-	return string(raw)
+	return openai.MessageText(raw)
 }
 
 func firstNonEmpty(values ...string) string {

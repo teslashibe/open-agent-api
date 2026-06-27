@@ -233,3 +233,24 @@ func TestChatCompletionToolCallShapesMarshal(t *testing.T) {
 func containsJSON(data []byte, want string) bool {
 	return json.Valid(data) && strings.Contains(string(data), want)
 }
+
+func TestMessageTextStructuredContent(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{name: "plain string", raw: TextContent("hello"), want: "hello"},
+		{name: "text parts", raw: []byte(`[{"type":"text","text":"hello "},{"type":"text","text":"world"}]`), want: "hello world"},
+		{name: "input and output parts", raw: []byte(`[{"type":"input_text","text":"alpha"},{"type":"output_text","text":"beta"}]`), want: "alphabeta"},
+		{name: "content string field", raw: []byte(`{"type":"text","content":"nested"}`), want: "nested"},
+		{name: "nested content array", raw: []byte(`{"content":[{"text":"one"},{"text":"two"}]}`), want: "onetwo"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MessageText(tc.raw); got != tc.want {
+				t.Fatalf("MessageText() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
