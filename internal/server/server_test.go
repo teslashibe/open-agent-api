@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -659,6 +660,308 @@ func TestChatCompletionsStreamingToolResultContinuation(t *testing.T) {
 	}
 }
 
+func TestAgentQueueSerializesToolStreams(t *testing.T) {
+	firstEvents := make(chan codex.StreamEvent)
+	secondEvents := make(chan codex.StreamEvent)
+	started := make(chan int, 2)
+	var mu sync.Mutex
+	calls := 0
+	firstOpen := false
+	concurrent := false
+
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			mu.Lock()
+			calls++
+			call := calls
+			if call == 1 {
+				firstOpen = true
+			}
+			if call == 2 && firstOpen {
+				concurrent = true
+			}
+			mu.Unlock()
+			started <- call
+			if call == 1 {
+				return firstEvents, nil
+			}
+			return secondEvents, nil
+		},
+	}
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs))
+
+	firstDone := postJSONAsync(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}]}`)
+	if got := waitStarted(t, started, time.Second); got != 1 {
+		t.Fatalf("first stream call = %d, want 1", got)
+	}
+
+	secondDone := postJSONAsync(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}]}`)
+	select {
+	case got := <-started:
+		t.Fatalf("second tool stream started before first finished: %d", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	firstEvents <- codex.StreamEvent{Done: true}
+	close(firstEvents)
+	mu.Lock()
+	firstOpen = false
+	mu.Unlock()
+	resp := waitResponse(t, firstDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	if got := waitStarted(t, started, time.Second); got != 2 {
+		t.Fatalf("second stream call = %d, want 2", got)
+	}
+	secondEvents <- codex.StreamEvent{Done: true}
+	close(secondEvents)
+	resp = waitResponse(t, secondDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	mu.Lock()
+	wasConcurrent := concurrent
+	mu.Unlock()
+	if wasConcurrent {
+		t.Fatal("tool streams ran concurrently with default queue settings")
+	}
+	body := logs.String()
+	for _, want := range []string{"agent_queue_acquire request_id=", "agent_queue_wait request_id=", "agent_queue_release request_id=", "stream_start id=", "stream_end id="} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("logs = %q, want %q", body, want)
+		}
+	}
+}
+
+func TestAgentQueueHonorsMaxActive(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.AgentMaxActive = 2
+	started := make(chan int, 3)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			mu.Lock()
+			calls++
+			call := calls
+			mu.Unlock()
+			started <- call
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return codex.Completion{}, ctx.Err()
+			}
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
+		},
+	}
+	app := New(cfg, WithCodexService(service), WithLogOutput(io.Discard))
+
+	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	secondDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	if got := waitStarted(t, started, time.Second); got != 1 {
+		t.Fatalf("first complete call = %d, want 1", got)
+	}
+	if got := waitStarted(t, started, time.Second); got != 2 {
+		t.Fatalf("second complete call = %d, want 2", got)
+	}
+
+	thirdDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"three"}],"tools":[{"type":"function"}]}`)
+	select {
+	case got := <-started:
+		t.Fatalf("third complete started before a slot released: %d", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	resp := waitResponse(t, firstDone)
+	resp.Body.Close()
+	if got := waitStarted(t, started, time.Second); got != 3 {
+		t.Fatalf("third complete call = %d, want 3", got)
+	}
+	for _, done := range []<-chan *http.Response{secondDone, thirdDone} {
+		resp := waitResponse(t, done)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	}
+}
+
+func TestAgentQueueBypassesRequestsWithoutTools(t *testing.T) {
+	toolEvents := make(chan codex.StreamEvent)
+	toolStarted := make(chan struct{}, 1)
+	startedNoTools := make(chan struct{}, 1)
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			if rawJSONPresent(req.Tools) {
+				toolStarted <- struct{}{}
+				return toolEvents, nil
+			}
+			startedNoTools <- struct{}{}
+			events := make(chan codex.StreamEvent, 1)
+			events <- codex.StreamEvent{Done: true}
+			close(events)
+			return events, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(io.Discard))
+
+	toolDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"tool"}],"tools":[{"type":"function"}]}`)
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool request did not start")
+	}
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"ask"}]}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("no-tools status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	select {
+	case <-startedNoTools:
+	case <-time.After(time.Second):
+		t.Fatal("request without tools did not bypass active Agent queue slot")
+	}
+	toolEvents <- codex.StreamEvent{Done: true}
+	close(toolEvents)
+	resp = waitResponse(t, toolDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tool status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestAgentQueueFullReturns429(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.AgentQueueLimit = 0
+	events := make(chan codex.StreamEvent)
+	started := make(chan struct{}, 1)
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			started <- struct{}{}
+			return events, nil
+		},
+	}
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
+
+	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not start")
+	}
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue full") {
+		t.Fatalf("body = %q, want OpenAI-shaped queue full error", body)
+	}
+	if !strings.Contains(logs.String(), "agent_queue_full request_id=") {
+		t.Fatalf("logs = %q, want agent_queue_full", logs.String())
+	}
+
+	events <- codex.StreamEvent{Done: true}
+	close(events)
+	resp = waitResponse(t, firstDone)
+	resp.Body.Close()
+}
+
+func TestAgentQueueTimeoutReturns429(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.AgentQueueTimeout = 20 * time.Millisecond
+	events := make(chan codex.StreamEvent)
+	started := make(chan struct{}, 1)
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			started <- struct{}{}
+			return events, nil
+		},
+	}
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
+
+	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not start")
+	}
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue timeout") {
+		t.Fatalf("body = %q, want OpenAI-shaped queue timeout error", body)
+	}
+	if !strings.Contains(logs.String(), "agent_queue_timeout request_id=") {
+		t.Fatalf("logs = %q, want agent_queue_timeout", logs.String())
+	}
+
+	events <- codex.StreamEvent{Done: true}
+	close(events)
+	resp = waitResponse(t, firstDone)
+	resp.Body.Close()
+}
+
+func TestAgentQueueReleasesAfterStreamingUpstreamError(t *testing.T) {
+	firstEvents := make(chan codex.StreamEvent, 1)
+	secondEvents := make(chan codex.StreamEvent)
+	started := make(chan int, 2)
+	var mu sync.Mutex
+	calls := 0
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			mu.Lock()
+			calls++
+			call := calls
+			mu.Unlock()
+			started <- call
+			if call == 1 {
+				return firstEvents, nil
+			}
+			return secondEvents, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(io.Discard))
+
+	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
+	if got := waitStarted(t, started, time.Second); got != 1 {
+		t.Fatalf("first stream call = %d, want 1", got)
+	}
+	secondDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"two"}],"tools":[{"type":"function"}]}`)
+	firstEvents <- codex.StreamEvent{Err: codex.NewError(codex.ErrorKindUpstream, http.StatusBadGateway, "raw upstream", errors.New("boom"))}
+	close(firstEvents)
+	resp := waitResponse(t, firstDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := waitStarted(t, started, time.Second); got != 2 {
+		t.Fatalf("second stream call = %d, want 2", got)
+	}
+	secondEvents <- codex.StreamEvent{Done: true}
+	close(secondEvents)
+	resp = waitResponse(t, secondDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
 func TestRequestLogsAreRedacted(t *testing.T) {
 	const secret = "secret-access-token"
 	const prompt = "do not log this prompt"
@@ -938,6 +1241,53 @@ func doJSON(t *testing.T, app interface {
 		t.Fatalf("app.Test() error = %v", err)
 	}
 	return resp
+}
+
+func postJSONAsync(t *testing.T, app interface {
+	Test(*http.Request, ...int) (*http.Response, error)
+}, body string) <-chan *http.Response {
+	t.Helper()
+	done := make(chan *http.Response, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+		if err != nil {
+			t.Errorf("NewRequest() error = %v", err)
+			done <- &http.Response{StatusCode: 0, Body: io.NopCloser(strings.NewReader(""))}
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer secret-access-token")
+		resp, err := app.Test(req, 2000)
+		if err != nil {
+			t.Errorf("app.Test() error = %v", err)
+			done <- &http.Response{StatusCode: 0, Body: io.NopCloser(strings.NewReader(""))}
+			return
+		}
+		done <- resp
+	}()
+	return done
+}
+
+func waitStarted(t *testing.T, started <-chan int, timeout time.Duration) int {
+	t.Helper()
+	select {
+	case got := <-started:
+		return got
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for stream call")
+		return 0
+	}
+}
+
+func waitResponse(t *testing.T, done <-chan *http.Response) *http.Response {
+	t.Helper()
+	select {
+	case resp := <-done:
+		return resp
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for response")
+		return nil
+	}
 }
 
 func readString(t *testing.T, r io.Reader) string {

@@ -19,6 +19,10 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_WEBSOCKET_URL")
 	unsetenv(t, "CODEX_TIMEOUT")
 	unsetenv(t, "CODEX_LOG_BODY_SHAPE")
+	unsetenv(t, "CODEX_AGENT_QUEUE_ENABLED")
+	unsetenv(t, "CODEX_AGENT_MAX_ACTIVE")
+	unsetenv(t, "CODEX_AGENT_QUEUE_LIMIT")
+	unsetenv(t, "CODEX_AGENT_QUEUE_TIMEOUT")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -53,6 +57,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogBodyShape {
 		t.Fatal("LogBodyShape = true, want false")
 	}
+	if cfg.AgentQueueEnabled != DefaultAgentQueueEnabled {
+		t.Fatalf("AgentQueueEnabled = %t, want %t", cfg.AgentQueueEnabled, DefaultAgentQueueEnabled)
+	}
+	if cfg.AgentMaxActive != DefaultAgentMaxActive {
+		t.Fatalf("AgentMaxActive = %d, want %d", cfg.AgentMaxActive, DefaultAgentMaxActive)
+	}
+	if cfg.AgentQueueLimit != DefaultAgentQueueLimit {
+		t.Fatalf("AgentQueueLimit = %d, want %d", cfg.AgentQueueLimit, DefaultAgentQueueLimit)
+	}
+	if cfg.AgentQueueTimeout != DefaultAgentQueueTimeout {
+		t.Fatalf("AgentQueueTimeout = %s, want %s", cfg.AgentQueueTimeout, DefaultAgentQueueTimeout)
+	}
 }
 
 func TestLoadEnvironment(t *testing.T) {
@@ -65,6 +81,10 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_WEBSOCKET_URL", "wss://example.test/codex")
 	t.Setenv("CODEX_TIMEOUT", "3s")
 	t.Setenv("CODEX_LOG_BODY_SHAPE", "true")
+	t.Setenv("CODEX_AGENT_QUEUE_ENABLED", "false")
+	t.Setenv("CODEX_AGENT_MAX_ACTIVE", "2")
+	t.Setenv("CODEX_AGENT_QUEUE_LIMIT", "7")
+	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "9s")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -90,6 +110,12 @@ func TestLoadEnvironment(t *testing.T) {
 	if !cfg.LogBodyShape {
 		t.Fatal("LogBodyShape = false, want true")
 	}
+	if cfg.AgentQueueEnabled {
+		t.Fatal("AgentQueueEnabled = true, want false")
+	}
+	if cfg.AgentMaxActive != 2 || cfg.AgentQueueLimit != 7 || cfg.AgentQueueTimeout != 9*time.Second {
+		t.Fatalf("agent queue config = enabled:%t max:%d limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
+	}
 }
 
 func TestLoadFlagsOverrideEnvironment(t *testing.T) {
@@ -109,6 +135,10 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--codex-websocket-url", "wss://flag.test/codex",
 		"--codex-timeout", "4s",
 		"--log-body-shape",
+		"--agent-queue-enabled=false",
+		"--agent-max-active", "3",
+		"--agent-queue-limit", "8",
+		"--agent-queue-timeout", "10s",
 	})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -131,6 +161,12 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if !cfg.LogBodyShape {
 		t.Fatal("LogBodyShape = false, want true")
+	}
+	if cfg.AgentQueueEnabled {
+		t.Fatal("AgentQueueEnabled = true, want false")
+	}
+	if cfg.AgentMaxActive != 3 || cfg.AgentQueueLimit != 8 || cfg.AgentQueueTimeout != 10*time.Second {
+		t.Fatalf("agent queue config = enabled:%t max:%d limit:%d timeout:%s", cfg.AgentQueueEnabled, cfg.AgentMaxActive, cfg.AgentQueueLimit, cfg.AgentQueueTimeout)
 	}
 }
 
@@ -175,6 +211,42 @@ func TestLoadInvalidLogBodyShape(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid log body shape error")
+	}
+}
+
+func TestLoadInvalidAgentQueueEnabled(t *testing.T) {
+	t.Setenv("CODEX_AGENT_QUEUE_ENABLED", "definitely")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid agent queue enabled error")
+	}
+}
+
+func TestLoadInvalidAgentMaxActive(t *testing.T) {
+	t.Setenv("CODEX_AGENT_MAX_ACTIVE", "0")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid agent max active error")
+	}
+}
+
+func TestLoadInvalidAgentQueueLimit(t *testing.T) {
+	t.Setenv("CODEX_AGENT_QUEUE_LIMIT", "-1")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid agent queue limit error")
+	}
+}
+
+func TestLoadInvalidAgentQueueTimeout(t *testing.T) {
+	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "0s")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid agent queue timeout error")
 	}
 }
 
