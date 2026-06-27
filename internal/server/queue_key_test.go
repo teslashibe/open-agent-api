@@ -52,7 +52,9 @@ func TestCursorQueueKeyConversationFingerprintStableAcrossTurns(t *testing.T) {
 			{"role":"user","content":"first turn secret"},
 			{"role":"assistant","content":null,"tool_calls":[{"id":"call_shared","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"secret one\"}"}}]},
 			{"role":"tool","tool_call_id":"call_shared","content":"secret tool result"},
-			{"role":"user","content":"second turn secret"}
+			{"role":"user","content":"second turn secret"},
+			{"role":"assistant","content":null,"tool_calls":[{"id":"call_later","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"secret.txt\"}"}}]},
+			{"role":"tool","tool_call_id":"call_later","content":"later secret tool result"}
 		]
 	}`, nil)
 

@@ -127,28 +127,20 @@ func cursorConversationFingerprint(body map[string]json.RawMessage) string {
 		return ""
 	}
 
-	parts := make([]string, 0)
 	for _, message := range messages {
-		if message.ID != "" {
-			parts = append(parts, "message_id="+message.ID)
-		}
-		if message.ToolCallID != "" {
-			parts = append(parts, "tool_result="+message.ToolCallID)
+		if id := strings.TrimSpace(message.ID); id != "" {
+			return "message_id=" + id
 		}
 		for _, toolCall := range message.ToolCalls {
-			if toolCall.ID == "" {
-				continue
+			if id := strings.TrimSpace(toolCall.ID); id != "" {
+				return "assistant_tool=" + id + "|" + strings.TrimSpace(toolCall.Type) + "|" + strings.TrimSpace(toolCall.Function.Name)
 			}
-			parts = append(parts, "assistant_tool="+toolCall.ID+"|"+toolCall.Type+"|"+toolCall.Function.Name)
+		}
+		if id := strings.TrimSpace(message.ToolCallID); id != "" {
+			return "tool_result=" + id
 		}
 	}
-	if len(parts) == 0 {
-		return ""
-	}
-	if len(parts) > 12 {
-		parts = parts[len(parts)-12:]
-	}
-	return strings.Join(parts, "|")
+	return ""
 }
 
 type cursorFingerprintMessage struct {
