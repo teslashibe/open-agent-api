@@ -71,10 +71,10 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 5 {
+	if body.Object != "list" || len(body.Data) != 6 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
-	wantIDs := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.3-codex-spark"}
+	wantIDs := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
 	for i, wantID := range wantIDs {
 		model := body.Data[i]
 		if model.ID != wantID || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
@@ -121,6 +121,14 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 		{
 			name:          "spark alias",
 			body:          `{"model":"gpt-5.3-codex-spark","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-5.5",
+			wantEffort:    "low",
+			wantVerbosity: "low",
+			wantFaithful:  true,
+		},
+		{
+			name:          "spark preview alias",
+			body:          `{"model":"gpt-5.3-codex-spark-preview","messages":[{"role":"user","content":"hi"}]}`,
 			wantModel:     "gpt-5.5",
 			wantEffort:    "low",
 			wantVerbosity: "low",
