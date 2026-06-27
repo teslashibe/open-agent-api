@@ -177,6 +177,122 @@ func TestBuildMinimalRequestIncludesClientTools(t *testing.T) {
 	}
 }
 
+func TestBuildMinimalRequestIncludesToolResultContinuation(t *testing.T) {
+	builder := fixtureBuilder()
+	payload, err := builder.buildMinimal(Request{
+		Model:           "plain-model",
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+		Messages: []openai.ChatMessage{
+			{Role: "user", Content: openai.TextContent("read go.mod")},
+			{
+				Role:    "assistant",
+				Content: json.RawMessage("null"),
+				ToolCalls: []openai.ToolCall{
+					{
+						ID:   "call_123",
+						Type: "function",
+						Function: openai.ToolCallFunction{
+							Name:      "read_file",
+							Arguments: `{"path":"go.mod"}`,
+						},
+					},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_123", Content: openai.TextContent("module github.com/teslashibe/codex-chat-api")},
+		},
+		Tools: json.RawMessage(`[{"type":"function","function":{"name":"read_file"}}]`),
+	})
+	if err != nil {
+		t.Fatalf("buildMinimal() error = %v", err)
+	}
+
+	input := payload["input"].([]any)
+	if len(input) != 3 {
+		t.Fatalf("input len = %d, want user + function_call + output", len(input))
+	}
+	call := input[1].(map[string]any)
+	if call["type"] != "function_call" ||
+		call["call_id"] != "call_123" ||
+		call["name"] != "read_file" ||
+		call["arguments"] != `{"path":"go.mod"}` {
+		t.Fatalf("function call item = %#v", call)
+	}
+	output := input[2].(map[string]any)
+	if output["type"] != "function_call_output" ||
+		output["call_id"] != "call_123" ||
+		output["output"] != "module github.com/teslashibe/codex-chat-api" {
+		t.Fatalf("function output item = %#v", output)
+	}
+}
+
+func TestBuildMinimalRequestIncludesSequentialToolResults(t *testing.T) {
+	builder := fixtureBuilder()
+	payload, err := builder.buildMinimal(Request{
+		Model:           "plain-model",
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+		Messages: []openai.ChatMessage{
+			{Role: "user", Content: openai.TextContent("list files then read go.mod")},
+			{
+				Role:    "assistant",
+				Content: json.RawMessage("null"),
+				ToolCalls: []openai.ToolCall{
+					{
+						ID:   "call_list",
+						Type: "function",
+						Function: openai.ToolCallFunction{
+							Name:      "list_dir",
+							Arguments: `{"path":"."}`,
+						},
+					},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_list", Content: openai.TextContent("README.md\ngo.mod")},
+			{
+				Role:    "assistant",
+				Content: json.RawMessage("null"),
+				ToolCalls: []openai.ToolCall{
+					{
+						ID:   "call_read",
+						Type: "function",
+						Function: openai.ToolCallFunction{
+							Name:      "read_file",
+							Arguments: `{"path":"go.mod"}`,
+						},
+					},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_read", Content: openai.TextContent("module github.com/teslashibe/codex-chat-api")},
+		},
+		Tools: json.RawMessage(`[{"type":"function","function":{"name":"list_dir"}},{"type":"function","function":{"name":"read_file"}}]`),
+	})
+	if err != nil {
+		t.Fatalf("buildMinimal() error = %v", err)
+	}
+
+	input := payload["input"].([]any)
+	if len(input) != 5 {
+		t.Fatalf("input len = %d, want user + two call/output pairs", len(input))
+	}
+	want := []struct {
+		index  int
+		typ    string
+		callID string
+	}{
+		{index: 1, typ: "function_call", callID: "call_list"},
+		{index: 2, typ: "function_call_output", callID: "call_list"},
+		{index: 3, typ: "function_call", callID: "call_read"},
+		{index: 4, typ: "function_call_output", callID: "call_read"},
+	}
+	for _, tc := range want {
+		item := input[tc.index].(map[string]any)
+		if item["type"] != tc.typ || item["call_id"] != tc.callID {
+			t.Fatalf("input[%d] = %#v, want type %s call_id %s", tc.index, item, tc.typ, tc.callID)
+		}
+	}
+}
+
 func fixtureBuilder() requestBuilder {
 	builder := newRequestBuilder(Profile{
 		Model:             "fixture-model",
