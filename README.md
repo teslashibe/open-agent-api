@@ -126,9 +126,9 @@ Cloudflare quick-tunnel URLs are ephemeral. Restarting `cloudflared` may produce
 a new URL, so update Cursor's base URL after a restart.
 
 The Docker Compose service enables the Agent queue by default. Tool-capable
-Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=global` and are serialized
-with `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while Ask/text-only requests bypass the
-queue.
+Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`
+with `CODEX_AGENT_MAX_ACTIVE=2` and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while
+Ask/text-only requests bypass the queue.
 
 ## Validate
 
@@ -292,14 +292,14 @@ Flags override environment values.
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 | Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
 | Agent queue enabled | `CODEX_AGENT_QUEUE_ENABLED` | `--agent-queue-enabled` | `true` |
-| Agent max active requests | `CODEX_AGENT_MAX_ACTIVE` | `--agent-max-active` | `1` |
+| Agent max active requests | `CODEX_AGENT_MAX_ACTIVE` | `--agent-max-active` | `2` |
 | Agent max active per key | `CODEX_AGENT_MAX_ACTIVE_PER_KEY` | `--agent-max-active-per-key` | `1` |
-| Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `global` |
+| Agent queue key mode | `CODEX_AGENT_QUEUE_KEY_MODE` | `--agent-queue-key-mode` | `header:x-cursor-session-id` |
 | Agent queue waiting limit | `CODEX_AGENT_QUEUE_LIMIT` | `--agent-queue-limit` | `20` |
 | Agent queue wait timeout | `CODEX_AGENT_QUEUE_TIMEOUT` | `--agent-queue-timeout` | `5m` |
 | Context management enabled | `CODEX_CONTEXT_MANAGEMENT_ENABLED` | `--context-management-enabled` | `false` |
-| Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `524288` |
-| Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `200` |
+| Context max bytes | `CODEX_CONTEXT_MAX_BYTES` | `--context-max-bytes` | `262144` |
+| Context max messages | `CODEX_CONTEXT_MAX_MESSAGES` | `--context-max-messages` | `150` |
 | Context recent messages kept | `CODEX_CONTEXT_RECENT_MESSAGES` | `--context-recent-messages` | `40` |
 | Tool output max bytes | `CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES` | `--context-tool-output-max-bytes` | `65536` |
 | Compacted tool output max bytes | `CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES` | `--context-compacted-tool-output-max-bytes` | `1024` |
@@ -440,18 +440,18 @@ containing the prior assistant `tool_calls` and matching `role:"tool"` results.
 The final response should be normal assistant text with `finish_reason:"stop"`.
 
 By default, requests that include `tools` enter an Agent queue keyed by
-`CODEX_AGENT_QUEUE_KEY_MODE=global`. This keeps one tool-capable Agent stream
-active at a time because overlapping Cursor tool-call streams can stall while
-Cursor coordinates local tool execution in the same workspace. Requests without
+`CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`. This allows up to
+`CODEX_AGENT_MAX_ACTIVE` concurrent Agent streams across different Cursor chats
+while keeping one active stream per chat/session key. Requests without
 `tools`, including Ask mode, bypass the queue.
 
 Tune the queue with:
 
 ```bash
 CODEX_AGENT_QUEUE_ENABLED=true
-CODEX_AGENT_MAX_ACTIVE=1
+CODEX_AGENT_MAX_ACTIVE=2
 CODEX_AGENT_MAX_ACTIVE_PER_KEY=1
-CODEX_AGENT_QUEUE_KEY_MODE=global
+CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id
 CODEX_AGENT_QUEUE_LIMIT=20
 CODEX_AGENT_QUEUE_TIMEOUT=5m
 ```
@@ -472,8 +472,8 @@ Enable it conservatively:
 
 ```bash
 CODEX_CONTEXT_MANAGEMENT_ENABLED=true
-CODEX_CONTEXT_MAX_BYTES=524288
-CODEX_CONTEXT_MAX_MESSAGES=200
+CODEX_CONTEXT_MAX_BYTES=262144
+CODEX_CONTEXT_MAX_MESSAGES=150
 CODEX_CONTEXT_RECENT_MESSAGES=40
 CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES=65536
 CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES=1024
@@ -488,15 +488,15 @@ Queue key modes:
 
 | Mode | Behavior |
 | --- | --- |
-| `global` | Safe default. All tool-capable requests share one key, so same-window Agent traffic is serialized. |
+| `global` | Fallback when a header/body key is missing. All unmatched Agent traffic shares one key. |
 | `auth_hash` | All requests using the same API key serialize. The raw key is never logged. |
 | `header:<name>` | Queue by a selected request header, for example `header:x-cursor-session-id`, if real traffic shows it is stable. |
 | `body:<field>` | Queue by a selected top-level JSON body field, for example `body:session_id`, if real traffic shows it is stable. |
 | `request_fingerprint` | Queue by a redacted fingerprint of authorization hash, user agent hash, and remote IP. This is not a proven per-chat key. |
 
 Configured header/body modes fall back to the global key when the selected value
-is missing. Until Cursor traffic shows a stable per-chat/session/workspace
-signal, `global` is the only robust single-window mode.
+is missing. The default `header:x-cursor-session-id` mode queues per Cursor chat
+when that header is present.
 
 ### Tool-call protocol notes
 
@@ -607,7 +607,7 @@ Upstream Codex errors are logged server-side as `stream_error` or
 | `[error: upstream error]` on first Agent turn | Old build before `v0.0.4`, or missing `codex login` | Upgrade to `v0.0.4+`, run `codex login`, check `stream_error` logs |
 | `[error: upstream error]` in an **existing** chat | Poisoned history (failed tool turns, long `call_id`s) | Start a **new** Agent chat |
 | Agent describes tools but does not run them | Ask mode, wrong model, or Cursor not using the custom endpoint | Use Agent mode, model `gpt-5.5` or a documented alias, confirm requests hit server logs |
-| Agent chats stall when several run at once | Queue disabled or concurrency set too high for one workspace | Set `CODEX_AGENT_QUEUE_ENABLED=true` and `CODEX_AGENT_MAX_ACTIVE=1`; confirm `agent_queue_wait` and `agent_queue_release` logs |
+| Agent chats stall when several run at once | Queue disabled, wrong key mode, or concurrency set too high for one workspace | Keep `CODEX_AGENT_QUEUE_ENABLED=true`, `CODEX_AGENT_QUEUE_KEY_MODE=header:x-cursor-session-id`, and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; confirm queue logs |
 | `tools[0].name` missing (in logs) | Pre-`v0.0.4` tool-format bug | Upgrade to `v0.0.4+` |
 | `call_id` string too long (in logs) | Long Cursor IDs in continuation history | Upgrade to `v0.0.4+` and start a fresh chat |
 

@@ -19,13 +19,13 @@ const (
 	DefaultCodexWebsocketURL                  = "wss://chatgpt.com/backend-api/codex/responses"
 	DefaultCodexTimeout                       = 120 * time.Second
 	DefaultAgentQueueEnabled                  = true
-	DefaultAgentMaxActive                     = 1
+	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
-	DefaultAgentQueueKeyMode                  = "global"
+	DefaultAgentQueueKeyMode                  = "header:x-cursor-session-id"
 	DefaultAgentQueueLimit                    = 20
 	DefaultAgentQueueTimeout                  = 5 * time.Minute
-	DefaultContextMaxBytes                    = 512 * 1024
-	DefaultContextMaxMessages                 = 200
+	DefaultContextMaxBytes                    = 256 * 1024
+	DefaultContextMaxMessages                 = 150
 	DefaultContextRecentMessages              = 40
 	DefaultContextToolOutputMaxBytes          = 64 * 1024
 	DefaultContextCompactedToolOutputMaxBytes = 1024

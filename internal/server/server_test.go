@@ -1033,7 +1033,7 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue full") {
 		t.Fatalf("body = %q, want OpenAI-shaped queue full error", body)
 	}
-	for _, want := range []string{"agent_queue_full request_id=", "key_mode=global", "key_hash=", "limit=0"} {
+	for _, want := range []string{"agent_queue_full request_id=", "key_mode=header:x-cursor-session-id", "key_hash=", "limit=0"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}
@@ -1074,7 +1074,7 @@ func TestAgentQueueTimeoutReturns429(t *testing.T) {
 	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue timeout") {
 		t.Fatalf("body = %q, want OpenAI-shaped queue timeout error", body)
 	}
-	for _, want := range []string{"agent_queue_timeout request_id=", "key_mode=global", "key_hash=", "wait_ms="} {
+	for _, want := range []string{"agent_queue_timeout request_id=", "key_mode=header:x-cursor-session-id", "key_hash=", "wait_ms="} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}

@@ -221,6 +221,9 @@ func chatCompletions(opts options) fiber.Handler {
 			message.ToolCalls = openAIToolCalls(completion.ToolCalls)
 			finishReason = "tool_calls"
 		}
+		if degenerateAgentTurn(toolsPresent, finishReason, len(completion.Text), len(completion.ToolCalls)) {
+			logDegenerateTurn(opts, requestID, len(completion.Text), len(completion.ToolCalls), detectLoopPhrase(completion.Text), len(messages))
+		}
 
 		return c.JSON(openai.ChatCompletionResponse{
 			ID:      completionID(completion.ID, func() string { return requestID }),
@@ -263,6 +266,8 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		logLine(opts, "stream_start id=%s model=%s tools_present=%t\n", streamID, model, rawJSONPresent(req.Tools))
 
 		var deltas, toolDeltas, upstreamEvents int
+		var textBytes, toolArgChars int
+		var assistantText strings.Builder
 		outcome := "completed"
 		toolCallEmitted := false
 		streamedToolCallIDs := map[string]bool{}
@@ -290,9 +295,17 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		// finalize logs one stream lifecycle summary regardless of how the
 		// stream ends (normal completion, client disconnect, or upstream error).
 		finalize := func() {
+			finish := streamFinish(outcome, toolCallEmitted)
+			toolCallCount := nextToolCallIndex
+			if opts.logBodyShape {
+				logStreamOutput(opts, streamID, textBytes, toolCallCount, toolArgChars, detectLoopPhrase(assistantText.String()))
+			}
+			if degenerateAgentTurn(rawJSONPresent(req.Tools), finish, textBytes, toolCallCount) {
+				logDegenerateTurn(opts, streamID, textBytes, toolCallCount, detectLoopPhrase(assistantText.String()), len(req.Messages))
+			}
 			logLine(opts,
 				"stream_end id=%s model=%s outcome=%s deltas=%d tool_deltas=%d upstream_events=%d finish=%s ctx_err=%s duration_ms=%d\n",
-				streamID, model, outcome, deltas, toolDeltas, upstreamEvents, streamFinish(outcome, toolCallEmitted),
+				streamID, model, outcome, deltas, toolDeltas, upstreamEvents, finish,
 				ctxErrString(ctx), opts.now().Sub(start).Milliseconds(),
 			)
 		}
@@ -332,6 +345,8 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 			}
 			if event.Delta != "" {
 				deltas++
+				textBytes += len(event.Delta)
+				assistantText.WriteString(event.Delta)
 				if !writeSSE(ctx, cancel, w, openai.ChatCompletionChunk{
 					ID:      id,
 					Object:  "chat.completion.chunk",
@@ -350,6 +365,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				if skipCompletedToolCallDelta(i, toolCall, streamedToolCallIDs, streamedToolCallIndexes) {
 					continue
 				}
+				toolArgChars += len(toolCall.Function.Arguments)
 				toolCallEmitted = true
 				toolDeltas++
 				fullDelta := openAIToolCallFullDelta(i, toolCall)
@@ -375,6 +391,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 			if event.ToolCallDelta != nil {
 				toolCallEmitted = true
 				toolDeltas++
+				toolArgChars += len(event.ToolCallDelta.Function.Arguments)
 				streamedToolCallIndexes[event.ToolCallDelta.Index] = true
 				if event.ToolCallDelta.ID != "" {
 					streamedToolCallIDs[event.ToolCallDelta.ID] = true
