@@ -152,3 +152,7 @@ tool continuation turns through the capture route. The validation passes only if
 each tool-call turn has `empty_tool_frames=0`, `finish=tool_calls`, `done=True`,
 `tool_ids_present=True`, `tool_names_present=True`, `tool_args_json_valid=True`,
 and Cursor advances to the next turn without switching providers.
+
+Record the live evidence in
+[Issue 52 Validation](issue-52-validation.md) so the release or PR review can
+verify the stalled-chat regression check directly.
