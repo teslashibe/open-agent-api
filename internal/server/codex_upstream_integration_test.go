@@ -165,7 +165,7 @@ func TestCodexUpstreamUserTurnTextOnlyAnswerStreamsContent(t *testing.T) {
 	})
 	defer upstream.Close()
 
-	app, _ := newCodexProxyApp(t, upstream.URL())
+	app, logs := newCodexProxyApp(t, upstream.URL())
 	proxyURL := startLiveApp(t, app)
 	resp := postLiveJSON(t, proxyURL, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"summarize"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`, nil)
 	defer resp.Body.Close()
@@ -180,6 +180,63 @@ func TestCodexUpstreamUserTurnTextOnlyAnswerStreamsContent(t *testing.T) {
 	if !strings.Contains(body, `"finish_reason":"stop"`) {
 		t.Fatalf("stream = %q, want stop finish", body)
 	}
+	if !upstream.WaitRequests(1, time.Second) || len(upstream.Requests()) != 1 {
+		t.Fatalf("upstream requests = %d, want one turn without degenerate retry", len(upstream.Requests()))
+	}
+	assertLogNotContains(t, logs, "degenerate_turn_retry")
+}
+
+func TestCodexUpstreamToolContinuationShortFinalAnswerNoRetry(t *testing.T) {
+	requireLocalListener(t)
+	upstream := codextest.NewUpstream(codextest.Script{
+		codexFrame(t, map[string]any{"type": "response.output_text.delta", "delta": "Done."}),
+		codexFrame(t, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-tool-short", "model": "gpt-test"}}),
+	})
+	defer upstream.Close()
+
+	app, logs := newCodexProxyApp(t, upstream.URL())
+	proxyURL := startLiveApp(t, app)
+	resp := postLiveJSON(t, proxyURL, toolContinuationBody, nil)
+	defer resp.Body.Close()
+
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"content":"Done."`) || !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("stream = %q, want short tool continuation answer in content", body)
+	}
+	if strings.Contains(body, `"reasoning_content":"Done."`) || strings.Contains(body, `"tool_calls"`) {
+		t.Fatalf("stream = %q, want text-only tool continuation finish", body)
+	}
+	if !upstream.WaitRequests(1, time.Second) || len(upstream.Requests()) != 1 {
+		t.Fatalf("upstream requests = %d, want one turn without retry", len(upstream.Requests()))
+	}
+	assertLogNotContains(t, logs, "degenerate_turn_retry")
+}
+
+func TestCodexUpstreamToolContinuationLongFinalAnswerNoRetry(t *testing.T) {
+	requireLocalListener(t)
+	summary := strings.Repeat("The file contains important details. ", 40) // >512 bytes
+	upstream := codextest.NewUpstream(codextest.Script{
+		codexFrame(t, map[string]any{"type": "response.output_text.delta", "delta": summary}),
+		codexFrame(t, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-tool-long", "model": "gpt-test"}}),
+	})
+	defer upstream.Close()
+
+	app, logs := newCodexProxyApp(t, upstream.URL())
+	proxyURL := startLiveApp(t, app)
+	resp := postLiveJSON(t, proxyURL, toolContinuationBody, nil)
+	defer resp.Body.Close()
+
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("stream = %q, want stop finish for long tool continuation summary", body)
+	}
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Fatalf("stream = %q, want no forced tool call retry", body)
+	}
+	if !upstream.WaitRequests(1, time.Second) || len(upstream.Requests()) != 1 {
+		t.Fatalf("upstream requests = %d, want one turn without retry", len(upstream.Requests()))
+	}
+	assertLogNotContains(t, logs, "degenerate_turn_retry")
 }
 
 func TestCodexUpstreamTextOnlyFinalStreamsContentAndStopsWithoutRetry(t *testing.T) {
@@ -286,6 +343,111 @@ func TestCodexUpstreamSlowStreamForwardsFirstChunkPromptly(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed >= 250*time.Millisecond {
 		t.Fatalf("first upstream content arrived after %s, want before delayed final frame", elapsed)
+	}
+}
+
+func TestCodexUpstreamPreToolReasoningFlushesWithToolCallNotAtEOF(t *testing.T) {
+	requireLocalListener(t)
+	upstream := codextest.NewUpstream(codextest.Script{
+		codexFrame(t, map[string]any{"type": "response.output_text.delta", "delta": "I'll inspect the repo now."}),
+		codextest.DelayedFrame(200*time.Millisecond, string(mustFrameJSON(t, map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": 0,
+			"item": map[string]any{
+				"id":      "fc_delay",
+				"type":    "function_call",
+				"call_id": "call_delay",
+				"name":    "lookup",
+			},
+		}))),
+		codexFrame(t, map[string]any{"type": "response.function_call_arguments.delta", "output_index": 0, "delta": `{"q":"codex"}`}),
+		codextest.DelayedFrame(500*time.Millisecond, string(mustFrameJSON(t, map[string]any{
+			"type":     "response.completed",
+			"response": map[string]any{"id": "resp-delay", "model": "gpt-test"},
+		}))),
+	})
+	defer upstream.Close()
+
+	app, _ := newCodexProxyApp(t, upstream.URL())
+	proxyURL := startLiveApp(t, app)
+	start := time.Now()
+	resp := postLiveJSON(t, proxyURL, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"use lookup"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`, nil)
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	if event := readSSEEvent(t, reader, time.Second); !strings.Contains(event, `"role":"assistant"`) {
+		t.Fatalf("first event = %q, want assistant role", event)
+	}
+	for {
+		event := readSSEEvent(t, reader, time.Second)
+		if strings.Contains(event, `"reasoning_content":"I'll inspect the repo now."`) {
+			elapsed := time.Since(start)
+			if elapsed >= 450*time.Millisecond {
+				t.Fatalf("reasoning arrived after %s, want near tool-call delay not stream EOF", elapsed)
+			}
+			if elapsed < 150*time.Millisecond {
+				t.Fatalf("reasoning arrived after %s, want after buffered tool-call delay", elapsed)
+			}
+			return
+		}
+		if strings.Contains(event, `"finish_reason"`) {
+			t.Fatalf("stream ended before reasoning flush at event %q", event)
+		}
+	}
+}
+
+func TestCodexUpstreamToolContinuationCancelDuringSlowToolArgs(t *testing.T) {
+	requireLocalListener(t)
+	firstScript := append(codextest.Script{
+		codexFrame(t, map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": 0,
+			"item": map[string]any{
+				"id":        "fc_followup",
+				"type":      "function_call",
+				"call_id":   "call_followup",
+				"name":      "lookup",
+				"arguments": "",
+			},
+		}),
+	}, delayedToolArgumentFrames(t, 1200, "zzzz", 2*time.Millisecond)...)
+	secondScript := codextest.Script{
+		codexFrame(t, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-second", "model": "gpt-test"}}),
+	}
+	upstream := codextest.NewUpstream(firstScript, secondScript)
+	defer upstream.Close()
+
+	app, logs := newCodexProxyApp(t, upstream.URL())
+	proxyURL := startLiveApp(t, app)
+
+	resp := postLiveJSON(t, proxyURL, toolContinuationBody, map[string]string{"X-Cursor-Session-Id": "tool-cont-cancel"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	reader := bufio.NewReader(resp.Body)
+	if event := readSSEEvent(t, reader, time.Second); !strings.Contains(event, `"role":"assistant"`) {
+		t.Fatalf("first event = %q, want assistant role", event)
+	}
+	if event := readSSEEvent(t, reader, time.Second); !strings.Contains(event, `"tool_calls"`) {
+		t.Fatalf("second event = %q, want tool call", event)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close response body: %v", err)
+	}
+
+	waitFor(t, time.Second, func() bool {
+		logsStr := logs.String()
+		return strings.Contains(logsStr, "outcome=client_disconnect") &&
+			strings.Contains(logsStr, "agent_queue_release request_id=")
+	}, "tool continuation cancel during slow tool args")
+
+	resp = postLiveJSON(t, proxyURL, toolContinuationBody, map[string]string{"X-Cursor-Session-Id": "tool-cont-cancel"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d, want %d; logs=%q", resp.StatusCode, http.StatusOK, logs.String())
+	}
+	if !upstream.WaitRequests(2, 2*time.Second) {
+		t.Fatalf("upstream requests = %d, want 2 after cancel", len(upstream.Requests()))
 	}
 }
 
@@ -503,6 +665,22 @@ func mustFrameJSON(t *testing.T, value map[string]any) []byte {
 		t.Fatalf("marshal frame %#v: %v", value, err)
 	}
 	return data
+}
+
+const toolContinuationBody = `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"read file"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},{"role":"tool","tool_call_id":"call_123","content":"file contents here"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`
+
+func assertLogContains(t *testing.T, logs *bytes.Buffer, want string) {
+	t.Helper()
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("logs = %q, want substring %q", logs.String(), want)
+	}
+}
+
+func assertLogNotContains(t *testing.T, logs *bytes.Buffer, want string) {
+	t.Helper()
+	if strings.Contains(logs.String(), want) {
+		t.Fatalf("logs = %q, want substring absent: %q", logs.String(), want)
+	}
 }
 
 func TestCodexUpstreamHarnessSupportsDisconnect(t *testing.T) {
