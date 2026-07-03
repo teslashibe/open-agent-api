@@ -54,3 +54,47 @@ func TestRouterDefaultsNonGeminiToCodex(t *testing.T) {
 		t.Fatalf("gemini service should not be called, got %q", geminiSvc.model)
 	}
 }
+
+func TestRouterPassesArbitraryClaudeModelThrough(t *testing.T) {
+	codexSvc := &recordingService{}
+	geminiSvc := &recordingService{}
+	claudeSvc := &recordingService{}
+	router := Router{Codex: codexSvc, Gemini: geminiSvc, Claude: claudeSvc}
+
+	_, err := router.Complete(context.Background(), Request{Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if claudeSvc.model != "claude-sonnet-4-6" {
+		t.Fatalf("claude model = %q", claudeSvc.model)
+	}
+	if codexSvc.model != "" || geminiSvc.model != "" {
+		t.Fatalf("unexpected services called codex=%q gemini=%q", codexSvc.model, geminiSvc.model)
+	}
+}
+
+func TestRouterPassesShortClaudeAliasThrough(t *testing.T) {
+	claudeSvc := &recordingService{}
+	router := Router{Claude: claudeSvc}
+
+	_, err := router.Complete(context.Background(), Request{Model: "fable"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if claudeSvc.model != "fable" {
+		t.Fatalf("claude model = %q", claudeSvc.model)
+	}
+}
+
+func TestRouterPassesMythosAliasThrough(t *testing.T) {
+	claudeSvc := &recordingService{}
+	router := Router{Claude: claudeSvc}
+
+	_, err := router.Complete(context.Background(), Request{Model: "mythos"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if claudeSvc.model != "mythos" {
+		t.Fatalf("claude model = %q", claudeSvc.model)
+	}
+}

@@ -22,6 +22,9 @@ const (
 	DefaultCodexTimeout                       = 120 * time.Second
 	DefaultGeminiEndpoint                     = "https://daily-cloudcode-pa.googleapis.com/v1internal"
 	DefaultGeminiTimeout                      = 120 * time.Second
+	DefaultClaudeExecutable                   = "claude"
+	DefaultClaudeModel                        = "sonnet"
+	DefaultClaudeTimeout                      = 120 * time.Second
 	DefaultAgentQueueEnabled                  = true
 	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
@@ -52,6 +55,9 @@ type Config struct {
 	GeminiEndpoint                     string
 	GeminiProject                      string
 	GeminiTimeout                      time.Duration
+	ClaudeExecutable                   string
+	ClaudeDefaultModel                 string
+	ClaudeTimeout                      time.Duration
 	LogBodyShape                       bool
 	LogRequestIdentity                 bool
 	LogCodexToolEvents                 bool
@@ -148,6 +154,22 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("GEMINI_TIMEOUT: %w", err)
 		}
 		cfg.GeminiTimeout = timeout
+	}
+	if value := os.Getenv("CLAUDE_EXECUTABLE"); value != "" {
+		cfg.ClaudeExecutable = value
+	}
+	if value := os.Getenv("CLAUDE_PATH"); value != "" {
+		cfg.ClaudeExecutable = value
+	}
+	if value := os.Getenv("CLAUDE_DEFAULT_MODEL"); value != "" {
+		cfg.ClaudeDefaultModel = value
+	}
+	if value := os.Getenv("CLAUDE_TIMEOUT"); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CLAUDE_TIMEOUT: %w", err)
+		}
+		cfg.ClaudeTimeout = timeout
 	}
 	if value := os.Getenv("CODEX_LOG_BODY_SHAPE"); value != "" {
 		logBodyShape, err := strconv.ParseBool(value)
@@ -287,6 +309,9 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.GeminiEndpoint, "gemini-endpoint", cfg.GeminiEndpoint, "Gemini Code Assist v1internal endpoint")
 	fs.StringVar(&cfg.GeminiProject, "gemini-project", cfg.GeminiProject, "Gemini Code Assist project override")
 	fs.DurationVar(&cfg.GeminiTimeout, "gemini-timeout", cfg.GeminiTimeout, "Gemini Code Assist request timeout")
+	fs.StringVar(&cfg.ClaudeExecutable, "claude-executable", cfg.ClaudeExecutable, "Claude Code executable path")
+	fs.StringVar(&cfg.ClaudeDefaultModel, "claude-default-model", cfg.ClaudeDefaultModel, "Claude Code default model")
+	fs.DurationVar(&cfg.ClaudeTimeout, "claude-timeout", cfg.ClaudeTimeout, "Claude Code request timeout")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
 	fs.BoolVar(&cfg.LogCodexToolEvents, "log-codex-tool-events", cfg.LogCodexToolEvents, "log redacted upstream Codex tool-event diagnostics")
@@ -350,6 +375,9 @@ func Defaults() Config {
 		GeminiAuthPath:                     filepath.Join(defaultGeminiHome(), "oauth_creds.json"),
 		GeminiEndpoint:                     DefaultGeminiEndpoint,
 		GeminiTimeout:                      DefaultGeminiTimeout,
+		ClaudeExecutable:                   DefaultClaudeExecutable,
+		ClaudeDefaultModel:                 DefaultClaudeModel,
+		ClaudeTimeout:                      DefaultClaudeTimeout,
 		AgentQueueEnabled:                  DefaultAgentQueueEnabled,
 		AgentMaxActive:                     DefaultAgentMaxActive,
 		AgentMaxActivePerKey:               DefaultAgentMaxActivePerKey,
@@ -408,6 +436,15 @@ func (c Config) Validate() error {
 	}
 	if c.GeminiTimeout <= 0 {
 		return errors.New("gemini timeout must be positive")
+	}
+	if c.ClaudeExecutable == "" {
+		return errors.New("claude executable is required")
+	}
+	if c.ClaudeDefaultModel == "" {
+		return errors.New("claude default model is required")
+	}
+	if c.ClaudeTimeout <= 0 {
+		return errors.New("claude timeout must be positive")
 	}
 	if c.AgentMaxActive < 1 {
 		return errors.New("agent max active must be at least 1")
