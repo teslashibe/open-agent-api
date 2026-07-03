@@ -110,7 +110,7 @@ func (c *Client) command(ctx context.Context, req codex.Request) *exec.Cmd {
 
 func (c *Client) model(req codex.Request) string {
 	if req.Model != "" {
-		return req.Model
+		return strings.TrimPrefix(req.Model, "api/")
 	}
 	return c.defaultModel
 }

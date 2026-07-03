@@ -36,5 +36,5 @@ func (r Router) route(req Request) Service {
 }
 
 func isClaudeModel(model string) bool {
-	return strings.HasPrefix(model, "claude-") || model == "sonnet" || model == "opus" || model == "haiku" || model == "fable" || model == "mythos"
+	return strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "api/claude-") || model == "sonnet" || model == "opus" || model == "haiku" || model == "fable"
 }

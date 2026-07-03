@@ -86,15 +86,15 @@ func TestRouterPassesShortClaudeAliasThrough(t *testing.T) {
 	}
 }
 
-func TestRouterPassesMythosAliasThrough(t *testing.T) {
+func TestRouterPassesAPIClaudeModelThrough(t *testing.T) {
 	claudeSvc := &recordingService{}
 	router := Router{Claude: claudeSvc}
 
-	_, err := router.Complete(context.Background(), Request{Model: "mythos"})
+	_, err := router.Complete(context.Background(), Request{Model: "api/claude-fable-5"})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if claudeSvc.model != "mythos" {
+	if claudeSvc.model != "api/claude-fable-5" {
 		t.Fatalf("claude model = %q", claudeSvc.model)
 	}
 }

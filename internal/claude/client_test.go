@@ -52,3 +52,13 @@ func TestClaudeEffortFiltersUnsupportedValues(t *testing.T) {
 		t.Fatal("expected unsupported efforts to be omitted")
 	}
 }
+
+func TestModelStripsAPIPrefix(t *testing.T) {
+	client, err := NewClient(Config{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if got := client.model(codex.Request{Model: "api/claude-fable-5"}); got != "claude-fable-5" {
+		t.Fatalf("model = %q", got)
+	}
+}
