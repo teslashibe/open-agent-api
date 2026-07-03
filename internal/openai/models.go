@@ -110,6 +110,24 @@ var modelAliases = []ModelAlias{
 		Verbosity:       DefaultVerbosity,
 	},
 	{
+		ID:              "api/claude-fable-5-low",
+		UpstreamModel:   "claude-fable-5",
+		ReasoningEffort: "low",
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "api/claude-fable-5-medium",
+		UpstreamModel:   "claude-fable-5",
+		ReasoningEffort: "medium",
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "api/claude-fable-5-high",
+		UpstreamModel:   "claude-fable-5",
+		ReasoningEffort: "high",
+		Verbosity:       DefaultVerbosity,
+	},
+	{
 		ID:              "gpt-5.5-low",
 		UpstreamModel:   DefaultModel,
 		ReasoningEffort: "low",
