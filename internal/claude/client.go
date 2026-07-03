@@ -77,6 +77,10 @@ func (c *Client) Complete(ctx context.Context, req codex.Request) (codex.Complet
 			return codex.Completion{}, event.Err
 		}
 		completion.Text += event.Delta
+		if event.ToolCallDelta != nil {
+			completion.ToolCalls = append(completion.ToolCalls, toolCallFromDelta(*event.ToolCallDelta))
+		}
+		completion.ToolCalls = append(completion.ToolCalls, event.ToolCalls...)
 		if event.Model != "" {
 			completion.Model = event.Model
 		}
@@ -114,6 +118,17 @@ func (c *Client) model(req codex.Request) string {
 		return strings.TrimPrefix(req.Model, "api/")
 	}
 	return c.defaultModel
+}
+
+func toolCallFromDelta(delta codex.ToolCallDelta) codex.ToolCall {
+	return codex.ToolCall{
+		ID:   delta.ID,
+		Type: defaultString(delta.Type, "function"),
+		Function: codex.ToolCallFunction{
+			Name:      delta.Function.Name,
+			Arguments: delta.Function.Arguments,
+		},
+	}
 }
 
 func claudeEffort(effort string) string {
