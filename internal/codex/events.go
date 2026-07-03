@@ -13,6 +13,7 @@ import (
 type codexEvent struct {
 	Type           string          `json:"type"`
 	Delta          string          `json:"delta"`
+	Input          string          `json:"input"`
 	Arguments      string          `json:"arguments"`
 	ArgumentsDelta string          `json:"arguments_delta"`
 	ItemID         string          `json:"item_id"`
@@ -46,6 +47,7 @@ type codexToolItem struct {
 	CallID    string          `json:"call_id"`
 	Name      string          `json:"name"`
 	Arguments string          `json:"arguments"`
+	Input     string          `json:"input"`
 	Function  *codexFunction  `json:"function"`
 	Raw       json.RawMessage `json:"-"`
 }
@@ -95,6 +97,16 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 			return StreamEvent{ToolCallDelta: &delta}, false, nil
 		}
 		return StreamEvent{}, false, nil
+	case "response.custom_tool_call_input.delta":
+		if delta, ok := event.customToolCallInputDelta(false); ok {
+			return StreamEvent{ToolCallDelta: &delta}, false, nil
+		}
+		return StreamEvent{}, false, nil
+	case "response.custom_tool_call_input.done":
+		if delta, ok := event.customToolCallInputDelta(true); ok {
+			return StreamEvent{ToolCallDelta: &delta}, false, nil
+		}
+		return StreamEvent{}, false, nil
 	case "response.output_item.done":
 		if toolCall, ok := event.fullToolCall(); ok {
 			return StreamEvent{ToolCalls: []ToolCall{toolCall}}, false, nil
@@ -136,7 +148,7 @@ func (e codexEvent) toolCallStartDelta() (ToolCallDelta, bool) {
 	return ToolCallDelta{
 		Index: e.OutputIndex,
 		ID:    id,
-		Type:  "function",
+		Type:  item.toolCallType(),
 		Function: ToolCallFunctionDelta{
 			Name: name,
 		},
@@ -190,6 +202,26 @@ func (e codexEvent) toolCallArgumentsDoneDelta() (ToolCallDelta, bool) {
 	}, true
 }
 
+// customToolCallInputDelta maps Codex custom tool input frames (freeform text
+// in delta/input fields) onto the internal tool-call delta representation.
+func (e codexEvent) customToolCallInputDelta(final bool) (ToolCallDelta, bool) {
+	arguments := e.Delta
+	if final {
+		arguments = firstNonEmpty(e.Input, e.Delta)
+	}
+	if arguments == "" {
+		return ToolCallDelta{}, false
+	}
+	return ToolCallDelta{
+		Index: e.OutputIndex,
+		Type:  "custom",
+		Function: ToolCallFunctionDelta{
+			Arguments: arguments,
+		},
+		Final: final,
+	}, true
+}
+
 func (e codexEvent) fullToolCall() (ToolCall, bool) {
 	item := e.toolItem()
 	if item == nil || !item.isToolCall() {
@@ -203,7 +235,7 @@ func (e codexEvent) fullToolCall() (ToolCall, bool) {
 	}
 	return ToolCall{
 		ID:   id,
-		Type: "function",
+		Type: item.toolCallType(),
 		Function: ToolCallFunction{
 			Name:      name,
 			Arguments: arguments,
@@ -246,10 +278,20 @@ func (i codexToolItem) toolArguments() string {
 	if i.Arguments != "" {
 		return i.Arguments
 	}
+	if i.Input != "" {
+		return i.Input
+	}
 	if i.Function != nil {
 		return i.Function.Arguments
 	}
 	return ""
+}
+
+func (i codexToolItem) toolCallType() string {
+	if strings.Contains(i.Type, "custom") {
+		return "custom"
+	}
+	return "function"
 }
 
 func isCodexToolEvent(raw []byte) bool {

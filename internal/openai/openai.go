@@ -33,6 +33,12 @@ type ToolCall struct {
 	ID       string           `json:"id"`
 	Type     string           `json:"type"`
 	Function ToolCallFunction `json:"function"`
+	Custom   *ToolCallCustom  `json:"custom,omitempty"`
+}
+
+type ToolCallCustom struct {
+	Name  string `json:"name"`
+	Input string `json:"input"`
 }
 
 type ToolCallFunction struct {
@@ -81,6 +87,7 @@ type ToolCallDelta struct {
 	ID       string                 `json:"id,omitempty"`
 	Type     string                 `json:"type,omitempty"`
 	Function *ToolCallFunctionDelta `json:"function,omitempty"`
+	Custom   *ToolCallCustom        `json:"custom,omitempty"`
 }
 
 type ToolCallFunctionDelta struct {
