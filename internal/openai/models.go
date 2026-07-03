@@ -62,6 +62,12 @@ var modelAliases = []ModelAlias{
 		Verbosity:       DefaultVerbosity,
 	},
 	{
+		ID:              "claude-opus-4-8",
+		UpstreamModel:   "claude-opus-4-8",
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       DefaultVerbosity,
+	},
+	{
 		ID:              "claude-opus-4-5",
 		UpstreamModel:   "claude-opus-4-5",
 		ReasoningEffort: DefaultReasoningEffort,

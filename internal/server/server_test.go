@@ -71,10 +71,10 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 31 {
+	if body.Object != "list" || len(body.Data) != 32 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
-	wantIDs := []string{"gpt-5.5", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "claude-fable-5", "claude-mythos-5", "claude-opus-4-6", "claude-opus-4-6-fast", "claude-opus-4-5", "claude-opus-4-1", "claude-opus-4", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-haiku-4-5", "claude-haiku-4", "fable", "mythos", "opus", "sonnet", "haiku", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
+	wantIDs := []string{"gpt-5.5", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "claude-fable-5", "claude-mythos-5", "claude-opus-4-6", "claude-opus-4-6-fast", "claude-opus-4-8", "claude-opus-4-5", "claude-opus-4-1", "claude-opus-4", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-haiku-4-5", "claude-haiku-4", "fable", "mythos", "opus", "sonnet", "haiku", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
 	for i, wantID := range wantIDs {
 		model := body.Data[i]
 		if model.ID != wantID || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
