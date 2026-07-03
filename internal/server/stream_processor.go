@@ -44,6 +44,7 @@ type streamProcessor struct {
 	nextToolCallIndex   *int
 	toolCallsByKey      map[string]*streamedToolCall
 	toolCallKeysByIndex map[int]string
+	toolCallKeyByID     map[string]string
 	upstreamStart       time.Time
 	firstDeltaLatency   *time.Duration
 	responseShape       streamResponseShape
@@ -116,6 +117,7 @@ func newStreamProcessor(
 		nextToolCallIndex:   new(int),
 		toolCallsByKey:      map[string]*streamedToolCall{},
 		toolCallKeysByIndex: map[int]string{},
+		toolCallKeyByID:     map[string]string{},
 		upstreamStart:       upstreamStart,
 		firstDeltaLatency:   firstDeltaLatency,
 	}
@@ -147,8 +149,7 @@ func (p *streamProcessor) toolCallKey(upstreamIndex int) string {
 	return key
 }
 
-func (p *streamProcessor) toolCallForIndex(upstreamIndex int) *streamedToolCall {
-	key := p.toolCallKey(upstreamIndex)
+func (p *streamProcessor) toolCallForKey(key string) *streamedToolCall {
 	if toolCall, ok := p.toolCallsByKey[key]; ok {
 		return toolCall
 	}
@@ -161,16 +162,39 @@ func (p *streamProcessor) toolCallForIndex(upstreamIndex int) *streamedToolCall 
 	return toolCall
 }
 
-func (p *streamProcessor) toolCallForFullToolCall(upstreamIndex int, id string) *streamedToolCall {
-	if id != "" {
-		for _, toolCall := range p.toolCallsByKey {
-			if toolCall.id == id {
-				p.toolCallKeysByIndex[upstreamIndex] = toolCall.key
-				return toolCall
-			}
-		}
+func (p *streamProcessor) toolCallForIndex(upstreamIndex int) *streamedToolCall {
+	return p.toolCallForKey(p.toolCallKey(upstreamIndex))
+}
+
+func (p *streamProcessor) bindToolCallID(upstreamIndex int, id string) *streamedToolCall {
+	idxKey := p.toolCallKey(upstreamIndex)
+	if id == "" {
+		return p.toolCallForKey(idxKey)
 	}
-	return p.toolCallForIndex(upstreamIndex)
+	if key, ok := p.toolCallKeyByID[id]; ok {
+		toolCall := p.toolCallForKey(key)
+		p.toolCallKeysByIndex[upstreamIndex] = key
+		return toolCall
+	}
+	idxToolCall, hasIdxToolCall := p.toolCallsByKey[idxKey]
+	idKey := "id:" + id
+	if hasIdxToolCall {
+		delete(p.toolCallsByKey, idxKey)
+		idxToolCall.key = idKey
+		p.toolCallsByKey[idKey] = idxToolCall
+		p.toolCallIndexByKey[idKey] = idxToolCall.index
+		delete(p.toolCallIndexByKey, idxKey)
+		p.toolCallKeysByIndex[upstreamIndex] = idKey
+		p.toolCallKeyByID[id] = idKey
+		return idxToolCall
+	}
+	p.toolCallKeysByIndex[upstreamIndex] = idKey
+	p.toolCallKeyByID[id] = idKey
+	return p.toolCallForKey(idKey)
+}
+
+func (p *streamProcessor) toolCallForFullToolCall(upstreamIndex int, id string) *streamedToolCall {
+	return p.bindToolCallID(upstreamIndex, id)
 }
 
 func (p *streamProcessor) accumulateFullToolCall(upstreamIndex int, toolCall codex.ToolCall) {
@@ -201,6 +225,7 @@ func (p *streamProcessor) accumulateToolCallDelta(delta codex.ToolCallDelta) {
 	p.responseShape.ToolCalls = true
 	accumulated := p.toolCallForIndex(delta.Index)
 	if delta.ID != "" {
+		accumulated = p.bindToolCallID(delta.Index, delta.ID)
 		accumulated.id = delta.ID
 	}
 	if delta.Type != "" {
@@ -274,16 +299,32 @@ func safeIdentifier(value string) string {
 	return b.String()
 }
 
-func (p *streamProcessor) writeToolCalls() bool {
+func (p *streamProcessor) validToolCalls() ([]*streamedToolCall, []error) {
+	var valid []*streamedToolCall
+	var invalid []error
 	for _, toolCall := range p.orderedToolCalls() {
 		if err := p.validateToolCall(toolCall); err != nil {
-			logLine(p.opts, "tool_call_validation_error id=%s index=%d err=%s\n", p.streamID, toolCall.index, err)
-			_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, *p.model, "invalid upstream tool call"))
-			*p.outcome = "upstream_error"
-			return false
+			invalid = append(invalid, fmt.Errorf("index=%d err=%w", toolCall.index, err))
+			continue
 		}
+		valid = append(valid, toolCall)
+	}
+	return valid, invalid
+}
+
+func (p *streamProcessor) writeToolCalls() bool {
+	valid, invalid := p.validToolCalls()
+	for _, err := range invalid {
+		logLine(p.opts, "tool_call_validation_error id=%s %s\n", p.streamID, err)
+	}
+	if len(valid) == 0 && len(invalid) > 0 {
+		_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, *p.model, "invalid upstream tool call"))
+		*p.outcome = "upstream_error"
+		return false
+	}
+	for i, toolCall := range valid {
 		delta := openai.ToolCallDelta{
-			Index: toolCall.index,
+			Index: i,
 			ID:    toolCall.id,
 			Type:  toolCall.typ,
 			Function: &openai.ToolCallFunctionDelta{
@@ -416,6 +457,7 @@ func (p *streamProcessor) resetAttemptStats() {
 	p.toolCallIndexByKey = map[string]int{}
 	p.toolCallsByKey = map[string]*streamedToolCall{}
 	p.toolCallKeysByIndex = map[int]string{}
+	p.toolCallKeyByID = map[string]string{}
 	*p.outcome = "completed"
 }
 
