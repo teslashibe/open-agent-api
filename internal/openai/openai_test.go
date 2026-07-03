@@ -13,7 +13,7 @@ func TestModelAliases(t *testing.T) {
 	for _, alias := range aliases {
 		got = append(got, alias.ID)
 	}
-	want := []string{"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
+	want := []string{"gpt-5.5", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModelAliases IDs = %#v, want %#v", got, want)
 	}

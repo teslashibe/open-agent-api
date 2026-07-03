@@ -20,6 +20,24 @@ var modelAliases = []ModelAlias{
 		Verbosity:       DefaultVerbosity,
 	},
 	{
+		ID:              "gemini-2.5-flash",
+		UpstreamModel:   "gemini-2.5-flash",
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "gemini-2.5-flash-lite",
+		UpstreamModel:   "gemini-2.5-flash-lite",
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "gemini-2.5-pro",
+		UpstreamModel:   "gemini-2.5-pro",
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       DefaultVerbosity,
+	},
+	{
 		ID:              "gpt-5.5-low",
 		UpstreamModel:   DefaultModel,
 		ReasoningEffort: "low",
