@@ -9,6 +9,7 @@ import (
 
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/config"
+	"github.com/teslashibe/codex-chat-api/internal/gemini"
 	"github.com/teslashibe/codex-chat-api/internal/server"
 )
 
@@ -29,8 +30,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	geminiService, err := buildGeminiService(cfg)
+	if err != nil {
+		return err
+	}
+	service := codex.Router{Codex: codexService, Gemini: geminiService}
 
-	app := server.New(cfg, server.WithCodexService(codexService))
+	app := server.New(cfg, server.WithCodexService(service))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -81,4 +87,17 @@ func buildCodexService(cfg config.Config) (codex.Service, error) {
 		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
 		LogOutput:         os.Stdout,
 	})
+}
+
+func buildGeminiService(cfg config.Config) (codex.Service, error) {
+	client, err := gemini.NewClient(gemini.Config{
+		AuthPath: cfg.GeminiAuthPath,
+		Endpoint: cfg.GeminiEndpoint,
+		Project:  cfg.GeminiProject,
+		Timeout:  cfg.GeminiTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create gemini client: %w", err)
+	}
+	return client, nil
 }
