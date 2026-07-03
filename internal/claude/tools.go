@@ -90,11 +90,14 @@ func toolInstructions(specs []toolSpec) string {
 	}
 	data, _ := json.Marshal(payload)
 	return fmt.Sprintf("Cursor tool protocol:\n"+
-		"You can ask Cursor to execute exactly one tool by replying with only this fenced JSON block and no other text:\n\n"+
+		"Cursor, not Claude Code, executes tools. You must request Cursor tool execution with this exact fenced JSON block and no other text whenever you need current repository, file, terminal, transcript, or workspace information.\n"+
+		"Do not claim repo access, tool access, file contents, command results, or implementation status unless a prior Tool result in this conversation provided it.\n"+
+		"If the user asks you to inspect, search, read, edit, verify, test, run commands, check logs, or continue previous work, request a tool.\n"+
+		"For pure conversational questions that require no external state, answer normally.\n\n"+
 		"%s\n"+
 		"{\"name\":\"tool_name\",\"arguments\":{}}\n"+
 		"```\n\n"+
-		"Use only one of these tools. For custom tools, put the freeform text in \"input\" instead of \"arguments\".\n"+
+		"Use exactly one of the tools below. For custom tools, put freeform text in \"input\" instead of \"arguments\".\n"+
 		"Available tools:\n%s\n", toolCallFence, string(data))
 }
 
