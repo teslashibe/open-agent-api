@@ -47,3 +47,30 @@ func TestToolBridgeParserConvertsToolEnvelope(t *testing.T) {
 		t.Fatalf("delta = %#v", delta)
 	}
 }
+
+func TestToolBridgeParserBuffersSplitToolEnvelope(t *testing.T) {
+	parser := newToolBridgeParser([]toolSpec{{Name: "read_file", Type: "function"}})
+	if events := parser.consume(codex.StreamEvent{Delta: "```cursor_tool_call\n"}); len(events) != 0 {
+		t.Fatalf("first events = %#v, want buffered", events)
+	}
+	events := parser.consume(codex.StreamEvent{Delta: "{\"name\":\"read_file\",\"arguments\":{\"path\":\"go.mod\"}}\n```"})
+	if len(events) != 1 || events[0].ToolCallDelta == nil {
+		t.Fatalf("events = %#v", events)
+	}
+	got := events[0].ToolCallDelta
+	if got.Function.Name != "read_file" || got.Function.Arguments != `{"path":"go.mod"}` {
+		t.Fatalf("delta = %#v", got)
+	}
+}
+
+func TestToolBridgeParserConvertsCustomToolEnvelope(t *testing.T) {
+	parser := newToolBridgeParser([]toolSpec{{Name: "apply_patch", Type: "custom"}})
+	events := parser.consume(codex.StreamEvent{Delta: "```cursor_tool_call\n{\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** End Patch\\n\"}\n```"})
+	if len(events) != 1 || events[0].ToolCallDelta == nil {
+		t.Fatalf("events = %#v", events)
+	}
+	got := events[0].ToolCallDelta
+	if got.Type != "custom" || got.Function.Name != "apply_patch" || got.Function.Arguments != "*** Begin Patch\n*** End Patch\n" {
+		t.Fatalf("delta = %#v", got)
+	}
+}
