@@ -24,7 +24,7 @@ func TestParseToolSpecsSupportsFlatFunctionAndCustom(t *testing.T) {
 
 func TestToolInstructionsContainProtocolAndToolNames(t *testing.T) {
 	prompt := toolInstructions([]toolSpec{{Name: "read_file", Type: "function", Description: "read"}})
-	if !strings.Contains(prompt, "cursor_tool_call") || !strings.Contains(prompt, "read_file") {
+	if !strings.Contains(prompt, "cursor_tool_call") || !strings.Contains(prompt, "read_file") || !strings.Contains(prompt, "must request Cursor tool execution") {
 		t.Fatalf("prompt = %q", prompt)
 	}
 }
