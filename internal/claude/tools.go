@@ -123,6 +123,33 @@ func extractCursorToolCall(text string) (cursorToolCall, bool) {
 	return call, true
 }
 
+// parseToolCallBody parses the JSON payload of a cursor_tool_call fence. It is
+// tolerant of surrounding prose: if the body does not parse directly, it falls
+// back to the outermost JSON object it can find.
+func parseToolCallBody(body string) (cursorToolCall, bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return cursorToolCall{}, false
+	}
+	if call, ok := decodeToolCall(body); ok {
+		return call, true
+	}
+	start := strings.Index(body, "{")
+	end := strings.LastIndex(body, "}")
+	if start < 0 || end <= start {
+		return cursorToolCall{}, false
+	}
+	return decodeToolCall(body[start : end+1])
+}
+
+func decodeToolCall(body string) (cursorToolCall, bool) {
+	var call cursorToolCall
+	if err := json.Unmarshal([]byte(body), &call); err != nil || call.Name == "" {
+		return cursorToolCall{}, false
+	}
+	return call, true
+}
+
 func toolSpecByName(specs []toolSpec) map[string]toolSpec {
 	out := map[string]toolSpec{}
 	for _, spec := range specs {
