@@ -355,14 +355,22 @@ func ctxErrString(ctx context.Context) string {
 func openAIToolCalls(toolCalls []codex.ToolCall) []openai.ToolCall {
 	out := make([]openai.ToolCall, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
-		out = append(out, openai.ToolCall{
+		mapped := openai.ToolCall{
 			ID:   toolCall.ID,
 			Type: defaultString(toolCall.Type, "function"),
-			Function: openai.ToolCallFunction{
+		}
+		if mapped.Type == "custom" {
+			mapped.Custom = &openai.ToolCallCustom{
+				Name:  toolCall.Function.Name,
+				Input: toolCall.Function.Arguments,
+			}
+		} else {
+			mapped.Function = openai.ToolCallFunction{
 				Name:      toolCall.Function.Name,
 				Arguments: toolCall.Function.Arguments,
-			},
-		})
+			}
+		}
+		out = append(out, mapped)
 	}
 	return out
 }
