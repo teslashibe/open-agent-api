@@ -939,6 +939,93 @@ func TestChatCompletionsStreamingRejectsInvalidToolArguments(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsStreamingDropsInvalidOrphanWhenValidToolCallExists(t *testing.T) {
+	var logs strings.Builder
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			events := make(chan codex.StreamEvent, 4)
+			events <- codex.StreamEvent{ToolCallDelta: &codex.ToolCallDelta{Index: 1, Function: codex.ToolCallFunctionDelta{Arguments: `{"orphan":true}`}}}
+			events <- codex.StreamEvent{ToolCalls: []codex.ToolCall{{ID: "call_valid", Type: "function", Function: codex.ToolCallFunction{Name: "lookup", Arguments: `{"q":"codex"}`}}}}
+			events <- codex.StreamEvent{Done: true}
+			close(events)
+			return events, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}]}`)
+	defer resp.Body.Close()
+
+	body := readString(t, resp.Body)
+	assertExactCursorToolSSE(t, body, []openai.ToolCallDelta{
+		{
+			Index: 0,
+			ID:    "call_valid",
+			Type:  "function",
+			Function: &openai.ToolCallFunctionDelta{
+				Name:      "lookup",
+				Arguments: `{"q":"codex"}`,
+			},
+		},
+	})
+	if !strings.Contains(logs.String(), "tool_call_validation_error") {
+		t.Fatalf("logs = %q, want validation error for dropped orphan", logs.String())
+	}
+	if strings.Contains(body, "invalid upstream tool call") || strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("stream = %q, want valid tool call stream without stop/error chunk", body)
+	}
+}
+
+func TestChatCompletionsStreamingCustomToolCall(t *testing.T) {
+	const patch = "*** Begin Patch\n*** Update File: main.go\n*** End Patch\n"
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			events := make(chan codex.StreamEvent, 5)
+			events <- codex.StreamEvent{ToolCallDelta: &codex.ToolCallDelta{
+				Index: 0, ID: "call_custom", Type: "custom",
+				Function: codex.ToolCallFunctionDelta{Name: "apply_patch"},
+			}}
+			events <- codex.StreamEvent{ToolCallDelta: &codex.ToolCallDelta{
+				Index: 0, Type: "custom",
+				Function: codex.ToolCallFunctionDelta{Arguments: "*** Begin Patch\n"},
+			}}
+			events <- codex.StreamEvent{ToolCallDelta: &codex.ToolCallDelta{
+				Index: 0, Type: "custom", Final: true,
+				Function: codex.ToolCallFunctionDelta{Arguments: patch},
+			}}
+			events <- codex.StreamEvent{Done: true}
+			close(events)
+			return events, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"custom","custom":{"name":"apply_patch"}}]}`)
+	defer resp.Body.Close()
+
+	body := readString(t, resp.Body)
+	chunks, done := parseSSEChunks(t, body)
+	if !done {
+		t.Fatalf("stream missing DONE: %q", body)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("chunk count = %d, want 3; body=%q", len(chunks), body)
+	}
+	toolChunk := chunks[1].Choices[0].Delta.ToolCalls
+	if len(toolChunk) != 1 {
+		t.Fatalf("tool chunk = %#v", chunks[1])
+	}
+	got := toolChunk[0]
+	if got.Type != "custom" || got.ID != "call_custom" || got.Function != nil || got.Custom == nil ||
+		got.Custom.Name != "apply_patch" || got.Custom.Input != patch {
+		t.Fatalf("custom tool call = %#v custom=%#v", got, got.Custom)
+	}
+	finish := chunks[2].Choices[0].FinishReason
+	if finish == nil || *finish != "tool_calls" {
+		t.Fatalf("finish = %v, want tool_calls", finish)
+	}
+}
+
 func TestChatCompletionsStreamingPreservesParallelToolOrder(t *testing.T) {
 	service := fakeCodexService{
 		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
