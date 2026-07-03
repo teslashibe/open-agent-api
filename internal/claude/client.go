@@ -47,7 +47,8 @@ func NewClient(cfg Config) (*Client, error) {
 
 func (c *Client) Stream(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	cmd := c.command(ctx, req)
+	tools := parseToolSpecs(req.Tools)
+	cmd := c.command(ctx, req, tools)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -61,7 +62,7 @@ func (c *Client) Stream(ctx context.Context, req codex.Request) (<-chan codex.St
 	}
 
 	events := make(chan codex.StreamEvent)
-	go c.readJSONL(ctx, cancel, cmd, stdout, stderr, events)
+	go c.readJSONL(ctx, cancel, cmd, stdout, stderr, events, tools)
 	return events, nil
 }
 
@@ -89,7 +90,7 @@ func (c *Client) Complete(ctx context.Context, req codex.Request) (codex.Complet
 	return completion, nil
 }
 
-func (c *Client) command(ctx context.Context, req codex.Request) *exec.Cmd {
+func (c *Client) command(ctx context.Context, req codex.Request, tools []toolSpec) *exec.Cmd {
 	args := []string{
 		"-p",
 		"--verbose",
@@ -102,7 +103,7 @@ func (c *Client) command(ctx context.Context, req codex.Request) *exec.Cmd {
 	if effort := claudeEffort(req.ReasoningEffort); effort != "" {
 		args = append(args, "--effort", effort)
 	}
-	args = append(args, promptFromMessages(req.Messages))
+	args = append(args, promptFromMessages(req.Messages, tools))
 	cmd := exec.CommandContext(ctx, c.executable, args...)
 	cmd.Stdin = strings.NewReader("")
 	return cmd
@@ -124,10 +125,11 @@ func claudeEffort(effort string) string {
 	}
 }
 
-func (c *Client) readJSONL(ctx context.Context, cancel context.CancelFunc, cmd *exec.Cmd, stdout io.Reader, stderr *bytes.Buffer, out chan<- codex.StreamEvent) {
+func (c *Client) readJSONL(ctx context.Context, cancel context.CancelFunc, cmd *exec.Cmd, stdout io.Reader, stderr *bytes.Buffer, out chan<- codex.StreamEvent, tools []toolSpec) {
 	defer cancel()
 	defer close(out)
 
+	parser := newToolBridgeParser(tools)
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -139,10 +141,12 @@ func (c *Client) readJSONL(ctx context.Context, cancel context.CancelFunc, cmd *
 		if !ok {
 			continue
 		}
-		select {
-		case out <- event:
-		case <-ctx.Done():
-			return
+		for _, bridged := range parser.consume(event) {
+			select {
+			case out <- bridged:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
@@ -171,8 +175,12 @@ func claudeProcessError(err error, stderr string) error {
 	return codex.NewError(kind, status, "claude code failed", fmt.Errorf("%s", message))
 }
 
-func promptFromMessages(messages []openai.ChatMessage) string {
+func promptFromMessages(messages []openai.ChatMessage, tools []toolSpec) string {
 	var b strings.Builder
+	if instructions := toolInstructions(tools); instructions != "" {
+		b.WriteString(instructions)
+		b.WriteString("\n")
+	}
 	for _, msg := range messages {
 		text := openai.MessageText(msg.Content)
 		if text == "" && len(msg.ToolCalls) == 0 {
@@ -188,12 +196,29 @@ func promptFromMessages(messages []openai.ChatMessage) string {
 		}
 		b.WriteString(": ")
 		b.WriteString(text)
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			b.WriteString("\nTool result for ")
+			b.WriteString(msg.ToolCallID)
+			b.WriteString(": ")
+			b.WriteString(text)
+		}
 		for _, toolCall := range msg.ToolCalls {
-			if toolCall.Function.Name != "" {
-				b.WriteString("\nTool call ")
-				b.WriteString(toolCall.Function.Name)
+			name := toolCall.Function.Name
+			args := toolCall.Function.Arguments
+			if toolCall.Type == "custom" && toolCall.Custom != nil {
+				name = toolCall.Custom.Name
+				args = toolCall.Custom.Input
+			}
+			if name != "" {
+				b.WriteString("\nCursor tool call ")
+				b.WriteString(name)
+				if toolCall.ID != "" {
+					b.WriteString(" (")
+					b.WriteString(toolCall.ID)
+					b.WriteString(")")
+				}
 				b.WriteString(": ")
-				b.WriteString(toolCall.Function.Arguments)
+				b.WriteString(args)
 			}
 		}
 		b.WriteString("\n\n")
