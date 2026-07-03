@@ -86,6 +86,30 @@ var modelAliases = []ModelAlias{
 		Verbosity:       DefaultVerbosity,
 	},
 	{
+		ID:              "api/claude-opus-4-8",
+		UpstreamModel:   "claude-opus-4-8",
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "api/claude-sonnet-5",
+		UpstreamModel:   "claude-sonnet-5",
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "api/claude-haiku-4-5-20251001",
+		UpstreamModel:   "claude-haiku-4-5-20251001",
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       DefaultVerbosity,
+	},
+	{
+		ID:              "api/claude-fable-5",
+		UpstreamModel:   "claude-fable-5",
+		ReasoningEffort: DefaultReasoningEffort,
+		Verbosity:       DefaultVerbosity,
+	},
+	{
 		ID:              "gpt-5.5-low",
 		UpstreamModel:   DefaultModel,
 		ReasoningEffort: "low",
