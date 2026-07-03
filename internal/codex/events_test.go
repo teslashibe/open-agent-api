@@ -165,6 +165,71 @@ func TestCodexToolEventLoggingIsRedacted(t *testing.T) {
 	}
 }
 
+func TestParseStreamEventCustomToolCallLifecycle(t *testing.T) {
+	start, terminal, err := parseStreamEvent([]byte(`{
+		"type":"response.output_item.added",
+		"output_index":2,
+		"item":{"id":"ctc_123","type":"custom_tool_call","call_id":"call_123","name":"apply_patch","input":""}
+	}`))
+	if err != nil || terminal {
+		t.Fatalf("start parse err=%v terminal=%t", err, terminal)
+	}
+	if start.ToolCallDelta == nil {
+		t.Fatal("start ToolCallDelta = nil")
+	}
+	if got := *start.ToolCallDelta; got.Index != 2 || got.ID != "call_123" || got.Type != "custom" || got.Function.Name != "apply_patch" {
+		t.Fatalf("start delta = %#v", got)
+	}
+
+	fragment, terminal, err := parseStreamEvent([]byte(`{
+		"type":"response.custom_tool_call_input.delta",
+		"output_index":2,
+		"item_id":"ctc_123",
+		"delta":"*** Begin Patch\n"
+	}`))
+	if err != nil || terminal {
+		t.Fatalf("fragment parse err=%v terminal=%t", err, terminal)
+	}
+	if fragment.ToolCallDelta == nil {
+		t.Fatal("fragment ToolCallDelta = nil")
+	}
+	if got := *fragment.ToolCallDelta; got.Index != 2 || got.Type != "custom" || got.Function.Arguments != "*** Begin Patch\n" || got.Final {
+		t.Fatalf("fragment delta = %#v", got)
+	}
+
+	done, terminal, err := parseStreamEvent([]byte(`{
+		"type":"response.custom_tool_call_input.done",
+		"output_index":2,
+		"item_id":"ctc_123",
+		"input":"*** Begin Patch\n*** End Patch\n"
+	}`))
+	if err != nil || terminal {
+		t.Fatalf("done parse err=%v terminal=%t", err, terminal)
+	}
+	if done.ToolCallDelta == nil {
+		t.Fatal("done ToolCallDelta = nil")
+	}
+	if got := *done.ToolCallDelta; got.Index != 2 || got.Type != "custom" || got.Function.Arguments != "*** Begin Patch\n*** End Patch\n" || !got.Final {
+		t.Fatalf("done delta = %#v", got)
+	}
+
+	full, terminal, err := parseStreamEvent([]byte(`{
+		"type":"response.output_item.done",
+		"output_index":2,
+		"item":{"id":"ctc_123","type":"custom_tool_call","call_id":"call_123","name":"apply_patch","input":"*** Begin Patch\n*** End Patch\n"}
+	}`))
+	if err != nil || terminal {
+		t.Fatalf("full parse err=%v terminal=%t", err, terminal)
+	}
+	if len(full.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(full.ToolCalls))
+	}
+	toolCall := full.ToolCalls[0]
+	if toolCall.ID != "call_123" || toolCall.Type != "custom" || toolCall.Function.Name != "apply_patch" || toolCall.Function.Arguments != "*** Begin Patch\n*** End Patch\n" {
+		t.Fatalf("tool call = %#v", toolCall)
+	}
+}
+
 func TestParseStreamEventPlainTextStillWorks(t *testing.T) {
 	event, terminal, err := parseStreamEvent([]byte(`{"type":"response.output_text.delta","delta":"hello"}`))
 	if err != nil || terminal {
