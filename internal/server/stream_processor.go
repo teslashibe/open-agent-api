@@ -267,6 +267,10 @@ func (p *streamProcessor) validateToolCall(toolCall *streamedToolCall) error {
 	if toolCall.name == "" {
 		return fmt.Errorf("missing function name")
 	}
+	// Custom (freeform) tool calls carry raw text input, not JSON arguments.
+	if toolCall.typ == "custom" {
+		return nil
+	}
 	if strings.TrimSpace(toolCall.arguments) == "" {
 		toolCall.arguments = "{}"
 	}
@@ -327,10 +331,17 @@ func (p *streamProcessor) writeToolCalls() bool {
 			Index: i,
 			ID:    toolCall.id,
 			Type:  toolCall.typ,
-			Function: &openai.ToolCallFunctionDelta{
+		}
+		if toolCall.typ == "custom" {
+			delta.Custom = &openai.ToolCallCustom{
+				Name:  toolCall.name,
+				Input: toolCall.arguments,
+			}
+		} else {
+			delta.Function = &openai.ToolCallFunctionDelta{
 				Name:      toolCall.name,
 				Arguments: toolCall.arguments,
-			},
+			}
 		}
 		p.markFirstDelta()
 		if !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
