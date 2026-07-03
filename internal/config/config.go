@@ -20,6 +20,8 @@ const (
 	DefaultPort                               = 8088
 	DefaultCodexWebsocketURL                  = "wss://chatgpt.com/backend-api/codex/responses"
 	DefaultCodexTimeout                       = 120 * time.Second
+	DefaultGeminiEndpoint                     = "https://daily-cloudcode-pa.googleapis.com/v1internal"
+	DefaultGeminiTimeout                      = 120 * time.Second
 	DefaultAgentQueueEnabled                  = true
 	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
@@ -46,6 +48,10 @@ type Config struct {
 	CodexScaffoldPath                  string
 	CodexWebsocketURL                  string
 	CodexTimeout                       time.Duration
+	GeminiAuthPath                     string
+	GeminiEndpoint                     string
+	GeminiProject                      string
+	GeminiTimeout                      time.Duration
 	LogBodyShape                       bool
 	LogRequestIdentity                 bool
 	LogCodexToolEvents                 bool
@@ -126,6 +132,22 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CODEX_TIMEOUT: %w", err)
 		}
 		cfg.CodexTimeout = timeout
+	}
+	if value := os.Getenv("GEMINI_AUTH_PATH"); value != "" {
+		cfg.GeminiAuthPath = value
+	}
+	if value := os.Getenv("GEMINI_ENDPOINT"); value != "" {
+		cfg.GeminiEndpoint = value
+	}
+	if value := os.Getenv("GEMINI_PROJECT"); value != "" {
+		cfg.GeminiProject = value
+	}
+	if value := os.Getenv("GEMINI_TIMEOUT"); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("GEMINI_TIMEOUT: %w", err)
+		}
+		cfg.GeminiTimeout = timeout
 	}
 	if value := os.Getenv("CODEX_LOG_BODY_SHAPE"); value != "" {
 		logBodyShape, err := strconv.ParseBool(value)
@@ -261,6 +283,10 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.CodexScaffoldPath, "codex-scaffold", cfg.CodexScaffoldPath, "Codex scaffold JSON path")
 	fs.StringVar(&cfg.CodexWebsocketURL, "codex-websocket-url", cfg.CodexWebsocketURL, "Codex websocket URL")
 	fs.DurationVar(&cfg.CodexTimeout, "codex-timeout", cfg.CodexTimeout, "Codex websocket request timeout")
+	fs.StringVar(&cfg.GeminiAuthPath, "gemini-auth-path", cfg.GeminiAuthPath, "Gemini/Antigravity oauth_creds.json path")
+	fs.StringVar(&cfg.GeminiEndpoint, "gemini-endpoint", cfg.GeminiEndpoint, "Gemini Code Assist v1internal endpoint")
+	fs.StringVar(&cfg.GeminiProject, "gemini-project", cfg.GeminiProject, "Gemini Code Assist project override")
+	fs.DurationVar(&cfg.GeminiTimeout, "gemini-timeout", cfg.GeminiTimeout, "Gemini Code Assist request timeout")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
 	fs.BoolVar(&cfg.LogCodexToolEvents, "log-codex-tool-events", cfg.LogCodexToolEvents, "log redacted upstream Codex tool-event diagnostics")
@@ -321,6 +347,9 @@ func Defaults() Config {
 		CodexScaffoldPath:                  "codex_scaffold.json",
 		CodexWebsocketURL:                  DefaultCodexWebsocketURL,
 		CodexTimeout:                       DefaultCodexTimeout,
+		GeminiAuthPath:                     filepath.Join(defaultGeminiHome(), "oauth_creds.json"),
+		GeminiEndpoint:                     DefaultGeminiEndpoint,
+		GeminiTimeout:                      DefaultGeminiTimeout,
 		AgentQueueEnabled:                  DefaultAgentQueueEnabled,
 		AgentMaxActive:                     DefaultAgentMaxActive,
 		AgentMaxActivePerKey:               DefaultAgentMaxActivePerKey,
@@ -370,6 +399,15 @@ func (c Config) Validate() error {
 	}
 	if c.CodexTimeout <= 0 {
 		return errors.New("codex timeout must be positive")
+	}
+	if c.GeminiAuthPath == "" {
+		return errors.New("gemini auth path is required")
+	}
+	if c.GeminiEndpoint == "" {
+		return errors.New("gemini endpoint is required")
+	}
+	if c.GeminiTimeout <= 0 {
+		return errors.New("gemini timeout must be positive")
 	}
 	if c.AgentMaxActive < 1 {
 		return errors.New("agent max active must be at least 1")
@@ -522,6 +560,16 @@ func loadDotEnv(path string) error {
 		return fmt.Errorf("load %s: %w", path, err)
 	}
 	return nil
+}
+
+func defaultGeminiHome() string {
+	if home := os.Getenv("GEMINI_HOME"); home != "" {
+		return home
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".gemini")
+	}
+	return ".gemini"
 }
 
 func defaultCodexHome() string {
