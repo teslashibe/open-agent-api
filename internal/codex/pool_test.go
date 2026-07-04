@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,75 @@ func TestPooledServiceDifferentQueueKeysCanMapToDifferentClients(t *testing.T) {
 	called := calledLabels(calls)
 	if len(called) != 2 {
 		t.Fatalf("called labels = %v, want different clients", called)
+	}
+}
+
+func TestPooledServiceCursorShardSelectionLogFormat(t *testing.T) {
+	var logs bytes.Buffer
+	labels := []string{"codex-1", "codex-2", "codex-3", "codex-4"}
+	clients := make([]PooledClientConfig, 0, len(labels))
+	for _, label := range labels {
+		label := label
+		clients = append(clients, PooledClientConfig{
+			Label: label,
+			Service: poolFakeService{
+				stream: func(ctx context.Context, req Request) (<-chan StreamEvent, error) {
+					events := make(chan StreamEvent, 2)
+					events <- StreamEvent{Delta: label}
+					events <- StreamEvent{Done: true}
+					close(events)
+					return events, nil
+				},
+			},
+		})
+	}
+	pool, err := NewPooledService(PooledServiceConfig{
+		Clients:           clients,
+		UnavailablePolicy: ClientPoolUnavailableFail,
+		LogOutput:         &logs,
+	})
+	if err != nil {
+		t.Fatalf("NewPooledService() error = %v", err)
+	}
+
+	// AC 14: startup line reports client count and labels, no auth paths.
+	startup := logs.String()
+	for _, want := range []string{"codex_client_pool", "clients=4", "policy=fail", "labels=codex-1,codex-2,codex-3,codex-4"} {
+		if !strings.Contains(startup, want) {
+			t.Fatalf("startup logs = %q, want %q", startup, want)
+		}
+	}
+
+	req := Request{RequestID: "req-cursor", AffinityKey: "cursor:chat-a", AffinityKeyHash: "hash-a", AffinityKeyMode: "cursor:metadata"}
+	shard := pool.selectIndex(req)
+
+	// AC 3: the same cursor conversation is sticky across repeated requests.
+	for range 5 {
+		if got := pool.selectIndex(req); got != shard {
+			t.Fatalf("selectIndex() = %d, want stable shard %d", got, shard)
+		}
+	}
+
+	logs.Reset()
+	if _, err := pool.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+
+	// AC 5: selection log carries shard, client_label, and cursor key mode/hash.
+	selection := logs.String()
+	for _, want := range []string{
+		"codex_client_select",
+		"key_mode=cursor:metadata",
+		"key_hash=hash-a",
+		fmt.Sprintf("shard=%d", shard),
+		fmt.Sprintf("client_label=%s", labels[shard]),
+	} {
+		if !strings.Contains(selection, want) {
+			t.Fatalf("selection logs = %q, want %q", selection, want)
+		}
+	}
+	if strings.Contains(selection, req.AffinityKey) {
+		t.Fatalf("selection logs leaked raw affinity key: %q", selection)
 	}
 }
 

@@ -1,0 +1,39 @@
+# Scale Codex throughput across multiple Cursor chats by sharding chats over
+# several logical Codex clients.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d
+#
+# Each Cursor chat sticks to one Codex client shard (deterministic affinity on
+# the Cursor queue key), while different chats spread across the four shards so
+# one hot chat does not bottleneck the others. This is per-chat sticky routing,
+# NOT request-level round-robin: a single chat never spreads across shards.
+#
+# All four logical clients below point at the SAME mounted /home/codex/.codex
+# auth directory (docker-compose.yml mounts ${HOME}/.codex there read-only), so
+# you can test parallelism without provisioning extra accounts. To move to true
+# isolation later, give each client a distinct "codex_home" that maps to its own
+# mounted, authenticated Codex home, e.g.:
+#
+#   {"label":"codex-1","codex_home":"/home/codex/.codex-1"}
+#
+# and mount each home in the volumes section.
+services:
+  api:
+    environment:
+      # Four logical Codex client shards sharing one mounted .codex auth home.
+      CODEX_CLIENTS: >-
+        [
+          {"label":"codex-1","codex_home":"/home/codex/.codex"},
+          {"label":"codex-2","codex_home":"/home/codex/.codex"},
+          {"label":"codex-3","codex_home":"/home/codex/.codex"},
+          {"label":"codex-4","codex_home":"/home/codex/.codex"}
+        ]
+      # Keep Cursor affinity so each chat stays sticky to one shard.
+      CODEX_AGENT_QUEUE_KEY_MODE: cursor
+      CODEX_AGENT_MAX_ACTIVE: "16"
+      CODEX_AGENT_MAX_ACTIVE_PER_KEY: "8"
+      # Empty lock dir disables the cross-process per-key lock. Fine for a single
+      # local API process. If you run multiple API replicas, point this at a
+      # shared writable volume instead so one chat cannot stream concurrently in
+      # two processes.
+      CODEX_AGENT_QUEUE_LOCK_DIR: ""

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 const (
@@ -66,11 +67,33 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 	if cfg.LogOutput == nil {
 		cfg.LogOutput = os.Stdout
 	}
+	logPoolComposition(cfg.LogOutput, clients, cfg.UnavailablePolicy)
 	return &PooledService{
 		clients:           clients,
 		unavailablePolicy: cfg.UnavailablePolicy,
 		logOutput:         cfg.LogOutput,
 	}, nil
+}
+
+// logPoolComposition emits one redacted startup line describing the pool so
+// operators can confirm how many Codex client shards are configured and their
+// labels. Only the validated non-sensitive labels, count, and policy are
+// logged; no auth paths or codex homes are ever printed.
+func logPoolComposition(out io.Writer, clients []pooledClient, policy string) {
+	if out == nil {
+		return
+	}
+	labels := make([]string, len(clients))
+	for i, client := range clients {
+		labels[i] = client.label
+	}
+	fmt.Fprintf(
+		out,
+		"codex_client_pool clients=%d policy=%s labels=%s\n",
+		len(clients),
+		policy,
+		strings.Join(labels, ","),
+	)
 }
 
 func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, error) {

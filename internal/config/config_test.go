@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -519,6 +520,74 @@ func TestLoadInvalidCodexClientPoolUnavailable(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid codex client pool unavailable error")
+	}
+}
+
+// TestLoadScaleExampleSharedHome validates the documented four-logical-client
+// scale example (all clients sharing the mounted /home/codex/.codex home).
+func TestLoadScaleExampleSharedHome(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/home/codex/.codex")
+	unsetenv(t, "CODEX_AUTH_PATH")
+	t.Setenv("CODEX_AGENT_QUEUE_KEY_MODE", "cursor")
+	t.Setenv("CODEX_CLIENTS", `[
+		{"label":"codex-1","codex_home":"/home/codex/.codex"},
+		{"label":"codex-2","codex_home":"/home/codex/.codex"},
+		{"label":"codex-3","codex_home":"/home/codex/.codex"},
+		{"label":"codex-4","codex_home":"/home/codex/.codex"}
+	]`)
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentQueueKeyMode != "cursor" {
+		t.Fatalf("AgentQueueKeyMode = %q, want cursor", cfg.AgentQueueKeyMode)
+	}
+	if len(cfg.CodexClients) != 4 {
+		t.Fatalf("CodexClients length = %d, want 4", len(cfg.CodexClients))
+	}
+	for i, client := range cfg.CodexClients {
+		wantLabel := fmt.Sprintf("codex-%d", i+1)
+		if client.Label != wantLabel {
+			t.Fatalf("client %d label = %q, want %q", i, client.Label, wantLabel)
+		}
+		if client.CodexHome != "/home/codex/.codex" {
+			t.Fatalf("client %q codex home = %q, want shared /home/codex/.codex", client.Label, client.CodexHome)
+		}
+		if client.AuthPath != "/home/codex/.codex/auth.json" {
+			t.Fatalf("client %q auth path = %q, want derived auth.json", client.Label, client.AuthPath)
+		}
+	}
+}
+
+// TestLoadScaleExampleDistinctHomes validates the isolated-home upgrade path,
+// where each client points at its own codex_home for separate auth/sessions.
+func TestLoadScaleExampleDistinctHomes(t *testing.T) {
+	unsetenv(t, "CODEX_AUTH_PATH")
+	t.Setenv("CODEX_CLIENTS", `[
+		{"label":"codex-1","codex_home":"/home/codex/.codex-1"},
+		{"label":"codex-2","codex_home":"/home/codex/.codex-2"},
+		{"label":"codex-3","codex_home":"/home/codex/.codex-3"},
+		{"label":"codex-4","codex_home":"/home/codex/.codex-4"}
+	]`)
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.CodexClients) != 4 {
+		t.Fatalf("CodexClients length = %d, want 4", len(cfg.CodexClients))
+	}
+	for i, client := range cfg.CodexClients {
+		wantHome := fmt.Sprintf("/home/codex/.codex-%d", i+1)
+		if client.CodexHome != wantHome {
+			t.Fatalf("client %q codex home = %q, want %q", client.Label, client.CodexHome, wantHome)
+		}
+		if client.AuthPath != filepath.Join(wantHome, "auth.json") {
+			t.Fatalf("client %q auth path = %q, want auth.json under %q", client.Label, client.AuthPath, wantHome)
+		}
 	}
 }
 

@@ -99,6 +99,28 @@ Cursor Agent requests use `CODEX_AGENT_QUEUE_KEY_MODE=cursor`
 with `CODEX_AGENT_MAX_ACTIVE=2` and `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, while
 Ask/text-only requests bypass the queue.
 
+### Scale multiple Cursor chats
+
+To spread several Cursor chats across multiple Codex client shards on one local
+API, use the `docker-compose.scale.yml` overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d
+```
+
+The overlay configures four logical Codex clients (`codex-1`..`codex-4`) that
+all point at the same mounted `/home/codex/.codex` auth directory, keeps
+`CODEX_AGENT_QUEUE_KEY_MODE=cursor`, and raises `CODEX_AGENT_MAX_ACTIVE=16` /
+`CODEX_AGENT_MAX_ACTIVE_PER_KEY=8`. Each Cursor chat sticks to one shard by
+deterministic affinity, while different chats distribute across the four shards
+so one hot chat cannot bottleneck the others. See
+[Codex client pool](#codex-client-pool) for details and the expected log lines.
+
+This is per-chat sticky routing, **not** request-level round-robin: a single
+chat never spreads across shards. With only a few active chats, hash
+distribution may temporarily place two chats on the same shard — that is
+expected, not a bug.
+
 ## Validate
 
 Run the full local validation suite before release:
@@ -459,6 +481,56 @@ For each request, the server resolves the same key used by the Agent queue and
 selects a client with deterministic affinity. Repeated turns with the same
 queue key map to the same shard; different queue keys can use different shards.
 Random per-request load balancing is unsafe and is not used.
+
+#### Scaling multiple Cursor chats
+
+To scale throughput across several Cursor chats without provisioning extra
+accounts, run several logical clients that share one mounted `.codex` auth home.
+The `docker-compose.scale.yml` overlay ships a ready-to-use four-shard example:
+
+```bash
+CODEX_CLIENTS='[
+  {"label":"codex-1","codex_home":"/home/codex/.codex"},
+  {"label":"codex-2","codex_home":"/home/codex/.codex"},
+  {"label":"codex-3","codex_home":"/home/codex/.codex"},
+  {"label":"codex-4","codex_home":"/home/codex/.codex"}
+]'
+CODEX_AGENT_QUEUE_KEY_MODE=cursor
+```
+
+Keep `CODEX_AGENT_QUEUE_KEY_MODE=cursor` so each Cursor chat stays sticky to one
+shard while different chats distribute across the pool. This is per-chat sticky
+routing for scaling *multiple* chats, **not** single-chat round-robin: a single
+chat never spreads across shards, so tool turns and upstream session behavior
+stay stable. Because shard assignment is a SHA-256 hash of the queue key, a small
+number of chats can land two chats on the same shard by chance — this is
+expected and not a bug.
+
+On startup the pool logs its composition (labels and count only, never auth
+paths), and each request logs its selected shard:
+
+```text
+codex_client_pool clients=4 policy=fail labels=codex-1,codex-2,codex-3,codex-4
+codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=2 client_label=codex-3 fallback=false
+```
+
+Confirm distribution by watching `codex_client_select`: different chats show
+different `key_hash` and `client_label` values, while repeated requests from the
+same chat keep the same `key_hash` and `client_label`.
+
+Multiple logical clients share one authenticated Codex home, so upstream
+ChatGPT/Codex account or session concurrency limits can still throttle
+parallelism; local sharding only guarantees local distribution. When upstream
+limits become the bottleneck, move to true isolation by giving each client a
+distinct `codex_home` (and mounting each authenticated home), keeping the same
+config shape:
+
+```bash
+CODEX_CLIENTS='[
+  {"label":"codex-1","codex_home":"/home/codex/.codex-1"},
+  {"label":"codex-2","codex_home":"/home/codex/.codex-2"}
+]'
+```
 
 When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, an unavailable selected client returns
 the upstream/auth error. `fallback_first` retries the first configured client
