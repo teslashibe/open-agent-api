@@ -1,0 +1,42 @@
+services:
+  api:
+    build:
+      context: .
+    image: teslashibe/codex-chat-api:local
+    command: ["--host", "0.0.0.0", "--port", "8088"]
+    environment:
+      CODEX_HOME: /home/codex/.codex
+      CODEX_LOG_BODY_SHAPE: "${CODEX_LOG_BODY_SHAPE:-true}"
+      CODEX_LOG_REQUEST_IDENTITY: "${CODEX_LOG_REQUEST_IDENTITY:-false}"
+      CODEX_LOG_CODEX_TOOL_EVENTS: "${CODEX_LOG_CODEX_TOOL_EVENTS:-false}"
+      CODEX_CLIENTS: "${CODEX_CLIENTS:-}"
+      CODEX_CLIENT_POOL_UNAVAILABLE: "${CODEX_CLIENT_POOL_UNAVAILABLE:-fail}"
+      CODEX_AGENT_QUEUE_ENABLED: "${CODEX_AGENT_QUEUE_ENABLED:-true}"
+      CODEX_AGENT_MAX_ACTIVE: "${CODEX_AGENT_MAX_ACTIVE:-4}"
+      CODEX_AGENT_MAX_ACTIVE_PER_KEY: "${CODEX_AGENT_MAX_ACTIVE_PER_KEY:-1}"
+      CODEX_AGENT_QUEUE_KEY_MODE: "${CODEX_AGENT_QUEUE_KEY_MODE:-cursor}"
+      CODEX_AGENT_QUEUE_LIMIT: "${CODEX_AGENT_QUEUE_LIMIT:-20}"
+      CODEX_AGENT_QUEUE_TIMEOUT: "${CODEX_AGENT_QUEUE_TIMEOUT:-5m}"
+      CODEX_AGENT_QUEUE_LOCK_DIR: "${CODEX_AGENT_QUEUE_LOCK_DIR:-/var/lib/codex-chat-api/agent-locks}"
+      CODEX_CONTEXT_MANAGEMENT_ENABLED: "${CODEX_CONTEXT_MANAGEMENT_ENABLED:-true}"
+      CODEX_CONTEXT_MAX_BYTES: "${CODEX_CONTEXT_MAX_BYTES:-196608}"
+      CODEX_CONTEXT_MAX_MESSAGES: "${CODEX_CONTEXT_MAX_MESSAGES:-120}"
+      CODEX_CONTEXT_RECENT_MESSAGES: "${CODEX_CONTEXT_RECENT_MESSAGES:-24}"
+      CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES: "${CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES:-32768}"
+      CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES: "${CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES:-512}"
+      CODEX_DEGENERATE_TURN_RETRY: "${CODEX_DEGENERATE_TURN_RETRY:-true}"
+    volumes:
+      - "${HOME}/.codex:/home/codex/.codex:ro"
+      - "agent-queue-locks:/var/lib/codex-chat-api/agent-locks"
+    ports:
+      - "127.0.0.1:${CODEX_CHAT_API_PORT:-8088}:8088"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  agent-queue-locks:

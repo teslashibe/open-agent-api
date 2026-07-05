@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -34,17 +33,8 @@ type options struct {
 	logBodyShape       bool
 	logRequestIdentity bool
 	agentQueueKeyMode  string
-	agentQueues        map[string]*agentQueue
+	agentQueue         *agentQueue
 	contextConfig      config.Config
-}
-
-// agentQueueFor returns the provider's queue. Each provider gets its own queue
-// so heavy traffic to one upstream never starves the others.
-func (o options) agentQueueFor(provider string) *agentQueue {
-	if queue, ok := o.agentQueues[provider]; ok {
-		return queue
-	}
-	return o.agentQueues[codex.ProviderCodex]
 }
 
 func WithCodexService(service codex.Service) Option {
@@ -78,24 +68,20 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	for _, setter := range setters {
 		setter(&opts)
 	}
-	if opts.agentQueues == nil {
-		opts.agentQueues = map[string]*agentQueue{}
-		for _, provider := range []string{codex.ProviderCodex, codex.ProviderGemini, codex.ProviderClaude} {
-			limits := cfg.AgentQueueLimitsFor(provider)
-			opts.agentQueues[provider] = newAgentQueue(
-				cfg.AgentQueueEnabled,
-				limits.MaxActive,
-				limits.MaxActivePerKey,
-				limits.QueueLimit,
-				cfg.AgentQueueTimeout,
-				agentQueueLockDirFor(cfg.AgentQueueLockDir, provider),
-				cfg.AgentQueuePriorityEnabled,
-				opts.now,
-				func(format string, args ...any) {
-					logLine(opts, "provider="+provider+" "+format, args...)
-				},
-			)
-		}
+	if opts.agentQueue == nil {
+		opts.agentQueue = newAgentQueue(
+			cfg.AgentQueueEnabled,
+			cfg.AgentMaxActive,
+			cfg.AgentMaxActivePerKey,
+			cfg.AgentQueueLimit,
+			cfg.AgentQueueTimeout,
+			cfg.AgentQueueLockDir,
+			cfg.AgentQueuePriorityEnabled,
+			opts.now,
+			func(format string, args ...any) {
+				logLine(opts, format, args...)
+			},
+		)
 	}
 
 	app := fiber.New(fiber.Config{
@@ -161,10 +147,9 @@ func chatCompletions(opts options) fiber.Handler {
 			model = openai.DefaultModel
 		}
 		modelAlias := openai.ResolveModelAlias(model)
-		provider := codex.ProviderForModel(modelAlias.UpstreamModel)
 		toolsPresent := rawJSONPresent(req.Tools)
 		turnClass := classifyTurn(req, toolsPresent)
-		logLine(opts, "chat_completion model=%s provider=%s stream=%t tools_present=%t turn_class=%s\n", model, provider, req.Stream, toolsPresent, turnClass)
+		logLine(opts, "chat_completion model=%s stream=%t tools_present=%t turn_class=%s\n", model, req.Stream, toolsPresent, turnClass)
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
 		queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, c, c.Body())
@@ -217,7 +202,7 @@ func chatCompletions(opts options) fiber.Handler {
 		releaseQueue := func() {}
 		queueWait := time.Duration(0)
 		if toolsPresent {
-			release, wait, err := opts.agentQueueFor(provider).acquire(ctx, requestID, queueKey, turnClass)
+			release, wait, err := opts.agentQueue.acquire(ctx, requestID, queueKey, turnClass)
 			queueWait = wait
 			if err != nil {
 				cancel()
@@ -249,7 +234,7 @@ func chatCompletions(opts options) fiber.Handler {
 		finishReason := "stop"
 		if len(completion.ToolCalls) > 0 {
 			message.Content = json.RawMessage("null")
-			message.ToolCalls = openAIToolCalls(completion.ToolCalls, opts.contextConfig.CustomToolWire)
+			message.ToolCalls = openAIToolCalls(completion.ToolCalls)
 			finishReason = "tool_calls"
 		}
 
@@ -280,7 +265,6 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
 		return mapServiceError(c, err)
 	}
-	events = withStreamIdleTimeout(ctx, events, opts.contextConfig.StreamIdleTimeout)
 
 	id := requestID
 	created := opts.now().Unix()
@@ -368,20 +352,14 @@ func ctxErrString(ctx context.Context) string {
 	return "none"
 }
 
-func openAIToolCalls(toolCalls []codex.ToolCall, customWire string) []openai.ToolCall {
+func openAIToolCalls(toolCalls []codex.ToolCall) []openai.ToolCall {
 	out := make([]openai.ToolCall, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
 		mapped := openai.ToolCall{
 			ID:   toolCall.ID,
 			Type: defaultString(toolCall.Type, "function"),
 		}
-		if mapped.Type == "custom" && customWire == "function" {
-			mapped.Type = "function"
-			mapped.Function = openai.ToolCallFunction{
-				Name:      toolCall.Function.Name,
-				Arguments: toolCall.Function.Arguments,
-			}
-		} else if mapped.Type == "custom" {
+		if mapped.Type == "custom" {
 			mapped.Custom = &openai.ToolCallCustom{
 				Name:  toolCall.Function.Name,
 				Input: toolCall.Function.Arguments,
@@ -622,20 +600,6 @@ func publicServiceMessage(kind codex.ErrorKind) string {
 	default:
 		return "upstream error"
 	}
-}
-
-// agentQueueLockDirFor scopes the distributed lock directory per provider so
-// separate queues never contend on the same lock files. Codex keeps the
-// legacy unscoped path: binaries from before the per-provider split lock
-// there, and mixed-version processes must contend on the same files.
-func agentQueueLockDirFor(base string, provider string) string {
-	if base == "" {
-		return ""
-	}
-	if provider == codex.ProviderCodex {
-		return base
-	}
-	return filepath.Join(base, provider)
 }
 
 func completionID(id string, newID func() string) string {

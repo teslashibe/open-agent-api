@@ -1,0 +1,14 @@
+.git
+.github
+.DS_Store
+.env
+.env.*
+.cache
+.gocache
+.venv
+__pycache__
+bin
+dist
+coverage.out
+*.test
+codex-chat-api
