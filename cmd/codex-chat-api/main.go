@@ -96,10 +96,11 @@ func buildCodexService(cfg config.Config) (codex.Service, error) {
 
 func buildGeminiService(cfg config.Config) (codex.Service, error) {
 	client, err := gemini.NewClient(gemini.Config{
-		AuthPath: cfg.GeminiAuthPath,
-		Endpoint: cfg.GeminiEndpoint,
-		Project:  cfg.GeminiProject,
-		Timeout:  cfg.GeminiTimeout,
+		AuthPath:      cfg.GeminiAuthPath,
+		Endpoint:      cfg.GeminiEndpoint,
+		Project:       cfg.GeminiProject,
+		Timeout:       cfg.GeminiTimeout,
+		HeaderTimeout: cfg.StreamIdleTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create gemini client: %w", err)

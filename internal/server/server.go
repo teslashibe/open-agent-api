@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -80,12 +81,12 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	if opts.agentQueues == nil {
 		opts.agentQueues = map[string]*agentQueue{}
 		for _, provider := range []string{codex.ProviderCodex, codex.ProviderGemini, codex.ProviderClaude} {
-			provider := provider
+			limits := cfg.AgentQueueLimitsFor(provider)
 			opts.agentQueues[provider] = newAgentQueue(
 				cfg.AgentQueueEnabled,
-				cfg.AgentMaxActive,
-				cfg.AgentMaxActivePerKey,
-				cfg.AgentQueueLimit,
+				limits.MaxActive,
+				limits.MaxActivePerKey,
+				limits.QueueLimit,
 				cfg.AgentQueueTimeout,
 				agentQueueLockDirFor(cfg.AgentQueueLockDir, provider),
 				cfg.AgentQueuePriorityEnabled,
@@ -279,7 +280,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
 		return mapServiceError(c, err)
 	}
-	events = withStreamIdleTimeout(ctx, cancel, events, opts.contextConfig.StreamIdleTimeout)
+	events = withStreamIdleTimeout(ctx, events, opts.contextConfig.StreamIdleTimeout)
 
 	id := requestID
 	created := opts.now().Unix()
@@ -618,12 +619,17 @@ func publicServiceMessage(kind codex.ErrorKind) string {
 }
 
 // agentQueueLockDirFor scopes the distributed lock directory per provider so
-// separate queues never contend on the same lock files.
+// separate queues never contend on the same lock files. Codex keeps the
+// legacy unscoped path: binaries from before the per-provider split lock
+// there, and mixed-version processes must contend on the same files.
 func agentQueueLockDirFor(base string, provider string) string {
 	if base == "" {
 		return ""
 	}
-	return base + string(os.PathSeparator) + provider
+	if provider == codex.ProviderCodex {
+		return base
+	}
+	return filepath.Join(base, provider)
 }
 
 func completionID(id string, newID func() string) string {
