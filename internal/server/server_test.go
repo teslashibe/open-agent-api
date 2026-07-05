@@ -1776,7 +1776,7 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 		"tools_count=1",
 		"tool_wire=flat",
 		"tool_choice=absent",
-		"chat_completion model=gpt-test stream=true tools_present=true turn_class=tool_generating",
+		"chat_completion model=gpt-test provider=codex stream=true tools_present=true turn_class=tool_generating",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("logs = %q, want %q", body, want)

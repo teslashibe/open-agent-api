@@ -22,12 +22,37 @@ func (r Router) Stream(ctx context.Context, req Request) (<-chan StreamEvent, er
 	return r.route(req).Stream(ctx, req)
 }
 
-func (r Router) route(req Request) Service {
-	if strings.HasPrefix(req.Model, "gemini-") && r.Gemini != nil {
-		return r.Gemini
+// Provider names shared by routing and per-provider concerns such as the
+// server's agent queues.
+const (
+	ProviderCodex  = "codex"
+	ProviderGemini = "gemini"
+	ProviderClaude = "claude"
+)
+
+// ProviderForModel is the single source of truth for routing decisions so
+// layers above the Router (queueing, logging) agree with where the request
+// actually goes.
+func ProviderForModel(model string) string {
+	if strings.HasPrefix(model, "gemini-") {
+		return ProviderGemini
 	}
-	if isClaudeModel(req.Model) && r.Claude != nil {
-		return r.Claude
+	if isClaudeModel(model) {
+		return ProviderClaude
+	}
+	return ProviderCodex
+}
+
+func (r Router) route(req Request) Service {
+	switch ProviderForModel(req.Model) {
+	case ProviderGemini:
+		if r.Gemini != nil {
+			return r.Gemini
+		}
+	case ProviderClaude:
+		if r.Claude != nil {
+			return r.Claude
+		}
 	}
 	if r.Codex != nil {
 		return r.Codex

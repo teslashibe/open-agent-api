@@ -19,12 +19,13 @@ const (
 	DefaultHost                               = "127.0.0.1"
 	DefaultPort                               = 8088
 	DefaultCodexWebsocketURL                  = "wss://chatgpt.com/backend-api/codex/responses"
-	DefaultCodexTimeout                       = 120 * time.Second
+	DefaultCodexTimeout                       = 10 * time.Minute
 	DefaultGeminiEndpoint                     = "https://daily-cloudcode-pa.googleapis.com/v1internal"
-	DefaultGeminiTimeout                      = 120 * time.Second
+	DefaultGeminiTimeout                      = 10 * time.Minute
 	DefaultClaudeExecutable                   = "claude"
 	DefaultClaudeModel                        = "sonnet"
-	DefaultClaudeTimeout                      = 120 * time.Second
+	DefaultClaudeTimeout                      = 10 * time.Minute
+	DefaultStreamIdleTimeout                  = 90 * time.Second
 	DefaultAgentQueueEnabled                  = true
 	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
@@ -58,6 +59,7 @@ type Config struct {
 	ClaudeExecutable                   string
 	ClaudeDefaultModel                 string
 	ClaudeTimeout                      time.Duration
+	StreamIdleTimeout                  time.Duration
 	LogBodyShape                       bool
 	LogRequestIdentity                 bool
 	LogCodexToolEvents                 bool
@@ -170,6 +172,13 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CLAUDE_TIMEOUT: %w", err)
 		}
 		cfg.ClaudeTimeout = timeout
+	}
+	if value := os.Getenv("CODEX_STREAM_IDLE_TIMEOUT"); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_STREAM_IDLE_TIMEOUT: %w", err)
+		}
+		cfg.StreamIdleTimeout = timeout
 	}
 	if value := os.Getenv("CODEX_LOG_BODY_SHAPE"); value != "" {
 		logBodyShape, err := strconv.ParseBool(value)
@@ -312,6 +321,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.ClaudeExecutable, "claude-executable", cfg.ClaudeExecutable, "Claude Code executable path")
 	fs.StringVar(&cfg.ClaudeDefaultModel, "claude-default-model", cfg.ClaudeDefaultModel, "Claude Code default model")
 	fs.DurationVar(&cfg.ClaudeTimeout, "claude-timeout", cfg.ClaudeTimeout, "Claude Code request timeout")
+	fs.DurationVar(&cfg.StreamIdleTimeout, "stream-idle-timeout", cfg.StreamIdleTimeout, "maximum silence between upstream stream events before the request is failed (0 disables)")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
 	fs.BoolVar(&cfg.LogCodexToolEvents, "log-codex-tool-events", cfg.LogCodexToolEvents, "log redacted upstream Codex tool-event diagnostics")
@@ -394,6 +404,7 @@ func Defaults() Config {
 		ContextCompactedToolOutputMaxBytes: DefaultContextCompactedToolOutputMaxBytes,
 		DegenerateTurnRetryEnabled:         DefaultDegenerateTurnRetryEnabled,
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
+		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 	}
 	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
 	return cfg
@@ -445,6 +456,9 @@ func (c Config) Validate() error {
 	}
 	if c.ClaudeTimeout <= 0 {
 		return errors.New("claude timeout must be positive")
+	}
+	if c.StreamIdleTimeout < 0 {
+		return errors.New("stream idle timeout must be non-negative")
 	}
 	if c.AgentMaxActive < 1 {
 		return errors.New("agent max active must be at least 1")
