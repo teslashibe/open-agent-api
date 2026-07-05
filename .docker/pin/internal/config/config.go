@@ -19,14 +19,7 @@ const (
 	DefaultHost                               = "127.0.0.1"
 	DefaultPort                               = 8088
 	DefaultCodexWebsocketURL                  = "wss://chatgpt.com/backend-api/codex/responses"
-	DefaultCodexTimeout                       = 10 * time.Minute
-	DefaultGeminiEndpoint                     = "https://daily-cloudcode-pa.googleapis.com/v1internal"
-	DefaultGeminiTimeout                      = 10 * time.Minute
-	DefaultClaudeExecutable                   = "claude"
-	DefaultClaudeModel                        = "sonnet"
-	DefaultClaudeTimeout                      = 10 * time.Minute
-	DefaultStreamIdleTimeout                  = 90 * time.Second
-	DefaultCustomToolWire                     = "custom"
+	DefaultCodexTimeout                       = 120 * time.Second
 	DefaultAgentQueueEnabled                  = true
 	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
@@ -53,15 +46,6 @@ type Config struct {
 	CodexScaffoldPath                  string
 	CodexWebsocketURL                  string
 	CodexTimeout                       time.Duration
-	GeminiAuthPath                     string
-	GeminiEndpoint                     string
-	GeminiProject                      string
-	GeminiTimeout                      time.Duration
-	ClaudeExecutable                   string
-	ClaudeDefaultModel                 string
-	ClaudeTimeout                      time.Duration
-	StreamIdleTimeout                  time.Duration
-	CustomToolWire                     string
 	LogBodyShape                       bool
 	LogRequestIdentity                 bool
 	LogCodexToolEvents                 bool
@@ -70,12 +54,6 @@ type Config struct {
 	AgentMaxActivePerKey               int
 	AgentQueueKeyMode                  string
 	AgentQueueLimit                    int
-	GeminiAgentMaxActive               int
-	GeminiAgentMaxActivePerKey         int
-	GeminiAgentQueueLimit              int
-	ClaudeAgentMaxActive               int
-	ClaudeAgentMaxActivePerKey         int
-	ClaudeAgentQueueLimit              int
 	AgentQueueTimeout                  time.Duration
 	AgentQueueLockDir                  string
 	AgentQueuePriorityEnabled          bool
@@ -149,48 +127,6 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.CodexTimeout = timeout
 	}
-	if value := os.Getenv("GEMINI_AUTH_PATH"); value != "" {
-		cfg.GeminiAuthPath = value
-	}
-	if value := os.Getenv("GEMINI_ENDPOINT"); value != "" {
-		cfg.GeminiEndpoint = value
-	}
-	if value := os.Getenv("GEMINI_PROJECT"); value != "" {
-		cfg.GeminiProject = value
-	}
-	if value := os.Getenv("GEMINI_TIMEOUT"); value != "" {
-		timeout, err := time.ParseDuration(value)
-		if err != nil {
-			return Config{}, fmt.Errorf("GEMINI_TIMEOUT: %w", err)
-		}
-		cfg.GeminiTimeout = timeout
-	}
-	if value := os.Getenv("CLAUDE_EXECUTABLE"); value != "" {
-		cfg.ClaudeExecutable = value
-	}
-	if value := os.Getenv("CLAUDE_PATH"); value != "" {
-		cfg.ClaudeExecutable = value
-	}
-	if value := os.Getenv("CLAUDE_DEFAULT_MODEL"); value != "" {
-		cfg.ClaudeDefaultModel = value
-	}
-	if value := os.Getenv("CLAUDE_TIMEOUT"); value != "" {
-		timeout, err := time.ParseDuration(value)
-		if err != nil {
-			return Config{}, fmt.Errorf("CLAUDE_TIMEOUT: %w", err)
-		}
-		cfg.ClaudeTimeout = timeout
-	}
-	if value := os.Getenv("CODEX_CUSTOM_TOOL_WIRE"); value != "" {
-		cfg.CustomToolWire = value
-	}
-	if value := os.Getenv("CODEX_STREAM_IDLE_TIMEOUT"); value != "" {
-		timeout, err := time.ParseDuration(value)
-		if err != nil {
-			return Config{}, fmt.Errorf("CODEX_STREAM_IDLE_TIMEOUT: %w", err)
-		}
-		cfg.StreamIdleTimeout = timeout
-	}
 	if value := os.Getenv("CODEX_LOG_BODY_SHAPE"); value != "" {
 		logBodyShape, err := strconv.ParseBool(value)
 		if err != nil {
@@ -242,25 +178,6 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CODEX_AGENT_QUEUE_LIMIT: %w", err)
 		}
 		cfg.AgentQueueLimit = limit
-	}
-	for _, override := range []struct {
-		env    string
-		target *int
-	}{
-		{"GEMINI_AGENT_MAX_ACTIVE", &cfg.GeminiAgentMaxActive},
-		{"GEMINI_AGENT_MAX_ACTIVE_PER_KEY", &cfg.GeminiAgentMaxActivePerKey},
-		{"GEMINI_AGENT_QUEUE_LIMIT", &cfg.GeminiAgentQueueLimit},
-		{"CLAUDE_AGENT_MAX_ACTIVE", &cfg.ClaudeAgentMaxActive},
-		{"CLAUDE_AGENT_MAX_ACTIVE_PER_KEY", &cfg.ClaudeAgentMaxActivePerKey},
-		{"CLAUDE_AGENT_QUEUE_LIMIT", &cfg.ClaudeAgentQueueLimit},
-	} {
-		if value := os.Getenv(override.env); value != "" {
-			parsed, err := strconv.Atoi(value)
-			if err != nil {
-				return Config{}, fmt.Errorf("%s: %w", override.env, err)
-			}
-			*override.target = parsed
-		}
 	}
 	if value := os.Getenv("CODEX_AGENT_QUEUE_TIMEOUT"); value != "" {
 		timeout, err := time.ParseDuration(value)
@@ -344,14 +261,6 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.CodexScaffoldPath, "codex-scaffold", cfg.CodexScaffoldPath, "Codex scaffold JSON path")
 	fs.StringVar(&cfg.CodexWebsocketURL, "codex-websocket-url", cfg.CodexWebsocketURL, "Codex websocket URL")
 	fs.DurationVar(&cfg.CodexTimeout, "codex-timeout", cfg.CodexTimeout, "Codex websocket request timeout")
-	fs.StringVar(&cfg.GeminiAuthPath, "gemini-auth-path", cfg.GeminiAuthPath, "Gemini/Antigravity oauth_creds.json path")
-	fs.StringVar(&cfg.GeminiEndpoint, "gemini-endpoint", cfg.GeminiEndpoint, "Gemini Code Assist v1internal endpoint")
-	fs.StringVar(&cfg.GeminiProject, "gemini-project", cfg.GeminiProject, "Gemini Code Assist project override")
-	fs.DurationVar(&cfg.GeminiTimeout, "gemini-timeout", cfg.GeminiTimeout, "Gemini Code Assist request timeout")
-	fs.StringVar(&cfg.ClaudeExecutable, "claude-executable", cfg.ClaudeExecutable, "Claude Code executable path")
-	fs.StringVar(&cfg.ClaudeDefaultModel, "claude-default-model", cfg.ClaudeDefaultModel, "Claude Code default model")
-	fs.DurationVar(&cfg.ClaudeTimeout, "claude-timeout", cfg.ClaudeTimeout, "Claude Code request timeout")
-	fs.DurationVar(&cfg.StreamIdleTimeout, "stream-idle-timeout", cfg.StreamIdleTimeout, "maximum silence between upstream stream events before the request is failed (0 disables)")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
 	fs.BoolVar(&cfg.LogCodexToolEvents, "log-codex-tool-events", cfg.LogCodexToolEvents, "log redacted upstream Codex tool-event diagnostics")
@@ -412,12 +321,6 @@ func Defaults() Config {
 		CodexScaffoldPath:                  "codex_scaffold.json",
 		CodexWebsocketURL:                  DefaultCodexWebsocketURL,
 		CodexTimeout:                       DefaultCodexTimeout,
-		GeminiAuthPath:                     filepath.Join(defaultGeminiHome(), "oauth_creds.json"),
-		GeminiEndpoint:                     DefaultGeminiEndpoint,
-		GeminiTimeout:                      DefaultGeminiTimeout,
-		ClaudeExecutable:                   DefaultClaudeExecutable,
-		ClaudeDefaultModel:                 DefaultClaudeModel,
-		ClaudeTimeout:                      DefaultClaudeTimeout,
 		AgentQueueEnabled:                  DefaultAgentQueueEnabled,
 		AgentMaxActive:                     DefaultAgentMaxActive,
 		AgentMaxActivePerKey:               DefaultAgentMaxActivePerKey,
@@ -434,8 +337,6 @@ func Defaults() Config {
 		ContextCompactedToolOutputMaxBytes: DefaultContextCompactedToolOutputMaxBytes,
 		DegenerateTurnRetryEnabled:         DefaultDegenerateTurnRetryEnabled,
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
-		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
-		CustomToolWire:                     DefaultCustomToolWire,
 	}
 	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
 	return cfg
@@ -443,39 +344,6 @@ func Defaults() Config {
 
 func (c Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
-}
-
-type AgentQueueLimits struct {
-	MaxActive       int
-	MaxActivePerKey int
-	QueueLimit      int
-}
-
-// AgentQueueLimitsFor returns the queue limits for a provider. Each provider
-// has its own queue, so the caps apply per provider; gemini and claude
-// inherit the codex/global values unless explicitly overridden (0 = inherit).
-func (c Config) AgentQueueLimitsFor(provider string) AgentQueueLimits {
-	limits := AgentQueueLimits{
-		MaxActive:       c.AgentMaxActive,
-		MaxActivePerKey: c.AgentMaxActivePerKey,
-		QueueLimit:      c.AgentQueueLimit,
-	}
-	override := func(value int, target *int) {
-		if value > 0 {
-			*target = value
-		}
-	}
-	switch provider {
-	case "gemini":
-		override(c.GeminiAgentMaxActive, &limits.MaxActive)
-		override(c.GeminiAgentMaxActivePerKey, &limits.MaxActivePerKey)
-		override(c.GeminiAgentQueueLimit, &limits.QueueLimit)
-	case "claude":
-		override(c.ClaudeAgentMaxActive, &limits.MaxActive)
-		override(c.ClaudeAgentMaxActivePerKey, &limits.MaxActivePerKey)
-		override(c.ClaudeAgentQueueLimit, &limits.QueueLimit)
-	}
-	return limits
 }
 
 func (c Config) Validate() error {
@@ -503,30 +371,6 @@ func (c Config) Validate() error {
 	if c.CodexTimeout <= 0 {
 		return errors.New("codex timeout must be positive")
 	}
-	if c.GeminiAuthPath == "" {
-		return errors.New("gemini auth path is required")
-	}
-	if c.GeminiEndpoint == "" {
-		return errors.New("gemini endpoint is required")
-	}
-	if c.GeminiTimeout <= 0 {
-		return errors.New("gemini timeout must be positive")
-	}
-	if c.ClaudeExecutable == "" {
-		return errors.New("claude executable is required")
-	}
-	if c.ClaudeDefaultModel == "" {
-		return errors.New("claude default model is required")
-	}
-	if c.ClaudeTimeout <= 0 {
-		return errors.New("claude timeout must be positive")
-	}
-	if c.StreamIdleTimeout < 0 {
-		return errors.New("stream idle timeout must be non-negative")
-	}
-	if c.CustomToolWire != "custom" && c.CustomToolWire != "function" {
-		return errors.New("custom tool wire must be \"custom\" or \"function\"")
-	}
 	if c.AgentMaxActive < 1 {
 		return errors.New("agent max active must be at least 1")
 	}
@@ -538,14 +382,6 @@ func (c Config) Validate() error {
 	}
 	if c.AgentQueueLimit < 0 {
 		return errors.New("agent queue limit must be non-negative")
-	}
-	for _, override := range []int{
-		c.GeminiAgentMaxActive, c.GeminiAgentMaxActivePerKey, c.GeminiAgentQueueLimit,
-		c.ClaudeAgentMaxActive, c.ClaudeAgentMaxActivePerKey, c.ClaudeAgentQueueLimit,
-	} {
-		if override < 0 {
-			return errors.New("per-provider agent queue overrides must be non-negative")
-		}
 	}
 	if c.AgentQueueEnabled && c.AgentQueueTimeout <= 0 {
 		return errors.New("agent queue timeout must be positive")
@@ -686,16 +522,6 @@ func loadDotEnv(path string) error {
 		return fmt.Errorf("load %s: %w", path, err)
 	}
 	return nil
-}
-
-func defaultGeminiHome() string {
-	if home := os.Getenv("GEMINI_HOME"); home != "" {
-		return home
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".gemini")
-	}
-	return ".gemini"
 }
 
 func defaultCodexHome() string {
