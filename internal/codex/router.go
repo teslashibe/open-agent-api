@@ -5,12 +5,13 @@ import (
 	"strings"
 )
 
-// Router sends requests to Gemini by model prefix and keeps Codex as the
-// default service. It deliberately implements Service so the server layer does
-// not need provider-specific branching.
+// Router sends requests to provider services by model prefix and keeps Codex as
+// the default service. It deliberately implements Service so the server layer
+// does not need provider-specific branching.
 type Router struct {
 	Codex  Service
 	Gemini Service
+	Claude Service
 }
 
 func (r Router) Complete(ctx context.Context, req Request) (Completion, error) {
@@ -21,12 +22,44 @@ func (r Router) Stream(ctx context.Context, req Request) (<-chan StreamEvent, er
 	return r.route(req).Stream(ctx, req)
 }
 
+// Provider names shared by routing and per-provider concerns such as the
+// server's agent queues.
+const (
+	ProviderCodex  = "codex"
+	ProviderGemini = "gemini"
+	ProviderClaude = "claude"
+)
+
+// ProviderForModel is the single source of truth for routing decisions so
+// layers above the Router (queueing, logging) agree with where the request
+// actually goes.
+func ProviderForModel(model string) string {
+	if strings.HasPrefix(model, "gemini-") {
+		return ProviderGemini
+	}
+	if isClaudeModel(model) {
+		return ProviderClaude
+	}
+	return ProviderCodex
+}
+
 func (r Router) route(req Request) Service {
-	if strings.HasPrefix(req.Model, "gemini-") && r.Gemini != nil {
-		return r.Gemini
+	switch ProviderForModel(req.Model) {
+	case ProviderGemini:
+		if r.Gemini != nil {
+			return r.Gemini
+		}
+	case ProviderClaude:
+		if r.Claude != nil {
+			return r.Claude
+		}
 	}
 	if r.Codex != nil {
 		return r.Codex
 	}
 	return UnavailableService{}
+}
+
+func isClaudeModel(model string) bool {
+	return strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "api/claude-") || model == "sonnet" || model == "opus" || model == "haiku" || model == "fable"
 }

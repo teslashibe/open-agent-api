@@ -638,3 +638,16 @@ func chdir(t *testing.T, dir string) {
 		}
 	})
 }
+
+func TestClaudeDefaults(t *testing.T) {
+	cfg := Defaults()
+	if cfg.ClaudeExecutable != DefaultClaudeExecutable {
+		t.Fatalf("ClaudeExecutable = %q", cfg.ClaudeExecutable)
+	}
+	if cfg.ClaudeDefaultModel != DefaultClaudeModel {
+		t.Fatalf("ClaudeDefaultModel = %q", cfg.ClaudeDefaultModel)
+	}
+	if cfg.ClaudeTimeout != DefaultClaudeTimeout {
+		t.Fatalf("ClaudeTimeout = %s", cfg.ClaudeTimeout)
+	}
+}

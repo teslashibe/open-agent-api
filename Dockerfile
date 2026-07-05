@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS build
+FROM golang:1.24-alpine AS build
 
 WORKDIR /src
 
@@ -10,7 +10,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/codex-chat-api ./cmd/codex-chat-ap
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata nodejs npm \
+	&& npm install -g @anthropic-ai/claude-code@2.1.200
 
 WORKDIR /app
 

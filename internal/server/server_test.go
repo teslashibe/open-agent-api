@@ -71,10 +71,10 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 14 {
+	if body.Object != "list" || len(body.Data) != 29 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
-	wantIDs := []string{"gpt-5.5", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
+	wantIDs := []string{"gpt-5.5", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5", "opus", "sonnet", "haiku", "fable", "api/claude-opus-4-8", "api/claude-sonnet-5", "api/claude-haiku-4-5-20251001", "api/claude-fable-5", "api/claude-fable-5-low", "api/claude-fable-5-medium", "api/claude-fable-5-high", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose", "gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"}
 	for i, wantID := range wantIDs {
 		model := body.Data[i]
 		if model.ID != wantID || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
@@ -172,6 +172,14 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 			wantModel:     "gpt-5.5",
 			wantEffort:    "low",
 			wantVerbosity: "low",
+			wantFaithful:  true,
+		},
+		{
+			name:          "claude fable high alias",
+			body:          `{"model":"api/claude-fable-5-high","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "claude-fable-5",
+			wantEffort:    "high",
+			wantVerbosity: "medium",
 			wantFaithful:  true,
 		},
 		{
@@ -1768,7 +1776,7 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 		"tools_count=1",
 		"tool_wire=flat",
 		"tool_choice=absent",
-		"chat_completion model=gpt-test stream=true tools_present=true turn_class=tool_generating",
+		"chat_completion model=gpt-test provider=codex stream=true tools_present=true turn_class=tool_generating",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("logs = %q, want %q", body, want)

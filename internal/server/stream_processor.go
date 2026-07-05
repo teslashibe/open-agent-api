@@ -327,6 +327,10 @@ func (p *streamProcessor) writeToolCalls() bool {
 		return false
 	}
 	for i, toolCall := range valid {
+		if p.opts.logBodyShape {
+			logLine(p.opts, "tool_call_emit id=%s index=%d type=%s name=%s args_len=%d args_head=%q\n",
+				p.streamID, i, toolCall.typ, toolCall.name, len(toolCall.arguments), truncateForLog(toolCall.arguments, 160))
+		}
 		delta := openai.ToolCallDelta{
 			Index: i,
 			ID:    toolCall.id,
@@ -663,10 +667,18 @@ func deliverToolStream(
 			logLine(opts, "degenerate_turn_retry_error request_id=%s err=%s\n", streamID, detailedError(err))
 			return finishStream()
 		}
+		retryEvents = withStreamIdleTimeout(ctx, retryEvents, opts.contextConfig.StreamIdleTimeout)
 		if proc.streamEvents(retryEvents, deltaTextReasoning) {
 			logDegenerateTurnRetry(opts, streamID, 1, *proc.nextToolCallIndex)
 		}
 	}
 
 	return finishStream()
+}
+
+func truncateForLog(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
 }
