@@ -8,11 +8,14 @@ import (
 )
 
 // withStreamIdleTimeout guards a provider event stream against silent stalls.
-// The timer resets on every upstream event, so a long turn that keeps
-// producing is never cut off; a stream that goes quiet for longer than idle
-// yields an error event and cancels the upstream request. idle <= 0 disables
-// the guard.
-func withStreamIdleTimeout(ctx context.Context, cancel context.CancelFunc, in <-chan codex.StreamEvent, idle time.Duration) <-chan codex.StreamEvent {
+// The timer runs only while waiting on the upstream — it is stopped during
+// the downstream forward, so a slow client applying backpressure never counts
+// as upstream silence. On expiry the timeout is delivered as an ordinary
+// error event and the wrapper returns WITHOUT cancelling: the consumer must
+// still be able to write the error chunk to the client (writeSSE checks ctx),
+// and the caller's deferred cancel tears down the upstream once the stream
+// finishes. idle <= 0 disables the guard.
+func withStreamIdleTimeout(ctx context.Context, in <-chan codex.StreamEvent, idle time.Duration) <-chan codex.StreamEvent {
 	if idle <= 0 || in == nil {
 		return in
 	}
@@ -24,21 +27,21 @@ func withStreamIdleTimeout(ctx context.Context, cancel context.CancelFunc, in <-
 		for {
 			select {
 			case event, ok := <-in:
-				if !ok {
-					return
-				}
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
 					default:
 					}
 				}
-				timer.Reset(idle)
+				if !ok {
+					return
+				}
 				select {
 				case out <- event:
 				case <-ctx.Done():
 					return
 				}
+				timer.Reset(idle)
 			case <-timer.C:
 				select {
 				case out <- codex.StreamEvent{Err: codex.NewError(
@@ -49,7 +52,6 @@ func withStreamIdleTimeout(ctx context.Context, cancel context.CancelFunc, in <-
 				)}:
 				case <-ctx.Done():
 				}
-				cancel()
 				return
 			case <-ctx.Done():
 				return

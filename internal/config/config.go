@@ -68,6 +68,12 @@ type Config struct {
 	AgentMaxActivePerKey               int
 	AgentQueueKeyMode                  string
 	AgentQueueLimit                    int
+	GeminiAgentMaxActive               int
+	GeminiAgentMaxActivePerKey         int
+	GeminiAgentQueueLimit              int
+	ClaudeAgentMaxActive               int
+	ClaudeAgentMaxActivePerKey         int
+	ClaudeAgentQueueLimit              int
 	AgentQueueTimeout                  time.Duration
 	AgentQueueLockDir                  string
 	AgentQueuePriorityEnabled          bool
@@ -231,6 +237,25 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CODEX_AGENT_QUEUE_LIMIT: %w", err)
 		}
 		cfg.AgentQueueLimit = limit
+	}
+	for _, override := range []struct {
+		env    string
+		target *int
+	}{
+		{"GEMINI_AGENT_MAX_ACTIVE", &cfg.GeminiAgentMaxActive},
+		{"GEMINI_AGENT_MAX_ACTIVE_PER_KEY", &cfg.GeminiAgentMaxActivePerKey},
+		{"GEMINI_AGENT_QUEUE_LIMIT", &cfg.GeminiAgentQueueLimit},
+		{"CLAUDE_AGENT_MAX_ACTIVE", &cfg.ClaudeAgentMaxActive},
+		{"CLAUDE_AGENT_MAX_ACTIVE_PER_KEY", &cfg.ClaudeAgentMaxActivePerKey},
+		{"CLAUDE_AGENT_QUEUE_LIMIT", &cfg.ClaudeAgentQueueLimit},
+	} {
+		if value := os.Getenv(override.env); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("%s: %w", override.env, err)
+			}
+			*override.target = parsed
+		}
 	}
 	if value := os.Getenv("CODEX_AGENT_QUEUE_TIMEOUT"); value != "" {
 		timeout, err := time.ParseDuration(value)
@@ -414,6 +439,39 @@ func (c Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
+type AgentQueueLimits struct {
+	MaxActive       int
+	MaxActivePerKey int
+	QueueLimit      int
+}
+
+// AgentQueueLimitsFor returns the queue limits for a provider. Each provider
+// has its own queue, so the caps apply per provider; gemini and claude
+// inherit the codex/global values unless explicitly overridden (0 = inherit).
+func (c Config) AgentQueueLimitsFor(provider string) AgentQueueLimits {
+	limits := AgentQueueLimits{
+		MaxActive:       c.AgentMaxActive,
+		MaxActivePerKey: c.AgentMaxActivePerKey,
+		QueueLimit:      c.AgentQueueLimit,
+	}
+	override := func(value int, target *int) {
+		if value > 0 {
+			*target = value
+		}
+	}
+	switch provider {
+	case "gemini":
+		override(c.GeminiAgentMaxActive, &limits.MaxActive)
+		override(c.GeminiAgentMaxActivePerKey, &limits.MaxActivePerKey)
+		override(c.GeminiAgentQueueLimit, &limits.QueueLimit)
+	case "claude":
+		override(c.ClaudeAgentMaxActive, &limits.MaxActive)
+		override(c.ClaudeAgentMaxActivePerKey, &limits.MaxActivePerKey)
+		override(c.ClaudeAgentQueueLimit, &limits.QueueLimit)
+	}
+	return limits
+}
+
 func (c Config) Validate() error {
 	if c.Host == "" {
 		return errors.New("host is required")
@@ -471,6 +529,14 @@ func (c Config) Validate() error {
 	}
 	if c.AgentQueueLimit < 0 {
 		return errors.New("agent queue limit must be non-negative")
+	}
+	for _, override := range []int{
+		c.GeminiAgentMaxActive, c.GeminiAgentMaxActivePerKey, c.GeminiAgentQueueLimit,
+		c.ClaudeAgentMaxActive, c.ClaudeAgentMaxActivePerKey, c.ClaudeAgentQueueLimit,
+	} {
+		if override < 0 {
+			return errors.New("per-provider agent queue overrides must be non-negative")
+		}
 	}
 	if c.AgentQueueEnabled && c.AgentQueueTimeout <= 0 {
 		return errors.New("agent queue timeout must be positive")

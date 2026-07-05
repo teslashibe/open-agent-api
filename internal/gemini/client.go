@@ -18,11 +18,15 @@ import (
 const defaultModel = "gemini-2.5-flash"
 
 type Config struct {
-	AuthPath   string
-	Endpoint   string
-	Project    string
-	Timeout    time.Duration
-	HTTPClient *http.Client
+	AuthPath string
+	Endpoint string
+	Project  string
+	Timeout  time.Duration
+	// HeaderTimeout bounds the wait for response headers; the stream idle
+	// guard only attaches after headers arrive, so without this a stalled
+	// upstream could sit silent until the full Timeout.
+	HeaderTimeout time.Duration
+	HTTPClient    *http.Client
 }
 
 type Client struct {
@@ -52,8 +56,13 @@ func NewClient(cfg Config) (*Client, error) {
 	if hc == nil {
 		// No http.Client.Timeout: it caps the whole exchange including the
 		// streaming body, which kills long streams. The per-request context
-		// (cfg.Timeout total, plus the server's idle guard) governs instead.
-		hc = &http.Client{}
+		// (cfg.Timeout total, plus the server's idle guard) governs instead;
+		// HeaderTimeout covers the pre-headers window the idle guard cannot.
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		if cfg.HeaderTimeout > 0 {
+			transport.ResponseHeaderTimeout = cfg.HeaderTimeout
+		}
+		hc = &http.Client{Transport: transport}
 	}
 	return &Client{
 		endpoint: strings.TrimRight(cfg.Endpoint, "/"),
@@ -106,6 +115,8 @@ func (c *Client) Stream(ctx context.Context, req codex.Request) (<-chan codex.St
 }
 
 func (c *Client) Complete(ctx context.Context, req codex.Request) (codex.Completion, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 	project, err := c.projectID(ctx)
 	if err != nil {
 		return codex.Completion{}, err
@@ -181,7 +192,10 @@ func (c *Client) readSSE(ctx context.Context, cancel context.CancelFunc, body io
 		events, err := parseStreamEvent(bytes.TrimSpace(data.Bytes()), customTools)
 		data.Reset()
 		if err != nil {
-			out <- codex.StreamEvent{Err: err}
+			select {
+			case out <- codex.StreamEvent{Err: err}:
+			case <-ctx.Done():
+			}
 			return false
 		}
 		for _, event := range events {
@@ -212,7 +226,10 @@ func (c *Client) readSSE(ctx context.Context, cancel context.CancelFunc, body io
 		_ = flush()
 	}
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		out <- codex.StreamEvent{Err: codex.NewError(codex.ErrorKindUpstream, 502, "gemini stream read failed", err)}
+		select {
+		case out <- codex.StreamEvent{Err: codex.NewError(codex.ErrorKindUpstream, 502, "gemini stream read failed", err)}:
+		case <-ctx.Done():
+		}
 	}
 }
 

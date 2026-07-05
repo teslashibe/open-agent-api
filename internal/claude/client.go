@@ -17,7 +17,7 @@ import (
 const (
 	DefaultExecutable = "claude"
 	DefaultModel      = "sonnet"
-	DefaultTimeout    = 120 * time.Second
+	DefaultTimeout    = 10 * time.Minute
 )
 
 type Config struct {
@@ -107,9 +107,10 @@ func (c *Client) command(ctx context.Context, req codex.Request, tools []toolSpe
 	if effort := claudeEffort(req.ReasoningEffort); effort != "" {
 		args = append(args, "--effort", effort)
 	}
-	args = append(args, promptFromMessages(req.Messages, tools))
 	cmd := exec.CommandContext(ctx, c.executable, args...)
-	cmd.Stdin = strings.NewReader("")
+	// The prompt goes through stdin, not argv: long conversations with large
+	// tool outputs exceed the OS ARG_MAX limit as a command-line argument.
+	cmd.Stdin = strings.NewReader(promptFromMessages(req.Messages, tools))
 	return cmd
 }
 
@@ -144,31 +145,52 @@ func (c *Client) readJSONL(ctx context.Context, cancel context.CancelFunc, cmd *
 	defer cancel()
 	defer close(out)
 
+	// Every early return must reap the subprocess or it stays a zombie;
+	// cancelling first makes CommandContext kill it so Wait cannot block.
+	reap := func() {
+		cancel()
+		_ = cmd.Wait()
+	}
+
 	parser := newToolBridgeParser(tools)
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		event, ok, err := parseJSONLEvent(scanner.Bytes())
 		if err != nil {
-			out <- codex.StreamEvent{Err: err}
+			sendEvent(ctx, out, codex.StreamEvent{Err: err})
+			reap()
 			return
 		}
 		if !ok {
 			continue
 		}
 		for _, bridged := range parser.consume(event) {
-			select {
-			case out <- bridged:
-			case <-ctx.Done():
+			if !sendEvent(ctx, out, bridged) {
+				reap()
 				return
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		out <- codex.StreamEvent{Err: codex.NewError(codex.ErrorKindUpstream, 502, "claude stream read failed", err)}
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+	if scanErr != nil && ctx.Err() == nil {
+		sendEvent(ctx, out, codex.StreamEvent{Err: codex.NewError(codex.ErrorKindUpstream, 502, "claude stream read failed", scanErr)})
+		return
 	}
-	if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-		out <- codex.StreamEvent{Err: claudeProcessError(err, stderr.String())}
+	if waitErr != nil && ctx.Err() == nil {
+		sendEvent(ctx, out, codex.StreamEvent{Err: claudeProcessError(waitErr, stderr.String())})
+	}
+}
+
+// sendEvent delivers an event unless the consumer is gone; a plain channel
+// send here would block forever once the server stops reading on cancel.
+func sendEvent(ctx context.Context, out chan<- codex.StreamEvent, event codex.StreamEvent) bool {
+	select {
+	case out <- event:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 

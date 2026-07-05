@@ -13,7 +13,7 @@ func TestStreamIdleTimeoutPassesEventsThrough(t *testing.T) {
 	defer cancel()
 
 	in := make(chan codex.StreamEvent)
-	out := withStreamIdleTimeout(ctx, cancel, in, 500*time.Millisecond)
+	out := withStreamIdleTimeout(ctx, in, 500*time.Millisecond)
 
 	go func() {
 		for i := 0; i < 20; i++ {
@@ -42,7 +42,7 @@ func TestStreamIdleTimeoutResetsOnEachEvent(t *testing.T) {
 	in := make(chan codex.StreamEvent)
 	// Events arrive every 60ms with a 100ms idle limit: the total run far
 	// exceeds the idle limit but no single gap does, so no timeout fires.
-	out := withStreamIdleTimeout(ctx, cancel, in, 100*time.Millisecond)
+	out := withStreamIdleTimeout(ctx, in, 100*time.Millisecond)
 
 	go func() {
 		for i := 0; i < 5; i++ {
@@ -59,12 +59,39 @@ func TestStreamIdleTimeoutResetsOnEachEvent(t *testing.T) {
 	}
 }
 
+func TestStreamIdleTimeoutIgnoresSlowConsumer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan codex.StreamEvent)
+	// The consumer sits on the first event for 3x the idle limit while the
+	// upstream stays responsive: the timer must not count forwarding time.
+	out := withStreamIdleTimeout(ctx, in, 100*time.Millisecond)
+
+	go func() {
+		in <- codex.StreamEvent{Delta: "first"}
+		in <- codex.StreamEvent{Delta: "second"}
+		close(in)
+	}()
+
+	first := <-out
+	if first.Err != nil {
+		t.Fatalf("unexpected error on first event: %v", first.Err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	for event := range out {
+		if event.Err != nil {
+			t.Fatalf("idle timeout fired while consumer was slow, upstream healthy: %v", event.Err)
+		}
+	}
+}
+
 func TestStreamIdleTimeoutFiresOnSilence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	in := make(chan codex.StreamEvent)
-	out := withStreamIdleTimeout(ctx, cancel, in, 50*time.Millisecond)
+	out := withStreamIdleTimeout(ctx, in, 50*time.Millisecond)
 
 	var last codex.StreamEvent
 	for event := range out {
@@ -77,10 +104,10 @@ func TestStreamIdleTimeoutFiresOnSilence(t *testing.T) {
 	if !ok || serviceErr.Kind != codex.ErrorKindUpstream {
 		t.Fatalf("expected upstream service error, got %v", last.Err)
 	}
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("idle timeout should cancel the upstream context")
+	// The wrapper must NOT cancel: the consumer still needs a live ctx to
+	// write the error chunk to the client. Teardown is the caller's job.
+	if ctx.Err() != nil {
+		t.Fatal("idle timeout must not cancel the request context")
 	}
 }
 
@@ -89,7 +116,7 @@ func TestStreamIdleTimeoutDisabled(t *testing.T) {
 	defer cancel()
 
 	in := make(chan codex.StreamEvent)
-	if got := withStreamIdleTimeout(ctx, cancel, in, 0); got != (<-chan codex.StreamEvent)(in) {
+	if got := withStreamIdleTimeout(ctx, in, 0); got != (<-chan codex.StreamEvent)(in) {
 		t.Fatal("zero idle timeout should return the input channel unchanged")
 	}
 }

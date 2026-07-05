@@ -17,6 +17,18 @@ services:
       CODEX_AGENT_QUEUE_KEY_MODE: "${CODEX_AGENT_QUEUE_KEY_MODE:-cursor}"
       CODEX_AGENT_QUEUE_LIMIT: "${CODEX_AGENT_QUEUE_LIMIT:-20}"
       CODEX_AGENT_QUEUE_TIMEOUT: "${CODEX_AGENT_QUEUE_TIMEOUT:-5m}"
+      # Queues are per provider; caps apply to each queue. Gemini/Claude
+      # inherit the CODEX_ values above unless overridden here.
+      GEMINI_AGENT_MAX_ACTIVE: "${GEMINI_AGENT_MAX_ACTIVE:-}"
+      GEMINI_AGENT_MAX_ACTIVE_PER_KEY: "${GEMINI_AGENT_MAX_ACTIVE_PER_KEY:-}"
+      GEMINI_AGENT_QUEUE_LIMIT: "${GEMINI_AGENT_QUEUE_LIMIT:-}"
+      CLAUDE_AGENT_MAX_ACTIVE: "${CLAUDE_AGENT_MAX_ACTIVE:-}"
+      CLAUDE_AGENT_MAX_ACTIVE_PER_KEY: "${CLAUDE_AGENT_MAX_ACTIVE_PER_KEY:-}"
+      CLAUDE_AGENT_QUEUE_LIMIT: "${CLAUDE_AGENT_QUEUE_LIMIT:-}"
+      CODEX_STREAM_IDLE_TIMEOUT: "${CODEX_STREAM_IDLE_TIMEOUT:-90s}"
+      CODEX_TIMEOUT: "${CODEX_TIMEOUT:-10m}"
+      GEMINI_TIMEOUT: "${GEMINI_TIMEOUT:-10m}"
+      CLAUDE_TIMEOUT: "${CLAUDE_TIMEOUT:-10m}"
       CODEX_AGENT_QUEUE_LOCK_DIR: "${CODEX_AGENT_QUEUE_LOCK_DIR:-/var/lib/codex-chat-api/agent-locks}"
       CODEX_CONTEXT_MANAGEMENT_ENABLED: "${CODEX_CONTEXT_MANAGEMENT_ENABLED:-true}"
       CODEX_CONTEXT_MAX_BYTES: "${CODEX_CONTEXT_MAX_BYTES:-196608}"
@@ -34,7 +46,14 @@ services:
       - "${HOME}/.codex:/home/codex/.codex:ro"
       - "${HOME}/.gemini:/home/codex/.gemini"
       - "${HOME}/.claude:/home/codex/.claude"
-      - "${HOME}/.claude.json:/home/codex/.claude.json"
+      # Requires ~/.claude.json on the host (run `claude login` once).
+      # create_host_path:false fails loudly instead of silently creating a
+      # directory at this path, which would break Claude CLI auth (EISDIR).
+      - type: bind
+        source: "${HOME}/.claude.json"
+        target: /home/codex/.claude.json
+        bind:
+          create_host_path: false
       - "agent-queue-locks:/var/lib/codex-chat-api/agent-locks"
     ports:
       - "127.0.0.1:${CODEX_CHAT_API_PORT:-8088}:8088"
