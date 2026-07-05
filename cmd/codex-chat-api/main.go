@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/teslashibe/codex-chat-api/internal/claude"
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/config"
 	"github.com/teslashibe/codex-chat-api/internal/gemini"
@@ -34,7 +35,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	service := codex.Router{Codex: codexService, Gemini: geminiService}
+	claudeService, err := buildClaudeService(cfg)
+	if err != nil {
+		return err
+	}
+	service := codex.Router{Codex: codexService, Gemini: geminiService, Claude: claudeService}
 
 	app := server.New(cfg, server.WithCodexService(service))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -98,6 +103,18 @@ func buildGeminiService(cfg config.Config) (codex.Service, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create gemini client: %w", err)
+	}
+	return client, nil
+}
+
+func buildClaudeService(cfg config.Config) (codex.Service, error) {
+	client, err := claude.NewClient(claude.Config{
+		Executable:   cfg.ClaudeExecutable,
+		DefaultModel: cfg.ClaudeDefaultModel,
+		Timeout:      cfg.ClaudeTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create claude client: %w", err)
 	}
 	return client, nil
 }
