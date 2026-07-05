@@ -50,7 +50,10 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	hc := cfg.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: cfg.Timeout}
+		// No http.Client.Timeout: it caps the whole exchange including the
+		// streaming body, which kills long streams. The per-request context
+		// (cfg.Timeout total, plus the server's idle guard) governs instead.
+		hc = &http.Client{}
 	}
 	return &Client{
 		endpoint: strings.TrimRight(cfg.Endpoint, "/"),
