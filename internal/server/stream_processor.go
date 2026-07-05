@@ -663,6 +663,7 @@ func deliverToolStream(
 			logLine(opts, "degenerate_turn_retry_error request_id=%s err=%s\n", streamID, detailedError(err))
 			return finishStream()
 		}
+		retryEvents = withStreamIdleTimeout(ctx, retryEvents, opts.contextConfig.StreamIdleTimeout)
 		if proc.streamEvents(retryEvents, deltaTextReasoning) {
 			logDegenerateTurnRetry(opts, streamID, 1, *proc.nextToolCallIndex)
 		}
