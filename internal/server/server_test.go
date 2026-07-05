@@ -1024,9 +1024,11 @@ func TestChatCompletionsStreamingCustomToolCall(t *testing.T) {
 		t.Fatalf("tool chunk = %#v", chunks[1])
 	}
 	got := toolChunk[0]
-	if got.Type != "custom" || got.ID != "call_custom" || got.Function != nil || got.Custom == nil ||
-		got.Custom.Name != "apply_patch" || got.Custom.Input != patch {
-		t.Fatalf("custom tool call = %#v custom=%#v", got, got.Custom)
+	// Default wire is "function": custom calls are downgraded so Cursor's
+	// BYOK chat-completions parser accepts them.
+	if got.Type != "function" || got.ID != "call_custom" || got.Custom != nil || got.Function == nil ||
+		got.Function.Name != "apply_patch" || got.Function.Arguments != patch {
+		t.Fatalf("custom tool call = %#v function=%#v", got, got.Function)
 	}
 	finish := chunks[2].Choices[0].FinishReason
 	if finish == nil || *finish != "tool_calls" {

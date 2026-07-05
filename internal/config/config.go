@@ -26,7 +26,7 @@ const (
 	DefaultClaudeModel                        = "sonnet"
 	DefaultClaudeTimeout                      = 10 * time.Minute
 	DefaultStreamIdleTimeout                  = 90 * time.Second
-	DefaultCustomToolWire                     = "custom"
+	DefaultCustomToolWire                     = "function"
 	DefaultAgentQueueEnabled                  = true
 	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
