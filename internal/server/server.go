@@ -176,8 +176,11 @@ func chatCompletions(opts options) fiber.Handler {
 		contextDuration := time.Duration(0)
 		if toolsPresent && !faithful {
 			contextStart := opts.now()
-			managed := manageContext(req.Messages, opts.contextConfig)
-			contextDuration = opts.now().Sub(contextStart)
+			contextCfg := opts.contextConfig
+			if modelAlias.ContextHardMaxBytes > 0 {
+				contextCfg = hardContextConfig(contextCfg, modelAlias.ContextHardMaxBytes)
+			}
+			managed := manageContext(req.Messages, contextCfg)
 			if managed.Changed {
 				logLine(
 					opts,
@@ -197,6 +200,14 @@ func chatCompletions(opts options) fiber.Handler {
 				)
 			}
 			messages = managed.Messages
+			if modelAlias.ContextHardMaxBytes > 0 {
+				trimmed, droppedMessages := dropOldestToFit(messages, modelAlias.ContextHardMaxBytes, hardContextProtectRecent)
+				if droppedMessages > 0 {
+					messages = trimmed
+					logLine(opts, "context_hard_drop request_id=%s model=%s dropped_messages=%d kept_messages=%d\n", requestID, model, droppedMessages, len(messages))
+				}
+			}
+			contextDuration = opts.now().Sub(contextStart)
 		}
 		serviceReq := applyAgentTurnToolChoice(codex.Request{
 			Model:             modelAlias.UpstreamModel,
@@ -510,6 +521,9 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 	if errors.Is(err, context.Canceled) {
 		return writeError(c, 499, "request_canceled", "request canceled")
 	}
+	if errors.Is(err, codex.ErrContextWindowExceeded) {
+		return writeError(c, fiber.StatusBadRequest, "invalid_request_error", "conversation exceeds this model's context window - switch this chat to a larger model")
+	}
 	if serviceErr, ok := codex.ErrorAs(err); ok {
 		status := serviceErr.Status
 		errorType := "api_error"
@@ -604,6 +618,9 @@ func errorChunk(id string, created int64, model string, message string) openai.C
 }
 
 func publicErrorMessage(err error) string {
+	if errors.Is(err, codex.ErrContextWindowExceeded) {
+		return "conversation exceeds this model's context window - switch this chat to a larger model"
+	}
 	if serviceErr, ok := codex.ErrorAs(err); ok {
 		return publicServiceMessage(serviceErr.Kind)
 	}

@@ -76,6 +76,68 @@ func manageContext(messages []openai.ChatMessage, cfg config.Config) contextMana
 	return result
 }
 
+// hardContextConfig tightens the normal knobs for models with small context
+// windows: shorter protected tail, harsher tool-output caps, hard byte budget.
+func hardContextConfig(cfg config.Config, maxBytes int) config.Config {
+	cfg.ContextManagementEnabled = true
+	cfg.ContextMaxBytes = maxBytes
+	if cfg.ContextRecentMessages > hardContextProtectRecent {
+		cfg.ContextRecentMessages = hardContextProtectRecent
+	}
+	if cfg.ContextToolOutputMaxBytes == 0 || cfg.ContextToolOutputMaxBytes > 8*1024 {
+		cfg.ContextToolOutputMaxBytes = 8 * 1024
+	}
+	if cfg.ContextCompactedToolOutputMaxBytes == 0 || cfg.ContextCompactedToolOutputMaxBytes > 256 {
+		cfg.ContextCompactedToolOutputMaxBytes = 256
+	}
+	return cfg
+}
+
+const hardContextProtectRecent = 8
+
+// dropOldestToFit removes the oldest turns (keeping a leading system message
+// and the protected recent tail) until the conversation fits maxBytes. The
+// kept window never starts on an orphaned tool result. Best effort: if even
+// the protected tail exceeds the budget, it returns the tail and lets the
+// upstream reject with a clear error.
+func dropOldestToFit(messages []openai.ChatMessage, maxBytes int, protectRecent int) ([]openai.ChatMessage, int) {
+	if maxBytes <= 0 || len(messages) == 0 {
+		return messages, 0
+	}
+	sizeOf := func(msgs []openai.ChatMessage) int {
+		data, _ := json.Marshal(msgs)
+		return len(data)
+	}
+	if sizeOf(messages) <= maxBytes {
+		return messages, 0
+	}
+	head := 0
+	if messages[0].Role == "system" {
+		head = 1
+	}
+	minKeepStart := len(messages) - protectRecent
+	if minKeepStart < head {
+		minKeepStart = head
+	}
+	cut := head
+	for cut < minKeepStart {
+		cut++
+		for cut < minKeepStart && messages[cut].Role == "tool" {
+			cut++
+		}
+		candidate := make([]openai.ChatMessage, 0, head+len(messages)-cut)
+		candidate = append(candidate, messages[:head]...)
+		candidate = append(candidate, messages[cut:]...)
+		if sizeOf(candidate) <= maxBytes {
+			return candidate, cut - head
+		}
+		if cut >= minKeepStart {
+			return candidate, cut - head
+		}
+	}
+	return messages, 0
+}
+
 func measureContext(messages []openai.ChatMessage, toolOutputMaxBytes int) contextShape {
 	data, _ := json.Marshal(messages)
 	shape := contextShape{

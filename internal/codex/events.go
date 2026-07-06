@@ -129,6 +129,9 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 		if detail == "" || detail == "null" {
 			detail = fmt.Sprintf("codex event type %s", event.Type)
 		}
+		if strings.Contains(detail, "context_length_exceeded") {
+			return StreamEvent{}, true, NewError(ErrorKindClient, http.StatusBadRequest, "conversation exceeds the model's context window", fmt.Errorf("%w: codex %s: %s", ErrContextWindowExceeded, event.Type, detail))
+		}
 		return StreamEvent{}, true, NewError(ErrorKindUpstream, status, "codex backend error", fmt.Errorf("codex %s: %s", event.Type, detail))
 	default:
 		return StreamEvent{}, false, nil

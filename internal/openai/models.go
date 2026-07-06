@@ -10,6 +10,9 @@ type ModelAlias struct {
 	UpstreamModel   string
 	ReasoningEffort string
 	Verbosity       string
+	// ContextHardMaxBytes forces aggressive context reduction (including
+	// dropping oldest turns) for models with small context windows. 0 = off.
+	ContextHardMaxBytes int
 }
 
 var modelAliases = []ModelAlias{
@@ -178,16 +181,18 @@ var modelAliases = []ModelAlias{
 	// The upstream supports the real Spark slug (verified via codex CLI);
 	// the -preview id is Cursor-side only and maps to the same model.
 	{
-		ID:              "gpt-5.3-codex-spark",
-		UpstreamModel:   "gpt-5.3-codex-spark",
-		ReasoningEffort: "low",
-		Verbosity:       "low",
+		ID:                  "gpt-5.3-codex-spark",
+		UpstreamModel:       "gpt-5.3-codex-spark",
+		ReasoningEffort:     "low",
+		Verbosity:           "low",
+		ContextHardMaxBytes: 96 * 1024,
 	},
 	{
-		ID:              "gpt-5.3-codex-spark-preview",
-		UpstreamModel:   "gpt-5.3-codex-spark",
-		ReasoningEffort: "low",
-		Verbosity:       "low",
+		ID:                  "gpt-5.3-codex-spark-preview",
+		UpstreamModel:       "gpt-5.3-codex-spark",
+		ReasoningEffort:     "low",
+		Verbosity:           "low",
+		ContextHardMaxBytes: 96 * 1024,
 	},
 }
 
