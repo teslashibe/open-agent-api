@@ -87,6 +87,10 @@ var ErrClientUnavailable = errors.New("codex client unavailable")
 // so the server can surface an actionable message instead of a generic one.
 var ErrContextWindowExceeded = errors.New("context window exceeded")
 
+// ErrUsageLimitReached marks upstream quota rejections so the server can
+// fall back to an overflow model.
+var ErrUsageLimitReached = errors.New("usage limit reached")
+
 type Error struct {
 	Kind    ErrorKind
 	Status  int

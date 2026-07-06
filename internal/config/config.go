@@ -27,6 +27,7 @@ const (
 	DefaultClaudeTimeout                      = 10 * time.Minute
 	DefaultStreamIdleTimeout                  = 90 * time.Second
 	DefaultCustomToolWire                     = "function"
+	DefaultQuotaFallbackModel                 = "gpt-5.3-codex-spark"
 	DefaultAgentQueueEnabled                  = true
 	DefaultAgentMaxActive                     = 2
 	DefaultAgentMaxActivePerKey               = 1
@@ -62,6 +63,7 @@ type Config struct {
 	ClaudeTimeout                      time.Duration
 	StreamIdleTimeout                  time.Duration
 	CustomToolWire                     string
+	QuotaFallbackModel                 string
 	LogBodyShape                       bool
 	LogRequestIdentity                 bool
 	LogCodexToolEvents                 bool
@@ -183,6 +185,9 @@ func Load(args []string) (Config, error) {
 	}
 	if value := os.Getenv("CODEX_CUSTOM_TOOL_WIRE"); value != "" {
 		cfg.CustomToolWire = value
+	}
+	if value, ok := os.LookupEnv("CODEX_QUOTA_FALLBACK_MODEL"); ok {
+		cfg.QuotaFallbackModel = value
 	}
 	if value := os.Getenv("CODEX_STREAM_IDLE_TIMEOUT"); value != "" {
 		timeout, err := time.ParseDuration(value)
@@ -436,6 +441,7 @@ func Defaults() Config {
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 		CustomToolWire:                     DefaultCustomToolWire,
+		QuotaFallbackModel:                 DefaultQuotaFallbackModel,
 	}
 	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
 	return cfg
