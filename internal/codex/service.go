@@ -83,6 +83,10 @@ const (
 
 var ErrClientUnavailable = errors.New("codex client unavailable")
 
+// ErrContextWindowExceeded marks upstream context_length_exceeded rejections
+// so the server can surface an actionable message instead of a generic one.
+var ErrContextWindowExceeded = errors.New("context window exceeded")
+
 type Error struct {
 	Kind    ErrorKind
 	Status  int
