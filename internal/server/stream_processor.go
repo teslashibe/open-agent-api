@@ -552,6 +552,7 @@ func deliverToolStream(
 		upstreamStart, &firstDeltaLatency,
 	)
 	start = opts.now()
+	events, req = applyQuotaFallback(ctx, opts, service, req, events, streamID)
 	toolsPresent := rawJSONPresent(req.Tools)
 	agentTurn := agentTurnExpectsToolCalls(req.Messages, toolsPresent)
 	retryEnabled := opts.contextConfig.DegenerateTurnRetryEnabled && toolsPresent

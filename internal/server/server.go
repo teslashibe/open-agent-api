@@ -246,6 +246,12 @@ func chatCompletions(opts options) fiber.Handler {
 
 		upstreamStart := opts.now()
 		completion, err := completeWithDegenerateRetry(ctx, opts, opts.codexService, serviceReq, toolsPresent, requestID)
+		if err != nil && errors.Is(err, codex.ErrUsageLimitReached) {
+			if fallbackReq, ok := buildQuotaFallbackRequest(serviceReq, opts.contextConfig); ok {
+				logLine(opts, "quota_fallback request_id=%s from=%s to=%s messages=%d\n", requestID, serviceReq.Model, fallbackReq.Model, len(fallbackReq.Messages))
+				completion, err = completeWithDegenerateRetry(ctx, opts, opts.codexService, fallbackReq, toolsPresent, requestID)
+			}
+		}
 		upstreamDuration := opts.now().Sub(upstreamStart)
 		if err != nil {
 			logLine(opts, "complete_error model=%s err=%s\n", model, detailedError(err))
@@ -620,6 +626,9 @@ func errorChunk(id string, created int64, model string, message string) openai.C
 func publicErrorMessage(err error) string {
 	if errors.Is(err, codex.ErrContextWindowExceeded) {
 		return "conversation exceeds this model's context window - switch this chat to a larger model"
+	}
+	if errors.Is(err, codex.ErrUsageLimitReached) {
+		return "usage limit reached for this model - try again later or switch model"
 	}
 	if serviceErr, ok := codex.ErrorAs(err); ok {
 		return publicServiceMessage(serviceErr.Kind)
