@@ -61,5 +61,7 @@ func (r Router) route(req Request) Service {
 }
 
 func isClaudeModel(model string) bool {
+	// Cursor prefixes Claude models as anthropic/claude-...; some clients use api/.
+	model = strings.TrimPrefix(model, "anthropic/")
 	return strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "api/claude-") || model == "sonnet" || model == "opus" || model == "haiku" || model == "fable"
 }

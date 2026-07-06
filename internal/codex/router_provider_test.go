@@ -16,6 +16,8 @@ func TestProviderForModel(t *testing.T) {
 		"haiku":                  ProviderClaude,
 		"fable":                  ProviderClaude,
 		"sonnet-unknown-variant": ProviderCodex,
+		"anthropic/claude-opus-4.8": ProviderClaude,
+		"anthropic/claude-sonnet-5": ProviderClaude,
 	}
 	for model, want := range cases {
 		if got := ProviderForModel(model); got != want {
