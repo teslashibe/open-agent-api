@@ -15,10 +15,12 @@ import (
 // never leak to the client as plain text or reasoning, and it supports
 // multiple tool calls per turn by assigning each an incrementing index.
 type toolBridgeParser struct {
-	specsByName map[string]toolSpec
-	content     fenceScanner
-	reasoning   fenceScanner
-	toolIndex   int
+	specsByName   map[string]toolSpec
+	content       fenceScanner
+	reasoning     fenceScanner
+	contentLine   lineToolScanner
+	reasoningLine lineToolScanner
+	toolIndex     int
 }
 
 func newToolBridgeParser(specs []toolSpec) *toolBridgeParser {
@@ -35,17 +37,21 @@ func (p *toolBridgeParser) consume(event codex.StreamEvent) []codex.StreamEvent 
 
 	if event.Delta != "" {
 		safe, bodies := p.content.push(event.Delta)
-		if safe != "" {
-			out = append(out, codex.StreamEvent{Delta: safe})
+		text, bare := p.contentLine.push(safe, p.isBareToolLine)
+		if text != "" {
+			out = append(out, codex.StreamEvent{Delta: text})
 		}
 		out = append(out, p.toolEvents(bodies)...)
+		out = append(out, p.toolEvents(bare)...)
 	}
 	if event.ReasoningDelta != "" {
 		safe, bodies := p.reasoning.push(event.ReasoningDelta)
-		if safe != "" {
-			out = append(out, codex.StreamEvent{ReasoningDelta: safe})
+		text, bare := p.reasoningLine.push(safe, p.isBareToolLine)
+		if text != "" {
+			out = append(out, codex.StreamEvent{ReasoningDelta: text})
 		}
 		out = append(out, p.toolEvents(bodies)...)
+		out = append(out, p.toolEvents(bare)...)
 	}
 
 	// Non-text signals (Done/Usage/Model/ID/Err) pass through untouched. On
@@ -60,13 +66,33 @@ func (p *toolBridgeParser) consume(event codex.StreamEvent) []codex.StreamEvent 
 
 func (p *toolBridgeParser) flush() []codex.StreamEvent {
 	var out []codex.StreamEvent
-	if leftover := p.content.drain(); leftover != "" {
-		out = append(out, codex.StreamEvent{Delta: leftover})
+	text, bare := p.contentLine.finish(p.content.drain(), p.isBareToolLine)
+	if text != "" {
+		out = append(out, codex.StreamEvent{Delta: text})
 	}
-	if leftover := p.reasoning.drain(); leftover != "" {
-		out = append(out, codex.StreamEvent{ReasoningDelta: leftover})
+	out = append(out, p.toolEvents(bare)...)
+	text, bare = p.reasoningLine.finish(p.reasoning.drain(), p.isBareToolLine)
+	if text != "" {
+		out = append(out, codex.StreamEvent{ReasoningDelta: text})
 	}
+	out = append(out, p.toolEvents(bare)...)
 	return out
+}
+
+// isBareToolLine reports whether a complete text line is an unfenced tool
+// call. Models drift from the fenced protocol and emit the JSON directly;
+// requiring a registered tool name keeps ordinary JSON prose intact.
+func (p *toolBridgeParser) isBareToolLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		return false
+	}
+	call, ok := parseToolCallBody(trimmed)
+	if !ok || call.Name == "" {
+		return false
+	}
+	_, known := p.specsByName[call.Name]
+	return known
 }
 
 func (p *toolBridgeParser) toolEvents(bodies []string) []codex.StreamEvent {
@@ -169,6 +195,67 @@ func partialFenceSuffixLen(s string) int {
 		}
 	}
 	return 0
+}
+
+// lineToolScanner buffers streamed text into complete lines so unfenced tool
+// call JSON can be intercepted. Only lines that might be a bare tool call
+// (start with "{") are held back; everything else flows through immediately,
+// preserving token-level streaming for prose.
+type lineToolScanner struct {
+	buf strings.Builder
+}
+
+func (s *lineToolScanner) push(text string, isToolLine func(string) bool) (string, []string) {
+	if text == "" {
+		return "", nil
+	}
+	s.buf.WriteString(text)
+	working := s.buf.String()
+	var out strings.Builder
+	var bodies []string
+	for {
+		nl := strings.IndexByte(working, '\n')
+		if nl < 0 {
+			break
+		}
+		line := working[:nl]
+		if isToolLine(line) {
+			bodies = append(bodies, strings.TrimSpace(line))
+		} else {
+			out.WriteString(line)
+			out.WriteByte('\n')
+		}
+		working = working[nl+1:]
+	}
+	if !couldBeToolLine(working) {
+		out.WriteString(working)
+		working = ""
+	}
+	s.buf.Reset()
+	s.buf.WriteString(working)
+	return out.String(), bodies
+}
+
+// finish processes trailing text plus whatever the scanner still holds.
+func (s *lineToolScanner) finish(trailing string, isToolLine func(string) bool) (string, []string) {
+	text, bodies := s.push(trailing, isToolLine)
+	rest := s.buf.String()
+	s.buf.Reset()
+	if rest == "" {
+		return text, bodies
+	}
+	if isToolLine(rest) {
+		bodies = append(bodies, strings.TrimSpace(rest))
+		return text, bodies
+	}
+	return text + rest, bodies
+}
+
+// couldBeToolLine reports whether a partial line might still become a bare
+// tool call once complete. Oversized buffers are released to bound memory.
+func couldBeToolLine(partial string) bool {
+	trimmed := strings.TrimLeft(partial, " \t")
+	return strings.HasPrefix(trimmed, "{") && len(partial) < 64*1024
 }
 
 func stableHash(value string) uint32 {

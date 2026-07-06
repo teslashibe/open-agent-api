@@ -90,7 +90,7 @@ func toolInstructions(specs []toolSpec) string {
 	}
 	data, _ := json.Marshal(payload)
 	return fmt.Sprintf("Cursor tool protocol:\n"+
-		"Cursor, not Claude Code, executes tools. You must request Cursor tool execution with this exact fenced JSON block and no other text whenever you need current repository, file, terminal, transcript, or workspace information.\n"+
+		"Cursor, not Claude Code, executes tools. You must request Cursor tool execution with this exact fenced JSON block and no other text whenever you need current repository, file, terminal, transcript, or workspace information. Always wrap the JSON in the fence shown below; never emit the JSON without the fence.\n"+
 		"Do not claim repo access, tool access, file contents, command results, or implementation status unless a prior Tool result in this conversation provided it.\n"+
 		"If the user asks you to inspect, search, read, edit, verify, test, run commands, check logs, or continue previous work, request a tool.\n"+
 		"For pure conversational questions that require no external state, answer normally.\n\n"+
