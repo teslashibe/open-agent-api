@@ -115,10 +115,16 @@ func (c *Client) command(ctx context.Context, req codex.Request, tools []toolSpe
 }
 
 func (c *Client) model(req codex.Request) string {
-	if req.Model != "" {
-		return strings.TrimPrefix(req.Model, "api/")
+	if req.Model == "" {
+		return c.defaultModel
 	}
-	return c.defaultModel
+	name := strings.TrimPrefix(req.Model, "anthropic/")
+	name = strings.TrimPrefix(name, "api/")
+	// Cursor names versions with dots (claude-opus-4.8); the CLI uses dashes.
+	if strings.HasPrefix(name, "claude-") {
+		name = strings.ReplaceAll(name, ".", "-")
+	}
+	return name
 }
 
 func toolCallFromDelta(delta codex.ToolCallDelta) codex.ToolCall {
