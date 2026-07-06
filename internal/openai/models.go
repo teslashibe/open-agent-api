@@ -175,15 +175,17 @@ var modelAliases = []ModelAlias{
 		ReasoningEffort: "low",
 		Verbosity:       "high",
 	},
+	// The upstream supports the real Spark slug (verified via codex CLI);
+	// the -preview id is Cursor-side only and maps to the same model.
 	{
 		ID:              "gpt-5.3-codex-spark",
-		UpstreamModel:   DefaultModel,
+		UpstreamModel:   "gpt-5.3-codex-spark",
 		ReasoningEffort: "low",
 		Verbosity:       "low",
 	},
 	{
 		ID:              "gpt-5.3-codex-spark-preview",
-		UpstreamModel:   DefaultModel,
+		UpstreamModel:   "gpt-5.3-codex-spark",
 		ReasoningEffort: "low",
 		Verbosity:       "low",
 	},
