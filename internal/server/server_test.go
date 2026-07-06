@@ -161,7 +161,7 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 		{
 			name:          "spark alias",
 			body:          `{"model":"gpt-5.3-codex-spark","messages":[{"role":"user","content":"hi"}]}`,
-			wantModel:     "gpt-5.5",
+			wantModel:     "gpt-5.3-codex-spark",
 			wantEffort:    "low",
 			wantVerbosity: "low",
 			wantFaithful:  true,
@@ -169,7 +169,7 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 		{
 			name:          "spark preview alias",
 			body:          `{"model":"gpt-5.3-codex-spark-preview","messages":[{"role":"user","content":"hi"}]}`,
-			wantModel:     "gpt-5.5",
+			wantModel:     "gpt-5.3-codex-spark",
 			wantEffort:    "low",
 			wantVerbosity: "low",
 			wantFaithful:  true,
