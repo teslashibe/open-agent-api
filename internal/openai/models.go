@@ -3,6 +3,7 @@ package openai
 const (
 	DefaultReasoningEffort = "medium"
 	DefaultVerbosity       = "medium"
+	gpt56DefaultVerbosity  = "low"
 )
 
 type ModelAlias struct {
@@ -15,186 +16,111 @@ type ModelAlias struct {
 	ContextHardMaxBytes int
 }
 
-var modelAliases = []ModelAlias{
-	{
-		ID:              DefaultModel,
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "gemini-2.5-flash",
-		UpstreamModel:   "gemini-2.5-flash",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "gemini-2.5-flash-lite",
-		UpstreamModel:   "gemini-2.5-flash-lite",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "gemini-2.5-pro",
-		UpstreamModel:   "gemini-2.5-pro",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "claude-opus-4-8",
-		UpstreamModel:   "claude-opus-4-8",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "claude-sonnet-5",
-		UpstreamModel:   "claude-sonnet-5",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "claude-haiku-4-5-20251001",
-		UpstreamModel:   "claude-haiku-4-5-20251001",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "claude-fable-5",
-		UpstreamModel:   "claude-fable-5",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "opus",
-		UpstreamModel:   "opus",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "sonnet",
-		UpstreamModel:   "sonnet",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "haiku",
-		UpstreamModel:   "haiku",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "fable",
-		UpstreamModel:   "fable",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "api/claude-opus-4-8",
-		UpstreamModel:   "claude-opus-4-8",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "api/claude-sonnet-5",
-		UpstreamModel:   "claude-sonnet-5",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "api/claude-haiku-4-5-20251001",
-		UpstreamModel:   "claude-haiku-4-5-20251001",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "api/claude-fable-5",
-		UpstreamModel:   "claude-fable-5",
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "api/claude-fable-5-low",
-		UpstreamModel:   "claude-fable-5",
-		ReasoningEffort: "low",
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "api/claude-fable-5-medium",
-		UpstreamModel:   "claude-fable-5",
-		ReasoningEffort: "medium",
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "api/claude-fable-5-high",
-		UpstreamModel:   "claude-fable-5",
-		ReasoningEffort: "high",
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "gpt-5.5-low",
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: "low",
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "gpt-5.5-high",
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: "high",
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "gpt-5.5-fast",
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: "low",
-		Verbosity:       "low",
-	},
-	{
-		ID:              "gpt-5.5-mini",
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: "low",
-		Verbosity:       "low",
-	},
-	{
-		ID:              "gpt-5.5-lite",
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: "low",
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "gpt-5.5-deep",
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: "high",
-		Verbosity:       DefaultVerbosity,
-	},
-	{
-		ID:              "gpt-5.5-verbose",
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: DefaultReasoningEffort,
-		Verbosity:       "high",
-	},
-	{
-		ID:              "gpt-5.5-fast-verbose",
-		UpstreamModel:   DefaultModel,
-		ReasoningEffort: "low",
-		Verbosity:       "high",
-	},
+func alias(id, upstream, effort, verbosity string) ModelAlias {
+	return ModelAlias{
+		ID:              id,
+		UpstreamModel:   upstream,
+		ReasoningEffort: effort,
+		Verbosity:       verbosity,
+	}
+}
+
+// gpt56EffortLadder returns bare + effort aliases for a GPT-5.6 tier.
+// includeUltra adds the -ultra variant (Sol/Terra only in Codex catalog).
+func gpt56EffortLadder(upstream string, includeUltra bool) []ModelAlias {
+	out := []ModelAlias{
+		alias(upstream, upstream, DefaultReasoningEffort, gpt56DefaultVerbosity),
+		alias(upstream+"-low", upstream, "low", gpt56DefaultVerbosity),
+		alias(upstream+"-medium", upstream, "medium", gpt56DefaultVerbosity),
+		alias(upstream+"-high", upstream, "high", gpt56DefaultVerbosity),
+		alias(upstream+"-xhigh", upstream, "xhigh", gpt56DefaultVerbosity),
+		alias(upstream+"-max", upstream, "max", gpt56DefaultVerbosity),
+	}
+	if includeUltra {
+		out = append(out, alias(upstream+"-ultra", upstream, "ultra", gpt56DefaultVerbosity))
+	}
+	return out
+}
+
+func buildModelAliases() []ModelAlias {
+	out := []ModelAlias{
+		// Default / GPT-5.6 family (ChatGPT/Codex path; ~272K context, not 1.05M).
+		{
+			ID:              DefaultModel,
+			UpstreamModel:   DefaultModel,
+			ReasoningEffort: "low", // Codex CLI default for Sol
+			Verbosity:       gpt56DefaultVerbosity,
+		},
+		alias("gpt-5.6", DefaultModel, DefaultReasoningEffort, gpt56DefaultVerbosity),
+		alias("gpt-5.6-sol-low", DefaultModel, "low", gpt56DefaultVerbosity),
+		alias("gpt-5.6-sol-medium", DefaultModel, "medium", gpt56DefaultVerbosity),
+		alias("gpt-5.6-sol-high", DefaultModel, "high", gpt56DefaultVerbosity),
+		alias("gpt-5.6-sol-xhigh", DefaultModel, "xhigh", gpt56DefaultVerbosity),
+		alias("gpt-5.6-sol-max", DefaultModel, "max", gpt56DefaultVerbosity),
+		alias("gpt-5.6-sol-ultra", DefaultModel, "ultra", gpt56DefaultVerbosity),
+	}
+	out = append(out, gpt56EffortLadder("gpt-5.6-terra", true)...)
+	out = append(out, gpt56EffortLadder("gpt-5.6-luna", false)...)
+	out = append(out,
+		alias("gpt-5.6-luna-fast", "gpt-5.6-luna", "low", "low"),
+		alias("codex-sol", DefaultModel, "low", gpt56DefaultVerbosity),
+		alias("codex-terra", "gpt-5.6-terra", DefaultReasoningEffort, gpt56DefaultVerbosity),
+		alias("codex-luna", "gpt-5.6-luna", DefaultReasoningEffort, gpt56DefaultVerbosity),
+		alias("gemini-2.5-flash", "gemini-2.5-flash", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gemini-2.5-flash-lite", "gemini-2.5-flash-lite", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gemini-2.5-pro", "gemini-2.5-pro", DefaultReasoningEffort, DefaultVerbosity),
+		alias("claude-opus-4-8", "claude-opus-4-8", DefaultReasoningEffort, DefaultVerbosity),
+		alias("claude-sonnet-5", "claude-sonnet-5", DefaultReasoningEffort, DefaultVerbosity),
+		alias("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", DefaultReasoningEffort, DefaultVerbosity),
+		alias("claude-fable-5", "claude-fable-5", DefaultReasoningEffort, DefaultVerbosity),
+		alias("opus", "opus", DefaultReasoningEffort, DefaultVerbosity),
+		alias("sonnet", "sonnet", DefaultReasoningEffort, DefaultVerbosity),
+		alias("haiku", "haiku", DefaultReasoningEffort, DefaultVerbosity),
+		alias("fable", "fable", DefaultReasoningEffort, DefaultVerbosity),
+		alias("api/claude-opus-4-8", "claude-opus-4-8", DefaultReasoningEffort, DefaultVerbosity),
+		alias("api/claude-sonnet-5", "claude-sonnet-5", DefaultReasoningEffort, DefaultVerbosity),
+		alias("api/claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", DefaultReasoningEffort, DefaultVerbosity),
+		alias("api/claude-fable-5", "claude-fable-5", DefaultReasoningEffort, DefaultVerbosity),
+		alias("api/claude-fable-5-low", "claude-fable-5", "low", DefaultVerbosity),
+		alias("api/claude-fable-5-medium", "claude-fable-5", "medium", DefaultVerbosity),
+		alias("api/claude-fable-5-high", "claude-fable-5", "high", DefaultVerbosity),
+	)
+
+	// Legacy GPT-5.5 — upstream pinned so DefaultModel cutover does not remap them.
+	out = append(out,
+		alias(LegacyGPT55, LegacyGPT55, DefaultReasoningEffort, DefaultVerbosity),
+		alias("gpt-5.5-low", LegacyGPT55, "low", DefaultVerbosity),
+		alias("gpt-5.5-high", LegacyGPT55, "high", DefaultVerbosity),
+		alias("gpt-5.5-fast", LegacyGPT55, "low", "low"),
+		alias("gpt-5.5-mini", LegacyGPT55, "low", "low"),
+		alias("gpt-5.5-lite", LegacyGPT55, "low", DefaultVerbosity),
+		alias("gpt-5.5-deep", LegacyGPT55, "high", DefaultVerbosity),
+		alias("gpt-5.5-verbose", LegacyGPT55, DefaultReasoningEffort, "high"),
+		alias("gpt-5.5-fast-verbose", LegacyGPT55, "low", "high"),
+	)
+
 	// The upstream supports the real Spark slug (verified via codex CLI);
 	// the -preview id is Cursor-side only and maps to the same model.
-	{
-		ID:                  "gpt-5.3-codex-spark",
-		UpstreamModel:       "gpt-5.3-codex-spark",
-		ReasoningEffort:     "low",
-		Verbosity:           "low",
-		ContextHardMaxBytes: 96 * 1024,
-	},
-	{
-		ID:                  "gpt-5.3-codex-spark-preview",
-		UpstreamModel:       "gpt-5.3-codex-spark",
-		ReasoningEffort:     "low",
-		Verbosity:           "low",
-		ContextHardMaxBytes: 96 * 1024,
-	},
+	out = append(out,
+		ModelAlias{
+			ID:                  "gpt-5.3-codex-spark",
+			UpstreamModel:       "gpt-5.3-codex-spark",
+			ReasoningEffort:     "low",
+			Verbosity:           "low",
+			ContextHardMaxBytes: 96 * 1024,
+		},
+		ModelAlias{
+			ID:                  "gpt-5.3-codex-spark-preview",
+			UpstreamModel:       "gpt-5.3-codex-spark",
+			ReasoningEffort:     "low",
+			Verbosity:           "low",
+			ContextHardMaxBytes: 96 * 1024,
+		},
+	)
+	return out
 }
+
+var modelAliases = buildModelAliases()
 
 func ModelAliases() []ModelAlias {
 	aliases := make([]ModelAlias, len(modelAliases))
@@ -206,9 +132,9 @@ func ResolveModelAlias(model string) ModelAlias {
 	if model == "" {
 		model = DefaultModel
 	}
-	for _, alias := range modelAliases {
-		if alias.ID == model {
-			return alias
+	for _, a := range modelAliases {
+		if a.ID == model {
+			return a
 		}
 	}
 	return ModelAlias{

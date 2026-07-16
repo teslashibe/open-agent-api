@@ -42,7 +42,7 @@ Default reserved domain: `icebound-melida-unstoppably.ngrok-free.dev` (override 
 | --- | --- |
 | OpenAI API Key | `local-codex-chat-api` (any non-empty string) |
 | Override OpenAI Base URL | `https://icebound-melida-unstoppably.ngrok-free.dev/v1` |
-| Model | `gpt-5.5` or an alias such as `gpt-5.5-high` |
+| Model | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, or an effort alias such as `gpt-5.6-sol-high` |
 
 4. Open a **new** Agent chat and try:
 
@@ -165,14 +165,24 @@ Expected response:
 }
 ```
 
-Model aliases are resolved server-side before the upstream Codex request:
+Model aliases are resolved server-side before the upstream Codex request.
+GPT-5.6 ChatGPT/Codex context is ~272K tokens (not the API card's 1.05M).
+See [`docs/gpt-5.6-sol-terra-luna.md`](docs/gpt-5.6-sol-terra-luna.md) and
+[`docs/specs/gpt-5.6-cursor-models.md`](docs/specs/gpt-5.6-cursor-models.md).
 
 | Public model ID | Upstream model | Reasoning effort | Verbosity |
 | --- | --- | --- | --- |
+| `gpt-5.6-sol` | `gpt-5.6-sol` | `low` | `low` |
+| `gpt-5.6` | `gpt-5.6-sol` | `medium` | `low` |
+| `gpt-5.6-sol-high` | `gpt-5.6-sol` | `high` | `low` |
+| `gpt-5.6-terra` | `gpt-5.6-terra` | `medium` | `low` |
+| `gpt-5.6-luna` / `gpt-5.6-luna-fast` | `gpt-5.6-luna` | `medium` / `low` | `low` |
+| `codex-sol` / `codex-terra` / `codex-luna` | matching 5.6 tier | (tier default) | `low` |
 | `gpt-5.5` | `gpt-5.5` | `medium` | `medium` |
-| `gpt-5.5-low` | `gpt-5.5` | `low` | `medium` |
 | `gpt-5.5-high` | `gpt-5.5` | `high` | `medium` |
-| `gpt-5.5-fast` | `gpt-5.5` | `low` | `low` |
+| `gpt-5.3-codex-spark` | `gpt-5.3-codex-spark` | `low` | `low` |
+
+Sol/Terra also expose `-xhigh`, `-max`, `-ultra` effort aliases. Luna stops at `-max` (no ultra).
 
 ### Non-Streaming Chat
 
@@ -304,7 +314,7 @@ endpoints.
 | Feature | Status |
 | --- | --- |
 | `GET /health` | Supported |
-| `GET /v1/models` | Supported (returns `gpt-5.5` aliases) |
+| `GET /v1/models` | Supported (returns GPT-5.6 / 5.5 / Spark / Claude / Gemini aliases) |
 | `POST /v1/chat/completions` (non-streaming) | Supported |
 | `POST /v1/chat/completions` (streaming SSE) | Supported |
 | Cursor Ask mode (text only) | Supported |
@@ -322,14 +332,12 @@ Upstream Codex authentication comes from `~/.codex/auth.json` (`codex login`).
 ```text
 OpenAI API Key:        local-codex-chat-api
 Override Base URL:     https://<tunnel-host>/v1
-Model:                 gpt-5.5-high
+Model:                 gpt-5.6-sol-high
 ```
 
-The model ID is exact and case-sensitive. Cursor may display `gpt-5.5` as
-"GPT-5.5" in the UI, but the API model string is lowercase. Use `gpt-5.5-low`
-for low reasoning effort, `gpt-5.5-high` for high reasoning effort, or
-`gpt-5.5-fast` for low reasoning effort with low verbosity. All aliases send
-upstream requests to `gpt-5.5`.
+The model ID is exact and case-sensitive. Prefer `gpt-5.6-terra` for everyday
+work, `gpt-5.6-sol` / `gpt-5.6-sol-high` for hard tasks, and `gpt-5.6-luna-fast`
+for quick turns. Legacy `gpt-5.5*` aliases remain available.
 
 ### Localhost vs HTTPS tunnel
 
@@ -750,9 +758,10 @@ For issue #45 latency/logging changes, record the live Cursor BYOK evidence in
 
 ## Notes
 
-- Default model: `gpt-5.5`. Cursor-selectable aliases `gpt-5.5-low`,
-  `gpt-5.5-high`, and `gpt-5.5-fast` resolve to upstream `gpt-5.5` with
-  server-side reasoning effort and verbosity defaults.
+- Default model: `gpt-5.6-sol`. Cursor-selectable GPT-5.6 aliases
+  (`gpt-5.6-terra`, `gpt-5.6-luna`, effort suffixes, `codex-*`) resolve to the
+  matching upstream tier with server-side reasoning effort and verbosity.
+  Legacy `gpt-5.5*` aliases still map to `gpt-5.5`.
 - Token credentials are read fresh from `auth.json` on every request, so refreshes
   by the Codex app are picked up. If you get 401s, run `codex login` again.
 - In faithful mode the model is told it is the Codex coding agent and is offered
@@ -769,9 +778,12 @@ For Cursor's OpenAI-compatible custom provider, use:
 ```text
 Base URL: http://127.0.0.1:8088/v1
 API Key: any non-empty value
-Model: gpt-5.3-codex-spark
+Model: gpt-5.6-terra
 ```
+
+Recommended Cursor custom models to add: `gpt-5.6-sol`, `gpt-5.6-sol-high`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-luna-fast`, `gpt-5.3-codex-spark`.
 
 Cursor may also send `gpt-5.3-codex-spark-preview`; the API accepts that as an equivalent alias.
 
-`gpt-5.3-codex-spark` is a Cursor-facing alias that routes to the stable Codex upstream model with low reasoning effort and low verbosity for faster interactive turns.
+`gpt-5.3-codex-spark` remains available for ultra-fast overflow turns (96 KiB hard context).
