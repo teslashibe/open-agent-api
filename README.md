@@ -4,7 +4,7 @@ A small OpenAI-compatible Go HTTP API that proxies chat requests to the Codex
 backend (`wss://chatgpt.com/backend-api/codex/responses`) using the ChatGPT OAuth
 token stored by `codex login`. No `sk-` API key is needed.
 
-> Reverse-engineered from `codex_cli_rs` 0.142.0. Use responsibly and within
+> Reverse-engineered from `codex_cli_rs` 0.144.1. Use responsibly and within
 > OpenAI's terms.
 
 ## Requirements
