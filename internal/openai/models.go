@@ -26,9 +26,10 @@ func alias(id, upstream, effort, verbosity string) ModelAlias {
 }
 
 // gpt56EffortLadder returns bare + effort aliases for a GPT-5.6 tier.
-// includeUltra adds the -ultra variant (Sol/Terra only in Codex catalog).
-func gpt56EffortLadder(upstream string, includeUltra bool) []ModelAlias {
-	out := []ModelAlias{
+// Upstream accepts none|minimal|low|medium|high|xhigh|max — not "ultra"
+// (ultra is a Codex product multi-agent mode, not a reasoning.effort value).
+func gpt56EffortLadder(upstream string) []ModelAlias {
+	return []ModelAlias{
 		alias(upstream, upstream, DefaultReasoningEffort, gpt56DefaultVerbosity),
 		alias(upstream+"-low", upstream, "low", gpt56DefaultVerbosity),
 		alias(upstream+"-medium", upstream, "medium", gpt56DefaultVerbosity),
@@ -36,10 +37,6 @@ func gpt56EffortLadder(upstream string, includeUltra bool) []ModelAlias {
 		alias(upstream+"-xhigh", upstream, "xhigh", gpt56DefaultVerbosity),
 		alias(upstream+"-max", upstream, "max", gpt56DefaultVerbosity),
 	}
-	if includeUltra {
-		out = append(out, alias(upstream+"-ultra", upstream, "ultra", gpt56DefaultVerbosity))
-	}
-	return out
 }
 
 func buildModelAliases() []ModelAlias {
@@ -57,10 +54,9 @@ func buildModelAliases() []ModelAlias {
 		alias("gpt-5.6-sol-high", DefaultModel, "high", gpt56DefaultVerbosity),
 		alias("gpt-5.6-sol-xhigh", DefaultModel, "xhigh", gpt56DefaultVerbosity),
 		alias("gpt-5.6-sol-max", DefaultModel, "max", gpt56DefaultVerbosity),
-		alias("gpt-5.6-sol-ultra", DefaultModel, "ultra", gpt56DefaultVerbosity),
 	}
-	out = append(out, gpt56EffortLadder("gpt-5.6-terra", true)...)
-	out = append(out, gpt56EffortLadder("gpt-5.6-luna", false)...)
+	out = append(out, gpt56EffortLadder("gpt-5.6-terra")...)
+	out = append(out, gpt56EffortLadder("gpt-5.6-luna")...)
 	out = append(out,
 		alias("gpt-5.6-luna-fast", "gpt-5.6-luna", "low", "low"),
 		alias("codex-sol", DefaultModel, "low", gpt56DefaultVerbosity),
