@@ -182,7 +182,8 @@ See [`docs/gpt-5.6-sol-terra-luna.md`](docs/gpt-5.6-sol-terra-luna.md) and
 | `gpt-5.5-high` | `gpt-5.5` | `high` | `medium` |
 | `gpt-5.3-codex-spark` | `gpt-5.3-codex-spark` | `low` | `low` |
 
-Sol/Terra also expose `-xhigh`, `-max`, `-ultra` effort aliases. Luna stops at `-max` (no ultra).
+All three tiers expose `-xhigh` and `-max` effort aliases. `ultra` is a Codex
+product multi-agent mode (not a `reasoning.effort` value) and is not aliased.
 
 ### Non-Streaming Chat
 
