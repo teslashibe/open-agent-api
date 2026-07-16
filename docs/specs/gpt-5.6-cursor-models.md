@@ -5,7 +5,9 @@
 **Repo:** `codex-chat-api`  
 **Depends on:** [`docs/gpt-5.6-sol-terra-luna.md`](../gpt-5.6-sol-terra-luna.md) (inventory)
 
-**Resolved open questions:** default=`gpt-5.6-sol`; ship `codex-*` + `ultra` aliases in v1; 1M API-key path remains follow-up.
+**Resolved open questions:** default=`gpt-5.6-sol`; ship `codex-*` aliases in v1;
+do **not** ship `-ultra` effort aliases (`ultra` is invalid for `reasoning.effort`);
+1M API-key path remains follow-up.
 
 ## Goal
 
@@ -72,8 +74,7 @@ Additional API pricing note (developer API only): prompts **>272K input** are bi
 
 - [ ] `ResolveModelAlias` maps each public ID → correct `UpstreamModel` + `ReasoningEffort` + `Verbosity`.
 - [ ] Request-level `reasoning_effort` / `verbosity` continue to override alias defaults.
-- [ ] Luna aliases never advertise `ultra` (not in Codex CLI catalog).
-- [ ] Sol/Terra support effort aliases through `ultra`.
+- [x] Effort aliases cover `low`…`max` only (no `ultra`; invalid enum upstream).
 - [ ] Unknown models still pass through with medium/medium (existing behavior).
 
 ### C. Routing / runtime
@@ -109,11 +110,10 @@ Additional API pricing note (developer API only): prompts **>272K input** are bi
 | `gpt-5.6-sol-high` | `gpt-5.6-sol` | high | low | |
 | `gpt-5.6-sol-xhigh` | `gpt-5.6-sol` | xhigh | low | |
 | `gpt-5.6-sol-max` | `gpt-5.6-sol` | max | low | |
-| `gpt-5.6-sol-ultra` | `gpt-5.6-sol` | ultra | low | Plan-gated |
 | `gpt-5.6-terra` | `gpt-5.6-terra` | medium | low | Everyday default recommendation |
-| `gpt-5.6-terra-low` … `-ultra` | `gpt-5.6-terra` | * | low | Same ladder as Sol |
+| `gpt-5.6-terra-low` … `-max` | `gpt-5.6-terra` | * | low | Same ladder as Sol |
 | `gpt-5.6-luna` | `gpt-5.6-luna` | medium | low | |
-| `gpt-5.6-luna-low` … `-max` | `gpt-5.6-luna` | * | low | **No `-ultra`** |
+| `gpt-5.6-luna-low` … `-max` | `gpt-5.6-luna` | * | low | |
 | `gpt-5.6-luna-fast` | `gpt-5.6-luna` | low | low | Interactive shortcut |
 
 Optional (nice-to-have, same PR or follow-up):

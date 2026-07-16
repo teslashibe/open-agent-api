@@ -71,13 +71,13 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 54 {
+	if body.Object != "list" || len(body.Data) != 52 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
 	wantIDs := []string{
 		"gpt-5.6-sol", "gpt-5.6",
-		"gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max", "gpt-5.6-sol-ultra",
-		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max", "gpt-5.6-terra-ultra",
+		"gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max",
+		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max",
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
 		"gpt-5.6-luna-fast", "codex-sol", "codex-terra", "codex-luna",
 		"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
@@ -108,10 +108,10 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 		wantParallelSet bool
 	}{
 		{
-			name:          "sol ultra alias",
-			body:          `{"model":"gpt-5.6-sol-ultra","messages":[{"role":"user","content":"hi"}]}`,
+			name:          "sol max alias",
+			body:          `{"model":"gpt-5.6-sol-max","messages":[{"role":"user","content":"hi"}]}`,
 			wantModel:     "gpt-5.6-sol",
-			wantEffort:    "ultra",
+			wantEffort:    "max",
 			wantVerbosity: "low",
 			wantFaithful:  true,
 		},
