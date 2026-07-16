@@ -5,6 +5,9 @@ import "testing"
 func TestProviderForModel(t *testing.T) {
 	cases := map[string]string{
 		"gpt-5.5":                ProviderCodex,
+		"gpt-5.6-sol":            ProviderCodex,
+		"gpt-5.6-terra":          ProviderCodex,
+		"gpt-5.6-luna":           ProviderCodex,
 		"gpt-5.3-codex-spark":    ProviderCodex,
 		"":                       ProviderCodex,
 		"gemini-2.5-pro":         ProviderGemini,

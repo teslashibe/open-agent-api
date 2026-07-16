@@ -6,7 +6,8 @@ import (
 )
 
 const (
-	DefaultModel = "gpt-5.5"
+	DefaultModel = "gpt-5.6-sol"
+	LegacyGPT55  = "gpt-5.5"
 )
 
 type ChatCompletionRequest struct {
