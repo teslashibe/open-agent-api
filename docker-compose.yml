@@ -25,7 +25,9 @@ services:
       CLAUDE_AGENT_MAX_ACTIVE: "${CLAUDE_AGENT_MAX_ACTIVE:-}"
       CLAUDE_AGENT_MAX_ACTIVE_PER_KEY: "${CLAUDE_AGENT_MAX_ACTIVE_PER_KEY:-}"
       CLAUDE_AGENT_QUEUE_LIMIT: "${CLAUDE_AGENT_QUEUE_LIMIT:-}"
-      CODEX_STREAM_IDLE_TIMEOUT: "${CODEX_STREAM_IDLE_TIMEOUT:-90s}"
+      # 240s: deep-reasoning turns pause >90s without streaming; healthy
+      # turns were killed at 90s (observed 2026-07-07).
+      CODEX_STREAM_IDLE_TIMEOUT: "${CODEX_STREAM_IDLE_TIMEOUT:-240s}"
       # Cursor BYOK drops type:"custom" tool calls; function shape is the default.
       CODEX_CUSTOM_TOOL_WIRE: "${CODEX_CUSTOM_TOOL_WIRE:-function}"
       CODEX_TIMEOUT: "${CODEX_TIMEOUT:-10m}"
@@ -48,14 +50,10 @@ services:
       - "${HOME}/.codex:/home/codex/.codex:ro"
       - "${HOME}/.gemini:/home/codex/.gemini"
       - "${HOME}/.claude:/home/codex/.claude"
-      # Requires ~/.claude.json on the host (run `claude login` once).
-      # create_host_path:false fails loudly instead of silently creating a
-      # directory at this path, which would break Claude CLI auth (EISDIR).
-      - type: bind
-        source: "${HOME}/.claude.json"
-        target: /home/codex/.claude.json
-        bind:
-          create_host_path: false
+      # No ~/.claude.json bind: the host CLI replaces that file via atomic
+      # rename, leaving the container a stale truncated inode ("config
+      # corrupted"). Auth comes from CLAUDE_CODE_OAUTH_TOKEN (.env); the
+      # container CLI maintains its own config in its own HOME.
       - "agent-queue-locks:/var/lib/codex-chat-api/agent-locks"
     ports:
       - "127.0.0.1:${CODEX_CHAT_API_PORT:-8088}:8088"
