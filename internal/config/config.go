@@ -43,7 +43,14 @@ const (
 	DefaultContextCompactedToolOutputMaxBytes = 512
 	DefaultDegenerateTurnRetryEnabled         = true
 	DefaultCodexClientPoolUnavailable         = "fail"
+	DefaultGatewayTenantHeader                = "X-Smore-Tenant-ID"
 )
+
+// DefaultGatewayProviders enables every provider so the local Cursor workflow
+// keeps its current behavior unless a deploy narrows the allowlist.
+func DefaultGatewayProviders() []string {
+	return []string{"codex", "gemini", "claude"}
+}
 
 type Config struct {
 	Host                               string
@@ -90,6 +97,9 @@ type Config struct {
 	DegenerateTurnRetryEnabled         bool
 	CodexClients                       []CodexClient
 	CodexClientPoolUnavailable         string
+	GatewayBearerSecret                string
+	GatewayProviders                   []string
+	GatewayTenantHeader                string
 }
 
 type CodexClient struct {
@@ -339,6 +349,16 @@ func Load(args []string) (Config, error) {
 	if value := os.Getenv("CODEX_CLIENT_POOL_UNAVAILABLE"); value != "" {
 		cfg.CodexClientPoolUnavailable = value
 	}
+	if value := os.Getenv("GATEWAY_BEARER_SECRET"); value != "" {
+		cfg.GatewayBearerSecret = value
+	}
+	providersRaw := strings.Join(cfg.GatewayProviders, ",")
+	if value := os.Getenv("GATEWAY_PROVIDERS"); value != "" {
+		providersRaw = value
+	}
+	if value := os.Getenv("GATEWAY_TENANT_HEADER"); value != "" {
+		cfg.GatewayTenantHeader = value
+	}
 
 	fs := flag.NewFlagSet("codex-chat-api", flag.ContinueOnError)
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "host address to bind")
@@ -377,6 +397,9 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.DegenerateTurnRetryEnabled, "degenerate-turn-retry", cfg.DegenerateTurnRetryEnabled, "retry tool-capable turns that finish with text-only stop using tool_choice required")
 	fs.StringVar(&clientsJSON, "codex-clients", clientsJSON, "JSON array of Codex clients with non-sensitive labels and optional codex_home, auth_path, profile_path, and scaffold_path")
 	fs.StringVar(&cfg.CodexClientPoolUnavailable, "codex-client-pool-unavailable", cfg.CodexClientPoolUnavailable, "Codex client pool unavailable policy: fail or fallback_first")
+	fs.StringVar(&cfg.GatewayBearerSecret, "gateway-bearer-secret", cfg.GatewayBearerSecret, "shared bearer secret required on /v1 routes (empty disables inbound auth)")
+	fs.StringVar(&providersRaw, "gateway-providers", providersRaw, "comma-separated provider allowlist: codex, gemini, claude (codex is required)")
+	fs.StringVar(&cfg.GatewayTenantHeader, "gateway-tenant-header", cfg.GatewayTenantHeader, "request header whose value overrides agent queue affinity per tenant")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -391,6 +414,7 @@ func Load(args []string) (Config, error) {
 	if cfg.AuthPath == "" {
 		cfg.AuthPath = filepath.Join(cfg.CodexHome, "auth.json")
 	}
+	cfg.GatewayProviders = parseGatewayProviders(providersRaw)
 	if clientsJSON != "" {
 		clients, err := parseCodexClients(clientsJSON, cfg)
 		if err != nil {
@@ -442,6 +466,8 @@ func Defaults() Config {
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 		CustomToolWire:                     DefaultCustomToolWire,
 		QuotaFallbackModel:                 DefaultQuotaFallbackModel,
+		GatewayProviders:                   DefaultGatewayProviders(),
+		GatewayTenantHeader:                DefaultGatewayTenantHeader,
 	}
 	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
 	return cfg
@@ -576,6 +602,61 @@ func (c Config) Validate() error {
 	}
 	if err := validateCodexClients(c.CodexClients); err != nil {
 		return err
+	}
+	if err := validateGatewayProviders(c.GatewayProviders); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.GatewayTenantHeader) == "" {
+		return errors.New("gateway tenant header is required")
+	}
+	return nil
+}
+
+// ProviderEnabled reports whether a provider is on the gateway allowlist. An
+// empty allowlist (hand-built Config) means all providers, matching the
+// pre-allowlist behavior.
+func (c Config) ProviderEnabled(provider string) bool {
+	if len(c.GatewayProviders) == 0 {
+		return true
+	}
+	for _, enabled := range c.GatewayProviders {
+		if enabled == provider {
+			return true
+		}
+	}
+	return false
+}
+
+func parseGatewayProviders(raw string) []string {
+	providers := []string{}
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		provider := strings.ToLower(strings.TrimSpace(part))
+		if provider == "" || seen[provider] {
+			continue
+		}
+		seen[provider] = true
+		providers = append(providers, provider)
+	}
+	return providers
+}
+
+func validateGatewayProviders(providers []string) error {
+	if len(providers) == 0 {
+		return errors.New("at least one gateway provider is required")
+	}
+	hasCodex := false
+	for _, provider := range providers {
+		switch provider {
+		case "codex":
+			hasCodex = true
+		case "gemini", "claude":
+		default:
+			return fmt.Errorf("unsupported gateway provider %q (expected codex, gemini, or claude)", provider)
+		}
+	}
+	if !hasCodex {
+		return errors.New("gateway providers must include codex (it is the router fallback)")
 	}
 	return nil
 }

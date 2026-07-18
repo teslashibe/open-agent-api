@@ -582,3 +582,113 @@ func TestClaudeDefaults(t *testing.T) {
 		t.Fatalf("ClaudeTimeout = %s", cfg.ClaudeTimeout)
 	}
 }
+
+func TestLoadGatewayDefaults(t *testing.T) {
+	unsetenv(t, "GATEWAY_BEARER_SECRET")
+	unsetenv(t, "GATEWAY_PROVIDERS")
+	unsetenv(t, "GATEWAY_TENANT_HEADER")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GatewayBearerSecret != "" {
+		t.Fatalf("GatewayBearerSecret = %q, want empty (auth off)", cfg.GatewayBearerSecret)
+	}
+	if len(cfg.GatewayProviders) != 3 {
+		t.Fatalf("GatewayProviders = %v, want codex, gemini, claude", cfg.GatewayProviders)
+	}
+	for _, provider := range []string{"codex", "gemini", "claude"} {
+		if !cfg.ProviderEnabled(provider) {
+			t.Fatalf("ProviderEnabled(%q) = false, want true", provider)
+		}
+	}
+	if cfg.GatewayTenantHeader != DefaultGatewayTenantHeader {
+		t.Fatalf("GatewayTenantHeader = %q, want %q", cfg.GatewayTenantHeader, DefaultGatewayTenantHeader)
+	}
+}
+
+func TestLoadGatewayEnvironment(t *testing.T) {
+	t.Setenv("GATEWAY_BEARER_SECRET", "shared-secret")
+	t.Setenv("GATEWAY_PROVIDERS", " Codex , GEMINI ,codex")
+	t.Setenv("GATEWAY_TENANT_HEADER", "X-Custom-Tenant")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GatewayBearerSecret != "shared-secret" {
+		t.Fatalf("GatewayBearerSecret = %q, want shared-secret", cfg.GatewayBearerSecret)
+	}
+	if len(cfg.GatewayProviders) != 2 || cfg.GatewayProviders[0] != "codex" || cfg.GatewayProviders[1] != "gemini" {
+		t.Fatalf("GatewayProviders = %v, want [codex gemini]", cfg.GatewayProviders)
+	}
+	if cfg.ProviderEnabled("claude") {
+		t.Fatal("ProviderEnabled(claude) = true, want false")
+	}
+	if cfg.GatewayTenantHeader != "X-Custom-Tenant" {
+		t.Fatalf("GatewayTenantHeader = %q, want X-Custom-Tenant", cfg.GatewayTenantHeader)
+	}
+}
+
+func TestLoadGatewayFlagsOverrideEnvironment(t *testing.T) {
+	t.Setenv("GATEWAY_BEARER_SECRET", "env-secret")
+	t.Setenv("GATEWAY_PROVIDERS", "codex,gemini,claude")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load([]string{
+		"-gateway-bearer-secret", "flag-secret",
+		"-gateway-providers", "codex,gemini",
+		"-gateway-tenant-header", "X-Flag-Tenant",
+	})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GatewayBearerSecret != "flag-secret" {
+		t.Fatalf("GatewayBearerSecret = %q, want flag-secret", cfg.GatewayBearerSecret)
+	}
+	if cfg.ProviderEnabled("claude") {
+		t.Fatal("ProviderEnabled(claude) = true, want false")
+	}
+	if cfg.GatewayTenantHeader != "X-Flag-Tenant" {
+		t.Fatalf("GatewayTenantHeader = %q, want X-Flag-Tenant", cfg.GatewayTenantHeader)
+	}
+}
+
+func TestLoadGatewayInvalidProvider(t *testing.T) {
+	t.Setenv("GATEWAY_PROVIDERS", "codex,openai")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want unsupported provider error")
+	}
+}
+
+func TestLoadGatewayProvidersRequireCodex(t *testing.T) {
+	t.Setenv("GATEWAY_PROVIDERS", "gemini,claude")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want codex-required error")
+	}
+}
+
+func TestLoadGatewayEmptyProviders(t *testing.T) {
+	t.Setenv("GATEWAY_PROVIDERS", " , ")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want empty allowlist error")
+	}
+}
+
+func TestProviderEnabledEmptyAllowlistMeansAll(t *testing.T) {
+	cfg := Config{}
+	for _, provider := range []string{"codex", "gemini", "claude"} {
+		if !cfg.ProviderEnabled(provider) {
+			t.Fatalf("ProviderEnabled(%q) = false, want true for empty allowlist", provider)
+		}
+	}
+}
