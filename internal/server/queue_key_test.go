@@ -128,13 +128,57 @@ func TestCursorQueueKeyFallsBackToStableHeaderBeforeFingerprint(t *testing.T) {
 	}
 }
 
+func TestTenantHeaderOverridesQueueKeyModes(t *testing.T) {
+	for _, mode := range []string{"cursor", "global", "auth_hash"} {
+		t.Run(mode, func(t *testing.T) {
+			key := resolveQueueKeyWithTenantForTest(t, mode, "X-Smore-Tenant-ID", cursorFingerprintBody("call_one", "secret prompt"), map[string]string{
+				"X-Smore-Tenant-ID": "tenant-alpha",
+				"Authorization":     "Bearer shared-secret",
+			})
+
+			if key.Mode != "tenant" {
+				t.Fatalf("mode = %q, want tenant", key.Mode)
+			}
+			if key.Value != "tenant:tenant-alpha" {
+				t.Fatalf("value = %q, want tenant:tenant-alpha", key.Value)
+			}
+		})
+	}
+}
+
+func TestTenantHeaderDistinguishesTenants(t *testing.T) {
+	first := resolveQueueKeyWithTenantForTest(t, "cursor", "X-Smore-Tenant-ID", `{"messages":[]}`, map[string]string{"X-Smore-Tenant-ID": "tenant-alpha"})
+	second := resolveQueueKeyWithTenantForTest(t, "cursor", "X-Smore-Tenant-ID", `{"messages":[]}`, map[string]string{"X-Smore-Tenant-ID": "tenant-beta"})
+
+	if first.Hash == second.Hash {
+		t.Fatalf("hashes matched for distinct tenants: %s", first.Hash)
+	}
+}
+
+func TestTenantHeaderAbsentKeepsExistingBehavior(t *testing.T) {
+	withTenantConfigured := resolveQueueKeyWithTenantForTest(t, "cursor", "X-Smore-Tenant-ID", cursorFingerprintBody("call_one", "secret prompt"), nil)
+	withoutTenantConfigured := resolveQueueKeyForTest(t, "cursor", cursorFingerprintBody("call_one", "secret prompt"), nil)
+
+	if withTenantConfigured.Mode != withoutTenantConfigured.Mode {
+		t.Fatalf("modes differ without tenant header: %q != %q", withTenantConfigured.Mode, withoutTenantConfigured.Mode)
+	}
+	if withTenantConfigured.Hash != withoutTenantConfigured.Hash {
+		t.Fatalf("hashes differ without tenant header: %s != %s", withTenantConfigured.Hash, withoutTenantConfigured.Hash)
+	}
+}
+
 func resolveQueueKeyForTest(t *testing.T, mode string, body string, headers map[string]string) agentQueueKey {
+	t.Helper()
+	return resolveQueueKeyWithTenantForTest(t, mode, "", body, headers)
+}
+
+func resolveQueueKeyWithTenantForTest(t *testing.T, mode string, tenantHeader string, body string, headers map[string]string) agentQueueKey {
 	t.Helper()
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	var key agentQueueKey
 	app.Post("/", func(c *fiber.Ctx) error {
-		key = resolveAgentQueueKey(mode, c, c.Body())
+		key = resolveAgentQueueKey(mode, tenantHeader, c, c.Body())
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 

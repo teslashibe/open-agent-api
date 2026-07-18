@@ -31,13 +31,22 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	geminiService, err := buildGeminiService(cfg)
-	if err != nil {
-		return err
+	// Disabled providers get no client at all: the server rejects their models
+	// before routing, and a nil service here guarantees no upstream (including
+	// the claude CLI) can be reached even if a request slipped through.
+	var geminiService codex.Service
+	if cfg.ProviderEnabled(codex.ProviderGemini) {
+		geminiService, err = buildGeminiService(cfg)
+		if err != nil {
+			return err
+		}
 	}
-	claudeService, err := buildClaudeService(cfg)
-	if err != nil {
-		return err
+	var claudeService codex.Service
+	if cfg.ProviderEnabled(codex.ProviderClaude) {
+		claudeService, err = buildClaudeService(cfg)
+		if err != nil {
+			return err
+		}
 	}
 	service := codex.Router{Codex: codexService, Gemini: geminiService, Claude: claudeService}
 

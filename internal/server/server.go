@@ -111,7 +111,10 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			"status": "ok",
 		})
 	})
-	app.Get("/v1/models", models)
+	// Bearer auth guards every /v1 route but never /health, which k8s probes
+	// must reach unauthenticated.
+	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
+	app.Get("/v1/models", models(cfg))
 	app.Post("/v1/chat/completions", chatCompletions(opts))
 	app.Use(func(c *fiber.Ctx) error {
 		return writeError(c, fiber.StatusNotFound, "invalid_request_error", "not found")
@@ -120,21 +123,26 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	return app
 }
 
-func models(c *fiber.Ctx) error {
-	aliases := openai.ModelAliases()
-	models := make([]openai.Model, 0, len(aliases))
-	for _, alias := range aliases {
-		models = append(models, openai.Model{
-			ID:      alias.ID,
-			Object:  "model",
-			Created: 0,
-			OwnedBy: "codex-chat-api",
+func models(cfg config.Config) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		aliases := openai.ModelAliases()
+		models := make([]openai.Model, 0, len(aliases))
+		for _, alias := range aliases {
+			if !cfg.ProviderEnabled(codex.ProviderForModel(alias.UpstreamModel)) {
+				continue
+			}
+			models = append(models, openai.Model{
+				ID:      alias.ID,
+				Object:  "model",
+				Created: 0,
+				OwnedBy: "codex-chat-api",
+			})
+		}
+		return c.JSON(openai.ModelListResponse{
+			Object: "list",
+			Data:   models,
 		})
 	}
-	return c.JSON(openai.ModelListResponse{
-		Object: "list",
-		Data:   models,
-	})
 }
 
 func chatCompletions(opts options) fiber.Handler {
@@ -162,12 +170,16 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 		modelAlias := openai.ResolveModelAlias(model)
 		provider := codex.ProviderForModel(modelAlias.UpstreamModel)
+		if !opts.contextConfig.ProviderEnabled(provider) {
+			logLine(opts, "provider_disabled model=%s provider=%s\n", model, provider)
+			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "model not found")
+		}
 		toolsPresent := rawJSONPresent(req.Tools)
 		turnClass := classifyTurn(req, toolsPresent)
 		logLine(opts, "chat_completion model=%s provider=%s stream=%t tools_present=%t turn_class=%s\n", model, provider, req.Stream, toolsPresent, turnClass)
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
-		queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, c, c.Body())
+		queueKey := resolveAgentQueueKey(opts.agentQueueKeyMode, opts.contextConfig.GatewayTenantHeader, c, c.Body())
 		// Cursor and other OpenAI clients send their own tools. Faithful Codex mode
 		// injects the captured CLI profile/tools and often makes those requests fail upstream.
 		faithful := defaultBool(req.Faithful, !toolsPresent)
