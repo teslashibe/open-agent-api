@@ -37,6 +37,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES")
 	unsetenv(t, "CODEX_DEGENERATE_TURN_RETRY")
 	unsetenv(t, "CODEX_CLIENTS")
+	unsetenv(t, "CODEX_CLIENT_MAX_INFLIGHT")
 	unsetenv(t, "CODEX_CLIENT_POOL_UNAVAILABLE")
 	chdir(t, t.TempDir())
 
@@ -125,6 +126,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.CodexClientPoolUnavailable != DefaultCodexClientPoolUnavailable {
 		t.Fatalf("CodexClientPoolUnavailable = %q, want %q", cfg.CodexClientPoolUnavailable, DefaultCodexClientPoolUnavailable)
 	}
+	if cfg.CodexClientMaxInflight != DefaultCodexClientMaxInflight {
+		t.Fatalf("CodexClientMaxInflight = %d, want %d", cfg.CodexClientMaxInflight, DefaultCodexClientMaxInflight)
+	}
 	if len(cfg.CodexClients) != 1 {
 		t.Fatalf("CodexClients length = %d, want 1", len(cfg.CodexClients))
 	}
@@ -159,6 +163,7 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_CONTEXT_RECENT_MESSAGES", "9")
 	t.Setenv("CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES", "456")
 	t.Setenv("CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES", "78")
+	t.Setenv("CODEX_CLIENT_MAX_INFLIGHT", "4")
 	t.Setenv("CODEX_CLIENT_POOL_UNAVAILABLE", "fallback_first")
 	t.Setenv("CODEX_CLIENTS", `[
 		{"label":"primary","codex_home":"/tmp/codex-a","profile_path":"/tmp/profile-a.json","scaffold_path":"/tmp/scaffold-a.json"},
@@ -219,6 +224,9 @@ func TestLoadEnvironment(t *testing.T) {
 	if cfg.CodexClientPoolUnavailable != "fallback_first" {
 		t.Fatalf("CodexClientPoolUnavailable = %q", cfg.CodexClientPoolUnavailable)
 	}
+	if cfg.CodexClientMaxInflight != 4 {
+		t.Fatalf("CodexClientMaxInflight = %d, want 4", cfg.CodexClientMaxInflight)
+	}
 	if len(cfg.CodexClients) != 2 {
 		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
 	}
@@ -263,6 +271,7 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--context-recent-messages", "10",
 		"--context-tool-output-max-bytes", "567",
 		"--context-compacted-tool-output-max-bytes", "89",
+		"--codex-client-max-inflight", "5",
 		"--codex-client-pool-unavailable", "fallback_first",
 		"--codex-clients", `[{"label":"flag-a","codex_home":"/tmp/flag-a"},{"label":"flag-b","auth_path":"/tmp/flag-b-auth.json"}]`,
 	})
@@ -317,6 +326,9 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if cfg.CodexClientPoolUnavailable != "fallback_first" {
 		t.Fatalf("CodexClientPoolUnavailable = %q", cfg.CodexClientPoolUnavailable)
+	}
+	if cfg.CodexClientMaxInflight != 5 {
+		t.Fatalf("CodexClientMaxInflight = %d, want 5", cfg.CodexClientMaxInflight)
 	}
 	if len(cfg.CodexClients) != 2 {
 		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
@@ -519,6 +531,20 @@ func TestLoadInvalidCodexClientPoolUnavailable(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid codex client pool unavailable error")
+	}
+}
+
+func TestLoadInvalidCodexClientMaxInflight(t *testing.T) {
+	tests := []string{"not-a-number", "0", "-1"}
+	for _, value := range tests {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CODEX_CLIENT_MAX_INFLIGHT", value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid Codex client max inflight error")
+			}
+		})
 	}
 }
 
