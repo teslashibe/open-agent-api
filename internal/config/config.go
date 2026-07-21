@@ -44,6 +44,7 @@ const (
 	DefaultDegenerateTurnRetryEnabled         = true
 	DefaultCodexClientMaxInflight             = 2
 	DefaultCodexClientPoolUnavailable         = "fail"
+	DefaultCodexClientCooldownDefault         = 5 * time.Minute
 	DefaultGatewayTenantHeader                = "X-Smore-Tenant-ID"
 )
 
@@ -99,6 +100,7 @@ type Config struct {
 	CodexClients                       []CodexClient
 	CodexClientMaxInflight             int
 	CodexClientPoolUnavailable         string
+	CodexClientCooldownDefault         time.Duration
 	GatewayBearerSecret                string
 	GatewayProviders                   []string
 	GatewayTenantHeader                string
@@ -358,6 +360,13 @@ func Load(args []string) (Config, error) {
 	if value := os.Getenv("CODEX_CLIENT_POOL_UNAVAILABLE"); value != "" {
 		cfg.CodexClientPoolUnavailable = value
 	}
+	if value := os.Getenv("CODEX_CLIENT_COOLDOWN_DEFAULT"); value != "" {
+		cooldown, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CLIENT_COOLDOWN_DEFAULT: %w", err)
+		}
+		cfg.CodexClientCooldownDefault = cooldown
+	}
 	if value := os.Getenv("GATEWAY_BEARER_SECRET"); value != "" {
 		cfg.GatewayBearerSecret = value
 	}
@@ -407,6 +416,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&clientsJSON, "codex-clients", clientsJSON, "JSON array of Codex clients with non-sensitive labels and optional codex_home, auth_path, profile_path, and scaffold_path")
 	fs.IntVar(&cfg.CodexClientMaxInflight, "codex-client-max-inflight", cfg.CodexClientMaxInflight, "maximum concurrent requests per Codex client")
 	fs.StringVar(&cfg.CodexClientPoolUnavailable, "codex-client-pool-unavailable", cfg.CodexClientPoolUnavailable, "Codex client pool unavailable policy: fail or fallback_first")
+	fs.DurationVar(&cfg.CodexClientCooldownDefault, "codex-client-cooldown-default", cfg.CodexClientCooldownDefault, "default cooldown for rate-limited Codex clients when no retry hint is available")
 	fs.StringVar(&cfg.GatewayBearerSecret, "gateway-bearer-secret", cfg.GatewayBearerSecret, "shared bearer secret required on /v1 routes (empty disables inbound auth)")
 	fs.StringVar(&providersRaw, "gateway-providers", providersRaw, "comma-separated provider allowlist: codex, gemini, claude (codex is required)")
 	fs.StringVar(&cfg.GatewayTenantHeader, "gateway-tenant-header", cfg.GatewayTenantHeader, "request header whose value overrides agent queue affinity per tenant")
@@ -474,6 +484,7 @@ func Defaults() Config {
 		DegenerateTurnRetryEnabled:         DefaultDegenerateTurnRetryEnabled,
 		CodexClientMaxInflight:             DefaultCodexClientMaxInflight,
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
+		CodexClientCooldownDefault:         DefaultCodexClientCooldownDefault,
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 		CustomToolWire:                     DefaultCustomToolWire,
 		QuotaFallbackModel:                 DefaultQuotaFallbackModel,
@@ -613,6 +624,9 @@ func (c Config) Validate() error {
 	}
 	if err := validateCodexClientPoolUnavailable(c.CodexClientPoolUnavailable); err != nil {
 		return err
+	}
+	if c.CodexClientCooldownDefault <= 0 {
+		return errors.New("codex client cooldown default must be positive")
 	}
 	if err := validateCodexClients(c.CodexClients); err != nil {
 		return err

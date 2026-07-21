@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 )
 
 const (
 	ClientPoolUnavailableFail          = "fail"
 	ClientPoolUnavailableFallbackFirst = "fallback_first"
+	DefaultClientCooldown              = 5 * time.Minute
 	defaultClientMaxInflight           = 2
 )
 
@@ -27,10 +29,18 @@ type PooledService struct {
 	maxInflight       int
 	unavailablePolicy string
 	logOutput         io.Writer
+	cooldownDefault   time.Duration
+	now               func() time.Time
 
-	mu       sync.Mutex
-	inflight map[string]int
-	logMu    sync.Mutex
+	mu        sync.Mutex
+	cooldowns []clientCooldown
+	inflight  map[string]int
+	logMu     sync.Mutex
+}
+
+type clientCooldown struct {
+	until time.Time
+	class FailureClass
 }
 
 type pooledClient struct {
@@ -43,6 +53,8 @@ type PooledServiceConfig struct {
 	MaxInflight       int
 	UnavailablePolicy string
 	LogOutput         io.Writer
+	CooldownDefault   time.Duration
+	Now               func() time.Time
 }
 
 type PooledClientConfig struct {
@@ -90,11 +102,20 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 	if cfg.LogOutput == nil {
 		cfg.LogOutput = os.Stdout
 	}
+	if cfg.CooldownDefault <= 0 {
+		cfg.CooldownDefault = DefaultClientCooldown
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
 	return &PooledService{
 		clients:           clients,
 		maxInflight:       cfg.MaxInflight,
 		unavailablePolicy: cfg.UnavailablePolicy,
 		logOutput:         cfg.LogOutput,
+		cooldownDefault:   cfg.CooldownDefault,
+		now:               cfg.Now,
+		cooldowns:         make([]clientCooldown, len(clients)),
 		inflight:          map[string]int{},
 	}, nil
 }
@@ -140,47 +161,237 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 		return nil, err
 	}
 	p.logSelection(req, index, false, index != selected, inflight)
-	events, err := p.clients[index].service.Stream(ctx, req)
-	if err == nil {
-		return p.withLease(ctx, events, release), nil
-	}
-	release()
-	if !p.shouldFallback(index, err) {
-		return nil, err
-	}
-
-	inflight, release, ok := p.acquireClient(req, 0)
-	if !ok {
-		return nil, p.saturatedError(req)
-	}
-	p.logSelection(req, 0, true, false, inflight)
-	events, err = p.clients[0].service.Stream(ctx, req)
-	if err != nil {
-		release()
-		return nil, err
-	}
-	return p.withLease(ctx, events, release), nil
+	return p.streamAttempt(ctx, req, index, false, release)
 }
 
+func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func()) (<-chan StreamEvent, error) {
+	attemptCtx, cancel := context.WithCancel(ctx)
+	events, err := p.clients[index].service.Stream(attemptCtx, req)
+	if err != nil {
+		cancel()
+		if p.cooldownEligible(err, PhaseConnect) {
+			p.coolClient(index, err)
+			release()
+			if !retried {
+				if alternate, inflight, altRelease, ok := p.acquireAlternate(req, index); ok {
+					p.logSelection(req, alternate, false, true, inflight)
+					return p.streamAttempt(ctx, req, alternate, true, altRelease)
+				}
+			}
+			return nil, err
+		}
+		release()
+		if !retried && p.shouldFallback(index, err) {
+			if inflight, fbRelease, ok, _, _ := p.tryAcquireClient(req, 0, false); ok {
+				p.logSelection(req, 0, true, false, inflight)
+				return p.streamAttempt(ctx, req, 0, true, fbRelease)
+			}
+		}
+		return nil, err
+	}
+
+	out := make(chan StreamEvent, 1)
+	go p.forwardAttempt(ctx, cancel, req, index, events, out, retried, release)
+	return out, nil
+}
+
+func (p *PooledService) forwardAttempt(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	req Request,
+	index int,
+	events <-chan StreamEvent,
+	out chan<- StreamEvent,
+	retried bool,
+	release func(),
+) {
+	defer close(out)
+	defer cancel()
+
+	first, ok := receivePoolEvent(ctx, events)
+	if !ok {
+		release()
+		if err := ctx.Err(); err != nil {
+			trySendContextError(out, err)
+		}
+		return
+	}
+	if first.Err != nil && p.cooldownEligible(first.Err, PhaseFirstEvent) {
+		p.coolClient(index, first.Err)
+		if !retried {
+			if alternate, inflight, altRelease, available := p.acquireAlternate(req, index); available {
+				cancel()
+				release()
+				p.logSelection(req, alternate, false, true, inflight)
+				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease)
+				if err != nil {
+					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
+					return
+				}
+				p.forwardRemaining(ctx, out, retryEvents)
+				return
+			}
+		}
+	}
+
+	defer release()
+	if !p.sendPoolEvent(ctx, out, first) {
+		return
+	}
+	if first.Err != nil || first.Done {
+		return
+	}
+	p.forwardRemaining(ctx, out, events)
+}
+
+func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent) {
+	for {
+		select {
+		case <-ctx.Done():
+			trySendContextError(out, ctx.Err())
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			if !p.sendPoolEvent(ctx, out, event) {
+				return
+			}
+			if event.Err != nil || event.Done {
+				return
+			}
+		}
+	}
+}
+
+func (p *PooledService) sendPoolEvent(ctx context.Context, out chan<- StreamEvent, event StreamEvent) bool {
+	select {
+	case out <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func receivePoolEvent(ctx context.Context, events <-chan StreamEvent) (StreamEvent, bool) {
+	select {
+	case event, ok := <-events:
+		return event, ok
+	case <-ctx.Done():
+		return StreamEvent{}, false
+	}
+}
+
+func trySendContextError(events chan<- StreamEvent, err error) {
+	select {
+	case events <- StreamEvent{Err: err}:
+	default:
+	}
+}
+
+func (p *PooledService) cooldownEligible(err error, phase FailurePhase) bool {
+	class := ClassifyFailure(err)
+	if class != FailureRateLimit && class != FailureQuota {
+		return false
+	}
+	return MayRotateAccount(class, phase)
+}
+
+func (p *PooledService) coolClient(index int, err error) time.Time {
+	now := p.now()
+	until, ok := retryDeadline(err, now)
+	if !ok {
+		until = now.Add(p.cooldownDefault)
+	}
+	class := ClassifyFailure(err)
+
+	p.mu.Lock()
+	if p.cooldowns[index].until.After(until) {
+		until = p.cooldowns[index].until
+	} else {
+		p.cooldowns[index] = clientCooldown{until: until, class: class}
+	}
+	p.mu.Unlock()
+	p.logCooldown(index, until)
+	return until
+}
+
+func (p *PooledService) shouldFallback(index int, err error) bool {
+	if p.unavailablePolicy != ClientPoolUnavailableFallbackFirst || index == 0 {
+		return false
+	}
+	if errors.Is(err, ErrClientUnavailable) {
+		return true
+	}
+	if codexErr, ok := ErrorAs(err); ok {
+		return codexErr.Kind == ErrorKindAuth || codexErr.Kind == ErrorKindUpstream
+	}
+	return false
+}
+
+// acquireAvailable leases the sticky client when it is healthy (not cooling and
+// under the inflight cap). Otherwise it walks other clients in shard order.
+// Prefer cooldown errors when every client is cooling; otherwise saturation.
 func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, func(), error) {
+	sawEligible := false
+	var selectedCooldownClass FailureClass
 	for offset := range len(p.clients) {
 		index := (selected + offset) % len(p.clients)
-		inflight, release, ok := p.acquireClient(req, index)
-		if ok {
+		inflight, release, acquired, class, cooling := p.tryAcquireClient(req, index, false)
+		if cooling {
+			if index == selected {
+				selectedCooldownClass = class
+			}
+			continue
+		}
+		sawEligible = true
+		if acquired {
 			return index, inflight, release, nil
 		}
+	}
+	if !sawEligible {
+		if req.AllowCooling {
+			inflight, release, acquired, _, _ := p.tryAcquireClient(req, selected, true)
+			if acquired {
+				return selected, inflight, release, nil
+			}
+			return 0, 0, nil, p.saturatedError(req)
+		}
+		return 0, 0, nil, allClientsCoolingError(selectedCooldownClass)
 	}
 	return 0, 0, nil, p.saturatedError(req)
 }
 
-func (p *PooledService) acquireClient(req Request, index int) (int, func(), bool) {
+func (p *PooledService) acquireAlternate(req Request, failed int) (int, int, func(), bool) {
+	for offset := 1; offset < len(p.clients); offset++ {
+		index := (failed + offset) % len(p.clients)
+		inflight, release, acquired, _, _ := p.tryAcquireClient(req, index, false)
+		if acquired {
+			return index, inflight, release, true
+		}
+	}
+	return 0, 0, nil, false
+}
+
+// tryAcquireClient checks cooldown eligibility and increments the inflight
+// lease in one critical section. This prevents a concurrent failure from
+// cooling a client between selection and lease acquisition.
+func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bool) (int, func(), bool, FailureClass, bool) {
 	label := p.clients[index].label
+	now := p.now()
 	p.mu.Lock()
+	cooldown := p.cooldowns[index]
+	if !cooldown.until.After(now) {
+		p.cooldowns[index] = clientCooldown{}
+	} else if !allowCooling {
+		p.mu.Unlock()
+		return 0, nil, false, cooldown.class, true
+	}
 	current := p.inflight[label]
 	if current >= p.maxInflight {
 		p.mu.Unlock()
 		p.logClientSaturated(req, index, current)
-		return current, nil, false
+		return current, nil, false, "", false
 	}
 	current++
 	p.inflight[label] = current
@@ -198,43 +409,7 @@ func (p *PooledService) acquireClient(req Request, index int) (int, func(), bool
 			p.logRelease(req, index, remaining)
 		})
 	}
-	return current, release, true
-}
-
-func (p *PooledService) withLease(ctx context.Context, events <-chan StreamEvent, release func()) <-chan StreamEvent {
-	out := make(chan StreamEvent, 1)
-	go func() {
-		defer close(out)
-		defer release()
-		for {
-			select {
-			case <-ctx.Done():
-				trySendContextError(out, ctx.Err())
-				return
-			case event, ok := <-events:
-				if !ok {
-					return
-				}
-				select {
-				case <-ctx.Done():
-					trySendContextError(out, ctx.Err())
-					return
-				case out <- event:
-				}
-				if event.Err != nil || event.Done {
-					return
-				}
-			}
-		}
-	}()
-	return out
-}
-
-func trySendContextError(events chan<- StreamEvent, err error) {
-	select {
-	case events <- StreamEvent{Err: err}:
-	default:
-	}
+	return current, release, true, "", false
 }
 
 func (p *PooledService) saturatedError(req Request) error {
@@ -250,19 +425,6 @@ func (p *PooledService) saturatedError(req Request) error {
 		ErrClientPoolSaturated.Error(),
 		ErrClientPoolSaturated,
 	)
-}
-
-func (p *PooledService) shouldFallback(index int, err error) bool {
-	if p.unavailablePolicy != ClientPoolUnavailableFallbackFirst || index == 0 {
-		return false
-	}
-	if errors.Is(err, ErrClientUnavailable) {
-		return true
-	}
-	if codexErr, ok := ErrorAs(err); ok {
-		return codexErr.Kind == ErrorKindAuth || codexErr.Kind == ErrorKindUpstream
-	}
-	return false
 }
 
 func (p *PooledService) selectIndex(req Request) int {
@@ -303,6 +465,14 @@ func (p *PooledService) logSelection(req Request, index int, fallback bool, rota
 	)
 }
 
+func (p *PooledService) logCooldown(index int, until time.Time) {
+	p.logf(
+		"codex_client_cooldown label=%s until=%s\n",
+		p.clients[index].label,
+		until.UTC().Format(time.RFC3339),
+	)
+}
+
 func (p *PooledService) logClientSaturated(req Request, index int, inflight int) {
 	p.logf(
 		"codex_client_saturated request_id=%s shard=%d client_label=%s inflight=%d max_inflight=%d\n",
@@ -338,4 +508,23 @@ func requestID(req Request) string {
 		return "none"
 	}
 	return req.RequestID
+}
+
+func allClientsCoolingError(class FailureClass) error {
+	// Preserve the sticky client's cooldown class. In particular, a capacity
+	// 429 must not acquire the quota sentinel and trigger model overflow.
+	if class == FailureQuota {
+		return NewError(
+			ErrorKindUpstream,
+			http.StatusTooManyRequests,
+			"usage limit reached",
+			fmt.Errorf("%w: all codex clients are cooling", ErrUsageLimitReached),
+		)
+	}
+	return NewError(
+		ErrorKindUpstream,
+		http.StatusTooManyRequests,
+		"rate limit reached",
+		errors.New("all codex clients are cooling"),
+	)
 }

@@ -20,6 +20,23 @@ import (
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
 
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
 func agentQueueTestConfig() config.Config {
 	cfg := config.Defaults()
 	cfg.DegenerateTurnRetryEnabled = false
@@ -1447,7 +1464,7 @@ func TestAgentQueueSerializesSameKey(t *testing.T) {
 			return codex.Completion{Text: "ok", Model: req.Model}, nil
 		},
 	}
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
 	firstDone := postJSONAsync(t, app, `{"session_id":"same-session","messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
@@ -1688,7 +1705,7 @@ func TestAgentQueuePriorityOrdersDifferentKeysViaHandler(t *testing.T) {
 			return codex.Completion{Text: "ok", Model: req.Model}, nil
 		},
 	}
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
 	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"first"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-a"})

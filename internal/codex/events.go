@@ -130,12 +130,16 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 			detail = fmt.Sprintf("codex event type %s", event.Type)
 		}
 		if strings.Contains(detail, "usage_limit_reached") {
-			return StreamEvent{}, true, NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", fmt.Errorf("%w: codex %s: %s", ErrUsageLimitReached, event.Type, detail))
+			retryAfter, resetAt := retryHintFromJSON(raw)
+			err := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", fmt.Errorf("%w: codex %s: %s", ErrUsageLimitReached, event.Type, detail))
+			return StreamEvent{}, true, withRetryHint(err, retryAfter, resetAt)
 		}
 		if strings.Contains(detail, "context_length_exceeded") {
 			return StreamEvent{}, true, NewError(ErrorKindClient, http.StatusBadRequest, "conversation exceeds the model's context window", fmt.Errorf("%w: codex %s: %s", ErrContextWindowExceeded, event.Type, detail))
 		}
-		return StreamEvent{}, true, NewError(ErrorKindUpstream, status, "codex backend error", fmt.Errorf("codex %s: %s", event.Type, detail))
+		retryAfter, resetAt := retryHintFromJSON(raw)
+		err := NewError(ErrorKindUpstream, status, "codex backend error", fmt.Errorf("codex %s: %s", event.Type, detail))
+		return StreamEvent{}, true, withRetryHint(err, retryAfter, resetAt)
 	default:
 		return StreamEvent{}, false, nil
 	}
