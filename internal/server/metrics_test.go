@@ -51,6 +51,31 @@ func TestMetricsEndpointRecordsRequestsAndQueueWait(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpointRecordsQueueBypassForOrdinaryChat(t *testing.T) {
+	cfg := config.Defaults()
+	metrics := metricspkg.New(true)
+	service := fakeCodexService{complete: func(context.Context, codex.Request) (codex.Completion, error) {
+		return codex.Completion{Text: "ok"}, nil
+	}}
+	app := New(cfg, WithCodexService(service), WithMetrics(metrics), WithLogOutput(io.Discard), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"hi"}]}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	body := scrapeServerMetrics(t, app, nil)
+	for _, want := range []string{
+		`codex_chat_api_requests_total{provider="codex",result="success"} 1`,
+		`codex_chat_api_queue_wait_seconds_count{provider="codex",result="bypassed"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestMetricsEndpointUsesGatewayBearerWhenConfigured(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.GatewayBearerSecret = "gateway-secret"

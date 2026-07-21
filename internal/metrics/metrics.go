@@ -159,7 +159,7 @@ func normalizePoolResult(value string) string {
 }
 
 func normalizeQueueResult(value string) string {
-	return allow(value, "error", "acquired", "full", "timeout", "canceled", "error")
+	return allow(value, "error", "acquired", "bypassed", "full", "timeout", "canceled", "error")
 }
 
 func normalizeFailureClass(value string) string {

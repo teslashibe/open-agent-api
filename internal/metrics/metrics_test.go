@@ -16,6 +16,7 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 	m.ObservePoolCooldown("work-a", "quota")
 	m.ObservePoolCooldownSkip("work-a", "quota")
 	m.ObserveQueueWait("codex", "acquired", 125*time.Millisecond)
+	m.ObserveQueueWait("gemini", "bypassed", 0)
 	m.IncActiveStreams("codex")
 	m.DecActiveStreams("codex")
 
@@ -27,6 +28,7 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 		`codex_chat_api_pool_cooldowns_total{client_label="work-a",failure_class="quota"} 1`,
 		`codex_chat_api_pool_cooldown_skips_total{client_label="work-a",failure_class="quota"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="codex",result="acquired"} 1`,
+		`codex_chat_api_queue_wait_seconds_count{provider="gemini",result="bypassed"} 1`,
 		`codex_chat_api_active_streams{provider="codex"} 0`,
 	} {
 		if !strings.Contains(body, want) {
