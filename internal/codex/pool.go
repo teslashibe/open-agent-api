@@ -11,6 +11,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
 )
 
 const (
@@ -31,6 +33,7 @@ type PooledService struct {
 	logOutput         io.Writer
 	cooldownDefault   time.Duration
 	now               func() time.Time
+	metrics           *metricspkg.Metrics
 
 	mu        sync.Mutex
 	cooldowns []clientCooldown
@@ -55,6 +58,7 @@ type PooledServiceConfig struct {
 	LogOutput         io.Writer
 	CooldownDefault   time.Duration
 	Now               func() time.Time
+	Metrics           *metricspkg.Metrics
 }
 
 type PooledClientConfig struct {
@@ -115,6 +119,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		logOutput:         cfg.LogOutput,
 		cooldownDefault:   cfg.CooldownDefault,
 		now:               cfg.Now,
+		metrics:           cfg.Metrics,
 		cooldowns:         make([]clientCooldown, len(clients)),
 		inflight:          map[string]int{},
 	}, nil
@@ -312,6 +317,7 @@ func (p *PooledService) coolClient(index int, err error) time.Time {
 		p.cooldowns[index] = clientCooldown{until: until, class: class}
 	}
 	p.mu.Unlock()
+	p.metrics.ObservePoolCooldown(p.clients[index].label, string(class))
 	p.logCooldown(index, until)
 	return until
 }
@@ -385,6 +391,7 @@ func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bo
 		p.cooldowns[index] = clientCooldown{}
 	} else if !allowCooling {
 		p.mu.Unlock()
+		p.metrics.ObservePoolCooldownSkip(label, string(cooldown.class))
 		return 0, nil, false, cooldown.class, true
 	}
 	current := p.inflight[label]
@@ -444,6 +451,13 @@ func (p *PooledService) selectIndex(req Request) int {
 }
 
 func (p *PooledService) logSelection(req Request, index int, fallback bool, rotated bool, inflight int) {
+	result := "normal"
+	if fallback {
+		result = "fallback"
+	} else if rotated {
+		result = "rotated"
+	}
+	p.metrics.ObservePoolSelection(p.clients[index].label, result)
 	keyMode := req.AffinityKeyMode
 	if keyMode == "" {
 		keyMode = "none"
