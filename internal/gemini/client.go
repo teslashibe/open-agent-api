@@ -287,5 +287,10 @@ func decodeErrorResponse(resp *http.Response) error {
 	if err := json.NewDecoder(resp.Body).Decode(&frame); err == nil && frame.Error != nil {
 		return geminiAPIError(frame.Error)
 	}
-	return codex.NewError(codex.ErrorKindUpstream, resp.StatusCode, fmt.Sprintf("gemini upstream returned status %d", resp.StatusCode), nil)
+	message := fmt.Sprintf("gemini upstream returned status %d", resp.StatusCode)
+	var wrap error
+	if resp.StatusCode == http.StatusTooManyRequests {
+		wrap = fmt.Errorf("%w: %s", codex.ErrUsageLimitReached, message)
+	}
+	return codex.NewError(codex.ErrorKindUpstream, resp.StatusCode, message, wrap)
 }

@@ -121,7 +121,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 }
 
 func models(c *fiber.Ctx) error {
-	aliases := openai.ModelAliases()
+	aliases := openai.ListedModelAliases()
 	models := make([]openai.Model, 0, len(aliases))
 	for _, alias := range aliases {
 		models = append(models, openai.Model{
@@ -530,6 +530,9 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 	if errors.Is(err, codex.ErrContextWindowExceeded) {
 		return writeError(c, fiber.StatusBadRequest, "invalid_request_error", "conversation exceeds this model's context window - switch this chat to a larger model")
 	}
+	if errors.Is(err, codex.ErrUsageLimitReached) {
+		return writeError(c, fiber.StatusTooManyRequests, "rate_limit_error", publicErrorMessage(err))
+	}
 	if serviceErr, ok := codex.ErrorAs(err); ok {
 		status := serviceErr.Status
 		errorType := "api_error"
@@ -542,6 +545,10 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 			errorType = "invalid_request_error"
 		default:
 			status = defaultStatus(status, fiber.StatusBadGateway)
+		}
+		if status == fiber.StatusTooManyRequests {
+			errorType = "rate_limit_error"
+			return writeError(c, status, errorType, publicErrorMessage(err))
 		}
 		return writeError(c, status, errorType, publicServiceMessage(serviceErr.Kind))
 	}
@@ -628,15 +635,44 @@ func publicErrorMessage(err error) string {
 		return "conversation exceeds this model's context window - switch this chat to a larger model"
 	}
 	if errors.Is(err, codex.ErrUsageLimitReached) {
+		if serviceErr, ok := codex.ErrorAs(err); ok {
+			if message := publicUsageLimitMessage(serviceErr.Message); message != "" {
+				return message
+			}
+		}
 		return "usage limit reached for this model - try again later or switch model"
 	}
 	if serviceErr, ok := codex.ErrorAs(err); ok {
+		if serviceErr.Status == fiber.StatusTooManyRequests {
+			if message := publicUsageLimitMessage(serviceErr.Message); message != "" {
+				return message
+			}
+			return "usage limit reached for this model - try again later or switch model"
+		}
 		return publicServiceMessage(serviceErr.Kind)
 	}
 	if errors.Is(err, context.Canceled) {
 		return "request canceled"
 	}
 	return "upstream error"
+}
+
+func publicUsageLimitMessage(upstream string) string {
+	lower := strings.ToLower(strings.TrimSpace(upstream))
+	switch {
+	case strings.Contains(lower, "exhausted your capacity"),
+		strings.Contains(lower, "capacity on this model"):
+		return "usage limit reached for this model - try gemini-2.5-flash or try again later"
+	case strings.Contains(lower, "usage limit"),
+		strings.Contains(lower, "rate limit"),
+		strings.Contains(lower, "quota"),
+		strings.Contains(lower, "resource_exhausted"),
+		strings.Contains(lower, "resource exhausted"),
+		strings.Contains(lower, "too many requests"):
+		return "usage limit reached for this model - try again later or switch model"
+	default:
+		return ""
+	}
 }
 
 func publicServiceMessage(kind codex.ErrorKind) string {

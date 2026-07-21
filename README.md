@@ -180,10 +180,15 @@ See [`docs/gpt-5.6-sol-terra-luna.md`](docs/gpt-5.6-sol-terra-luna.md) and
 | `codex-sol` / `codex-terra` / `codex-luna` | matching 5.6 tier | (tier default) | `low` |
 | `gpt-5.5` | `gpt-5.5` | `medium` | `medium` |
 | `gpt-5.5-high` | `gpt-5.5` | `high` | `medium` |
-| `gpt-5.3-codex-spark` | `gpt-5.3-codex-spark` | `low` | `low` |
+| `gemini-2.5-flash` / `flash-lite` / `pro` | same | `medium` | `medium` |
 
 All three tiers expose `-xhigh` and `-max` effort aliases. `ultra` is a Codex
 product multi-agent mode (not a `reasoning.effort` value) and is not aliased.
+
+`gpt-5.3-codex-spark` (+ `-preview`) stays resolvable for quota-overflow fallback
+but is **unlisted** from `GET /v1/models` (faithful Codex turns inject
+`image_generation`, which Spark rejects). Antigravity-only IDs such as
+`gemini-3.1-pro-high` are not exposed here; use `agy` for that catalog.
 
 ### Non-Streaming Chat
 
@@ -783,8 +788,8 @@ Model: gpt-5.6-terra
 ```
 
 Recommended Cursor custom models to add: `gpt-5.6-sol`, `gpt-5.6-sol-high`,
-`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-luna-fast`, `gpt-5.3-codex-spark`.
+`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-luna-fast`, `gemini-2.5-flash`,
+`gemini-2.5-pro`.
 
-Cursor may also send `gpt-5.3-codex-spark-preview`; the API accepts that as an equivalent alias.
-
-`gpt-5.3-codex-spark` remains available for ultra-fast overflow turns (96 KiB hard context).
+`gpt-5.3-codex-spark` remains an internal overflow target (96 KiB hard context)
+and is not listed in `/v1/models`.

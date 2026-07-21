@@ -3,6 +3,8 @@ package gemini
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/openai"
@@ -145,5 +147,34 @@ func geminiAPIError(e *apiError) error {
 	if message == "" {
 		message = "gemini upstream error"
 	}
-	return codex.NewError(kind, status, message, nil)
+	var wrap error
+	if status == http.StatusTooManyRequests || isUsageLimitMessage(message) {
+		status = http.StatusTooManyRequests
+		wrap = fmt.Errorf("%w: %s", codex.ErrUsageLimitReached, message)
+	}
+	return codex.NewError(kind, status, message, wrap)
+}
+
+func isUsageLimitMessage(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	markers := []string{
+		"exhausted your capacity",
+		"capacity on this model",
+		"resource_exhausted",
+		"resource exhausted",
+		"rate limit",
+		"rate_limit",
+		"quota",
+		"usage limit",
+		"too many requests",
+	}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
