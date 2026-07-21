@@ -223,7 +223,12 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return nil, NewError(kindErr, status, "connect to codex websocket", err)
+	connectErr := NewError(kindErr, status, "connect to codex websocket", err)
+	if resp != nil {
+		retryAfter, resetAt := retryHintFromHeader(resp.Header.Get("Retry-After"), time.Now())
+		connectErr = withRetryHint(connectErr, retryAfter, resetAt)
+	}
+	return nil, connectErr
 }
 
 func (c *Client) headers(creds auth.Credentials, faithful bool, sessionID string, kind requestKind) http.Header {

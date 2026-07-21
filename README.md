@@ -294,6 +294,7 @@ Flags override environment values.
 | Codex client pool | `CODEX_CLIENTS` | `--codex-clients` | single client from `CODEX_HOME` / `CODEX_AUTH_PATH` |
 | Codex max inflight per client | `CODEX_CLIENT_MAX_INFLIGHT` | `--codex-client-max-inflight` | `2` |
 | Codex pool unavailable policy | `CODEX_CLIENT_POOL_UNAVAILABLE` | `--codex-client-pool-unavailable` | `fail` |
+| Codex client cooldown default | `CODEX_CLIENT_COOLDOWN_DEFAULT` | `--codex-client-cooldown-default` | `5m` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 | Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
 | Redacted Codex tool-event logging | `CODEX_LOG_CODEX_TOOL_EVENTS` | `--log-codex-tool-events` | `false` |
@@ -554,12 +555,28 @@ CODEX_CLIENTS='[
 ]'
 CODEX_CLIENT_MAX_INFLIGHT=2
 CODEX_CLIENT_POOL_UNAVAILABLE=fail
+CODEX_CLIENT_COOLDOWN_DEFAULT=5m
 ```
 
 For each request, the server resolves the same key used by the Agent queue and
 selects a client with deterministic affinity. Repeated turns with the same
 queue key map to the same shard; different queue keys can use different shards.
 Random per-request load balancing is unsafe and is not used.
+
+If the selected account returns a quota or rate-limit failure before its first
+stream event, the server cools that account until the upstream `Retry-After` or
+reset hint. Without a valid hint it uses `CODEX_CLIENT_COOLDOWN_DEFAULT`. The
+same request is retried once on another healthy account without changing its
+model; model-level quota fallback runs only after that account rotation is
+exhausted. New requests keep their sticky shard while it is healthy and skip it
+while it is cooling. A quota failure after a content, reasoning, or tool delta
+never switches accounts mid-stream.
+
+Cooldowns are held in memory per process and expire automatically. Replicas do
+not share cooldown state, so each replica may independently discover the same
+limited account. When every account is cooling, ordinary requests retain the
+existing OpenAI-compatible behavior: quota cooldowns may proceed to the
+configured overflow model, while capacity rate limits remain 429 responses.
 
 Each selected Codex client also has a process-local inflight lease capped by
 `CODEX_CLIENT_MAX_INFLIGHT`. The default is `2`, matching the default global
@@ -570,15 +587,15 @@ request waits in the Agent queue. The lease covers the entire completion or
 stream and is released on normal completion, startup or midstream failure,
 client cancellation, and context cancellation.
 
-If the sticky-selected client is at its cap, the pool immediately checks the
-remaining clients in deterministic shard order. It opens no second upstream on
-the saturated client. If every client is saturated, the request does not wait:
-it returns an OpenAI-shaped `429` with the stable message
-`codex client pool saturated`, so callers should retry with backoff. Saturation
-rotation is independent of upstream cooldown handling: because no upstream call
-is attempted on a capped client, it neither consumes nor creates a cooldown
-ticket. When cooldown-aware selection is present, cooling clients stay
-ineligible and rotation considers the other eligible clients.
+If the sticky-selected client is cooling or at its inflight cap, the pool
+immediately checks the remaining clients in deterministic shard order. It opens
+no upstream on an ineligible client. If every non-cooling client is saturated,
+the request does not wait: it returns an OpenAI-shaped `429` with the stable
+message `codex client pool saturated`, so callers should retry with backoff.
+Saturation rotation is independent of upstream cooldown handling: because no
+upstream call is attempted on a capped client, it neither consumes nor creates a
+cooldown ticket. Cooling clients stay ineligible and rotation considers the
+other eligible clients.
 
 When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, an unavailable selected client returns
 the upstream/auth error. `fallback_first` retries the first configured client
@@ -589,7 +606,8 @@ conversation affinity after a conversation has already used that shard. Use
 Pool logs are redacted:
 
 ```text
-codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b inflight=1 fallback=false rotated=false
+codex_client_cooldown label=work-a until=2026-07-21T21:05:00Z
+codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b inflight=1 fallback=false rotated=true
 codex_client_saturated request_id=... shard=1 client_label=work-b inflight=2 max_inflight=2
 codex_client_release request_id=... shard=1 client_label=work-b inflight=0
 ```

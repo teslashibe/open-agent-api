@@ -2,7 +2,6 @@ package server
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"io"
 	"net"
@@ -450,10 +449,10 @@ func TestCodexUpstreamToolContinuationCancelDuringSlowToolArgs(t *testing.T) {
 	}
 }
 
-func newCodexProxyApp(t *testing.T, upstreamURL string) (*fiber.App, *bytes.Buffer) {
+func newCodexProxyApp(t *testing.T, upstreamURL string) (*fiber.App, *synchronizedBuffer) {
 	t.Helper()
 
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	authPath, codexHome, profilePath, scaffoldPath := writeCodexClientFixtures(t)
 	client, err := codex.NewClient(codex.ClientConfig{
 		AuthPath:     authPath,
@@ -745,14 +744,14 @@ func mustFrameJSON(t *testing.T, value map[string]any) []byte {
 
 const toolContinuationBody = `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"read file"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},{"role":"tool","tool_call_id":"call_123","content":"file contents here"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`
 
-func assertLogContains(t *testing.T, logs *bytes.Buffer, want string) {
+func assertLogContains(t *testing.T, logs *synchronizedBuffer, want string) {
 	t.Helper()
 	if !strings.Contains(logs.String(), want) {
 		t.Fatalf("logs = %q, want substring %q", logs.String(), want)
 	}
 }
 
-func assertLogNotContains(t *testing.T, logs *bytes.Buffer, want string) {
+func assertLogNotContains(t *testing.T, logs *synchronizedBuffer, want string) {
 	t.Helper()
 	if strings.Contains(logs.String(), want) {
 		t.Fatalf("logs = %q, want substring absent: %q", logs.String(), want)

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,6 +34,7 @@ type options struct {
 	now                func() time.Time
 	newID              func() string
 	logOutput          io.Writer
+	logMu              *sync.Mutex
 	logBodyShape       bool
 	logRequestIdentity bool
 	agentQueueKeyMode  string
@@ -83,6 +85,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			return "chatcmpl-" + uuid.NewString()
 		},
 		logOutput:          os.Stdout,
+		logMu:              &sync.Mutex{},
 		logBodyShape:       cfg.LogBodyShape,
 		logRequestIdentity: cfg.LogRequestIdentity,
 		agentQueueKeyMode:  cfg.AgentQueueKeyMode,
@@ -367,6 +370,20 @@ func chatCompletions(opts options) fiber.Handler {
 func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
 	upstreamStart := opts.now()
 	events, err := opts.codexService.Stream(ctx, req)
+	if err != nil && errors.Is(err, codex.ErrUsageLimitReached) {
+		if fallbackReq, ok := buildQuotaFallbackRequest(req, opts.contextConfig); ok {
+			fallbackEvents, fallbackErr := opts.codexService.Stream(ctx, fallbackReq)
+			if fallbackErr != nil {
+				logLine(opts, "quota_fallback_error request_id=%s from=%s to=%s err=%s\n", requestID, req.Model, fallbackReq.Model, detailedError(fallbackErr))
+				err = fallbackErr
+			} else {
+				logLine(opts, "quota_fallback request_id=%s from=%s to=%s messages=%d\n", requestID, req.Model, fallbackReq.Model, len(fallbackReq.Messages))
+				req = fallbackReq
+				events = fallbackEvents
+				err = nil
+			}
+		}
+	}
 	if err != nil {
 		cancel()
 		releaseQueue()
@@ -521,6 +538,10 @@ func requestLogger(opts options) fiber.Handler {
 func logLine(opts options, format string, args ...any) {
 	if opts.logOutput == nil {
 		return
+	}
+	if opts.logMu != nil {
+		opts.logMu.Lock()
+		defer opts.logMu.Unlock()
 	}
 	_, _ = fmt.Fprintf(opts.logOutput, format, args...)
 }

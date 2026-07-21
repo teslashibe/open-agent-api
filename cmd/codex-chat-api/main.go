@@ -101,6 +101,7 @@ func buildCodexService(cfg config.Config) (codex.Service, error) {
 		MaxInflight:       cfg.CodexClientMaxInflight,
 		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
 		LogOutput:         os.Stdout,
+		CooldownDefault:   cfg.CodexClientCooldownDefault,
 	})
 }
 
