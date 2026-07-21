@@ -11,6 +11,7 @@ import (
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/config"
 	"github.com/teslashibe/codex-chat-api/internal/gemini"
+	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
 	"github.com/teslashibe/codex-chat-api/internal/server"
 )
 
@@ -27,7 +28,8 @@ func run(args []string) error {
 		return err
 	}
 
-	codexService, err := buildCodexService(cfg)
+	metrics := metricspkg.New(cfg.MetricsEnabled)
+	codexService, err := buildCodexService(cfg, metrics)
 	if err != nil {
 		return err
 	}
@@ -50,7 +52,7 @@ func run(args []string) error {
 	}
 	service := codex.Router{Codex: codexService, Gemini: geminiService, Claude: claudeService}
 
-	app := server.New(cfg, server.WithCodexService(service))
+	app := server.New(cfg, server.WithCodexService(service), server.WithMetrics(metrics))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -74,7 +76,7 @@ func run(args []string) error {
 	}
 }
 
-func buildCodexService(cfg config.Config) (codex.Service, error) {
+func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (codex.Service, error) {
 	clients := make([]codex.PooledClientConfig, 0, len(cfg.CodexClients))
 	for _, clientCfg := range cfg.CodexClients {
 		client, err := codex.NewClient(codex.ClientConfig{
@@ -102,6 +104,7 @@ func buildCodexService(cfg config.Config) (codex.Service, error) {
 		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
 		LogOutput:         os.Stdout,
 		CooldownDefault:   cfg.CodexClientCooldownDefault,
+		Metrics:           metrics,
 	})
 }
 
