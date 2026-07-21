@@ -289,6 +289,7 @@ Flags override environment values.
 | Codex request timeout | `CODEX_TIMEOUT` | `--codex-timeout` | `120s` |
 | Codex client pool | `CODEX_CLIENTS` | `--codex-clients` | single client from `CODEX_HOME` / `CODEX_AUTH_PATH` |
 | Codex pool unavailable policy | `CODEX_CLIENT_POOL_UNAVAILABLE` | `--codex-client-pool-unavailable` | `fail` |
+| Codex client cooldown default | `CODEX_CLIENT_COOLDOWN_DEFAULT` | `--codex-client-cooldown-default` | `5m` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 | Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
 | Redacted Codex tool-event logging | `CODEX_LOG_CODEX_TOOL_EVENTS` | `--log-codex-tool-events` | `false` |
@@ -517,12 +518,27 @@ CODEX_CLIENTS='[
   {"label":"work-b","auth_path":"/run/secrets/codex-b-auth.json"}
 ]'
 CODEX_CLIENT_POOL_UNAVAILABLE=fail
+CODEX_CLIENT_COOLDOWN_DEFAULT=5m
 ```
 
 For each request, the server resolves the same key used by the Agent queue and
 selects a client with deterministic affinity. Repeated turns with the same
 queue key map to the same shard; different queue keys can use different shards.
 Random per-request load balancing is unsafe and is not used.
+
+If the selected account returns a quota or rate-limit failure before its first
+stream event, the server cools that account until the upstream `Retry-After` or
+reset hint. Without a valid hint it uses `CODEX_CLIENT_COOLDOWN_DEFAULT`. The
+same request is retried once on another healthy account without changing its
+model; model-level quota fallback runs only after that account rotation is
+exhausted. New requests keep their sticky shard while it is healthy and skip it
+while it is cooling. A quota failure after a content, reasoning, or tool delta
+never switches accounts mid-stream.
+
+Cooldowns are held in memory per process and expire automatically. Replicas do
+not share cooldown state, so each replica may independently discover the same
+limited account. When every account is cooling, ordinary requests retain the
+existing OpenAI-compatible 429/model-overflow behavior.
 
 When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, an unavailable selected client returns
 the upstream/auth error. `fallback_first` retries the first configured client
@@ -533,7 +549,8 @@ conversation affinity after a conversation has already used that shard. Use
 Pool logs are redacted:
 
 ```text
-codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b fallback=false
+codex_client_cooldown label=work-a until=2026-07-21T21:05:00Z
+codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b fallback=rotate
 ```
 
 Do not put credentials, account IDs, auth paths, hostnames with secrets, or user
@@ -713,6 +730,30 @@ streams should still include valid `delta.tool_calls` frames and finish with
 Upstream Codex errors are logged server-side as `stream_error` or
 `complete_error` with the real payload. Clients still receive the sanitized
 `[error: upstream error]` message.
+
+#### Failure taxonomy (operators)
+
+Every `stream_error` and `complete_error` line also carries a redacted
+`failure_class` and `failure_phase` used by pool cooldown / rotation logic.
+These fields are derived only from the error type, status code, and body
+markers the server already knows — they never contain auth tokens, account
+emails, or raw upstream bodies.
+
+`failure_class` maps upstream failures deterministically:
+
+| `failure_class` | Meaning | Mapped from |
+| --- | --- | --- |
+| `quota` | Account-scoped usage limit | `usage_limit_reached` (`ErrUsageLimitReached`) |
+| `rate_limit` | Transient capacity throttle | non-usage-limit `429` upstream errors |
+| `auth` | Credential/authorization failure | `auth`-kind Codex errors |
+| `permanent` | Client-side, rotation cannot help | `context_length_exceeded`, other `client`-kind (`400`) errors |
+| `transient` | Retryable/unknown upstream or transport failure | `5xx`, unavailable clients, and any unmapped error |
+
+`failure_phase` records how far the request progressed when it failed:
+`connect` (before any upstream event), `first_event` (the failure is the first
+event, nothing sent to the client yet), or `mid_stream` (content already
+streamed). Rotation logic refuses to switch accounts `mid_stream`, since that
+would corrupt an in-flight Agent tool turn.
 
 ### Troubleshooting
 

@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestPooledServiceSameQueueKeyMapsToSameClient(t *testing.T) {
@@ -83,7 +86,7 @@ func TestPooledServiceUnavailableClientFallbackFirst(t *testing.T) {
 		t.Fatalf("called labels = %v, want selected and fallback clients", called)
 	}
 	logBody := logs.String()
-	for _, want := range []string{"codex_client_select", "request_id=req-fallback", "key_mode=body:session_id", "key_hash=hash-a", "client_label=client-1", "client_label=client-0", "fallback=true"} {
+	for _, want := range []string{"codex_client_select", "request_id=req-fallback", "key_mode=body:session_id", "key_hash=hash-a", "client_label=client-1", "client_label=client-0", "fallback=fallback_first"} {
 		if !strings.Contains(logBody, want) {
 			t.Fatalf("logs = %q, want %q", logBody, want)
 		}
@@ -148,6 +151,264 @@ func TestPooledServiceFallbackFirstDoesNotRetryMidStreamError(t *testing.T) {
 	if len(called) != 1 || !called["client-1"] {
 		t.Fatalf("called labels = %v, want only selected client", called)
 	}
+}
+
+func TestPooledServiceRotatesConnectQuotaWithoutChangingModel(t *testing.T) {
+	var logs bytes.Buffer
+	var mu sync.Mutex
+	calls := map[string]int{}
+	models := map[string][]string{}
+	quota := poolQuotaError()
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &logs, nil,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(_ context.Context, req Request) (<-chan StreamEvent, error) {
+			mu.Lock()
+			calls["client-a"]++
+			models["client-a"] = append(models["client-a"], req.Model)
+			mu.Unlock()
+			return nil, quota
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(_ context.Context, req Request) (<-chan StreamEvent, error) {
+			mu.Lock()
+			calls["client-b"]++
+			models["client-b"] = append(models["client-b"], req.Model)
+			mu.Unlock()
+			return poolEvents(StreamEvent{Delta: "ok", Model: req.Model}, StreamEvent{Done: true}), nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+	req.RequestID = "req-rotate"
+	req.Model = "gpt-5.6-sol"
+
+	completion, err := pool.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if completion.Text != "ok" || completion.Model != req.Model {
+		t.Fatalf("completion = %#v", completion)
+	}
+	if calls["client-a"] != 1 || calls["client-b"] != 1 {
+		t.Fatalf("calls = %v", calls)
+	}
+	if fmt.Sprint(models["client-a"]) != "[gpt-5.6-sol]" || fmt.Sprint(models["client-b"]) != "[gpt-5.6-sol]" {
+		t.Fatalf("models = %v", models)
+	}
+	logBody := logs.String()
+	for _, want := range []string{"codex_client_cooldown label=client-a", "client_label=client-b fallback=rotate"} {
+		if !strings.Contains(logBody, want) {
+			t.Fatalf("logs = %q, want %q", logBody, want)
+		}
+	}
+	if strings.Contains(logBody, req.AffinityKey) {
+		t.Fatalf("logs leaked raw affinity key: %q", logBody)
+	}
+}
+
+func TestPooledServiceRotatesFirstEventQuota(t *testing.T) {
+	var calls [2]int
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[0]++
+			return poolEvents(StreamEvent{Err: poolQuotaError()}), nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[1]++
+			return poolEvents(StreamEvent{Delta: "from-b"}, StreamEvent{Done: true}), nil
+		}}},
+	)
+
+	completion, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
+	if err != nil || completion.Text != "from-b" {
+		t.Fatalf("Complete() = %#v, %v", completion, err)
+	}
+	if calls != [2]int{1, 1} {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+func TestPooledServiceCoolingStickyClientIsSkippedUntilExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	var calls [2]int
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, func() time.Time { return now },
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[0]++
+			if calls[0] == 1 {
+				return poolEvents(StreamEvent{Err: poolQuotaError()}), nil
+			}
+			return poolEvents(StreamEvent{Delta: "from-a"}, StreamEvent{Done: true}), nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[1]++
+			return poolEvents(StreamEvent{Delta: "from-b"}, StreamEvent{Done: true}), nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+
+	for i := 0; i < 2; i++ {
+		completion, err := pool.Complete(context.Background(), req)
+		if err != nil || completion.Text != "from-b" {
+			t.Fatalf("Complete() %d = %#v, %v", i, completion, err)
+		}
+	}
+	if calls != [2]int{1, 2} {
+		t.Fatalf("calls while cooling = %v", calls)
+	}
+
+	now = now.Add(DefaultClientCooldown + time.Second)
+	completion, err := pool.Complete(context.Background(), req)
+	if err != nil || completion.Text != "from-a" {
+		t.Fatalf("Complete() after expiry = %#v, %v", completion, err)
+	}
+	if calls != [2]int{2, 2} {
+		t.Fatalf("calls after expiry = %v", calls)
+	}
+}
+
+func TestPooledServiceDoesNotRotateAfterContentOrToolDelta(t *testing.T) {
+	tests := map[string]StreamEvent{
+		"content": {Delta: "partial"},
+		"tool":    {ToolCallDelta: &ToolCallDelta{Index: 0, ID: "call-1", Type: "function", Function: ToolCallFunctionDelta{Name: "lookup"}}},
+	}
+	for name, first := range tests {
+		t.Run(name, func(t *testing.T) {
+			var calls [2]int
+			pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+				PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+					calls[0]++
+					return poolEvents(first, StreamEvent{Err: poolQuotaError()}), nil
+				}}},
+				PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+					calls[1]++
+					return poolEvents(StreamEvent{Delta: "unexpected"}), nil
+				}}},
+			)
+
+			_, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
+			if !errors.Is(err, ErrUsageLimitReached) {
+				t.Fatalf("Complete() error = %v", err)
+			}
+			if calls != [2]int{1, 0} {
+				t.Fatalf("calls = %v, rotated after output", calls)
+			}
+		})
+	}
+}
+
+func TestPooledServiceBoundsRotationToOneAlternate(t *testing.T) {
+	var calls [3]int
+	clients := make([]PooledClientConfig, 3)
+	for i := range clients {
+		index := i
+		clients[i] = PooledClientConfig{Label: fmt.Sprintf("client-%d", i), Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[index]++
+			if index < 2 {
+				return nil, poolQuotaError()
+			}
+			return poolEvents(StreamEvent{Delta: "third"}), nil
+		}}}
+	}
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil, clients...)
+
+	_, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
+	if !errors.Is(err, ErrUsageLimitReached) {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if calls != [3]int{1, 1, 0} {
+		t.Fatalf("calls = %v, want one alternate only", calls)
+	}
+}
+
+func TestPooledServiceSingleClientAndAllCoolingCompatibility(t *testing.T) {
+	var calls int
+	pool := newTestPooledService(t, ClientPoolUnavailableFallbackFirst, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "only", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls++
+			return nil, poolQuotaError()
+		}}},
+	)
+
+	_, firstErr := pool.Complete(context.Background(), Request{Model: "gpt-5.6-sol"})
+	if !errors.Is(firstErr, ErrUsageLimitReached) || calls != 1 {
+		t.Fatalf("first Complete() error = %v, calls = %d", firstErr, calls)
+	}
+	_, secondErr := pool.Complete(context.Background(), Request{Model: "gpt-5.6-sol"})
+	if !errors.Is(secondErr, ErrUsageLimitReached) || calls != 1 {
+		t.Fatalf("cooling Complete() error = %v, calls = %d", secondErr, calls)
+	}
+
+	_, fallbackErr := pool.Complete(context.Background(), Request{Model: "gpt-5.3-codex-spark", AllowCooling: true})
+	if !errors.Is(fallbackErr, ErrUsageLimitReached) || calls != 2 {
+		t.Fatalf("fallback Complete() error = %v, calls = %d", fallbackErr, calls)
+	}
+}
+
+func TestPooledServiceHonorsRetryHint(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, func() time.Time { return now },
+		PooledClientConfig{Label: "only", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return poolEvents(StreamEvent{Done: true}), nil
+		}}},
+	)
+	want := now.Add(2 * time.Hour)
+	err := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", ErrUsageLimitReached)
+	withRetryHint(err, time.Minute, want)
+	if got := pool.coolClient(0, err); !got.Equal(want) {
+		t.Fatalf("cooldown until = %s, want %s", got, want)
+	}
+}
+
+func TestPooledServiceRotatesRateLimit(t *testing.T) {
+	var calls [2]int
+	rateLimit := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "too many requests", errors.New("capacity"))
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[0]++
+			return nil, rateLimit
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[1]++
+			return poolEvents(StreamEvent{Delta: "ok"}), nil
+		}}},
+	)
+
+	completion, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
+	if err != nil || completion.Text != "ok" || calls != [2]int{1, 1} {
+		t.Fatalf("Complete() = %#v, %v; calls = %v", completion, err, calls)
+	}
+}
+
+func newTestPooledService(t *testing.T, policy string, logs *bytes.Buffer, now func() time.Time, clients ...PooledClientConfig) *PooledService {
+	t.Helper()
+	pool, err := NewPooledService(PooledServiceConfig{
+		Clients:           clients,
+		UnavailablePolicy: policy,
+		LogOutput:         logs,
+		Now:               now,
+	})
+	if err != nil {
+		t.Fatalf("NewPooledService() error = %v", err)
+	}
+	return pool
+}
+
+func requestForPoolIndex(pool *PooledService, want int) Request {
+	req := Request{AffinityKey: "secret-affinity", AffinityKeyHash: "hash", AffinityKeyMode: "body:session_id"}
+	for pool.selectIndex(req) != want {
+		req.AffinityKey += "-next"
+	}
+	return req
+}
+
+func poolQuotaError() error {
+	return NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", fmt.Errorf("%w: quota", ErrUsageLimitReached))
+}
+
+func poolEvents(events ...StreamEvent) <-chan StreamEvent {
+	out := make(chan StreamEvent, len(events))
+	for _, event := range events {
+		out <- event
+	}
+	close(out)
+	return out
 }
 
 func testPool(t *testing.T, policy string, count int, fail map[string]error) (*PooledService, map[string]int) {
