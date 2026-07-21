@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -71,7 +72,7 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 52 {
+	if body.Object != "list" || len(body.Data) != 50 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
 	wantIDs := []string{
@@ -86,7 +87,6 @@ func TestModels(t *testing.T) {
 		"api/claude-opus-4-8", "api/claude-sonnet-5", "api/claude-haiku-4-5-20251001", "api/claude-fable-5",
 		"api/claude-fable-5-low", "api/claude-fable-5-medium", "api/claude-fable-5-high",
 		"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose",
-		"gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview",
 	}
 	for i, wantID := range wantIDs {
 		model := body.Data[i]
@@ -1944,6 +1944,36 @@ func TestChatCompletionsUpstreamErrorIsSanitized(t *testing.T) {
 	}
 	if strings.Contains(body, secret) {
 		t.Fatalf("response leaked secret: %q", body)
+	}
+}
+
+func TestChatCompletionsGeminiCapacityReturnsRateLimitError(t *testing.T) {
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			return codex.Completion{}, codex.NewError(
+				codex.ErrorKindUpstream,
+				http.StatusTooManyRequests,
+				"You have exhausted your capacity on this model.",
+				fmt.Errorf("%w: capacity", codex.ErrUsageLimitReached),
+			)
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"type":"rate_limit_error"`) {
+		t.Fatalf("body = %q, want rate_limit_error", body)
+	}
+	if !strings.Contains(body, "usage limit reached for this model") || !strings.Contains(body, "gemini-2.5-flash") {
+		t.Fatalf("body = %q, want actionable capacity message", body)
+	}
+	if strings.Contains(body, "upstream error") {
+		t.Fatalf("body = %q, still using generic upstream error", body)
 	}
 }
 

@@ -14,6 +14,9 @@ type ModelAlias struct {
 	// ContextHardMaxBytes forces aggressive context reduction (including
 	// dropping oldest turns) for models with small context windows. 0 = off.
 	ContextHardMaxBytes int
+	// Unlisted hides the alias from GET /v1/models while still resolving it
+	// for chat completions (e.g. overflow-only Spark).
+	Unlisted bool
 }
 
 func alias(id, upstream, effort, verbosity string) ModelAlias {
@@ -95,8 +98,8 @@ func buildModelAliases() []ModelAlias {
 		alias("gpt-5.5-fast-verbose", LegacyGPT55, "low", "high"),
 	)
 
-	// The upstream supports the real Spark slug (verified via codex CLI);
-	// the -preview id is Cursor-side only and maps to the same model.
+	// Spark remains resolvable for quota-overflow fallback, but is unlisted:
+	// faithful Codex turns inject image_generation, which Spark rejects (400).
 	out = append(out,
 		ModelAlias{
 			ID:                  "gpt-5.3-codex-spark",
@@ -104,6 +107,7 @@ func buildModelAliases() []ModelAlias {
 			ReasoningEffort:     "low",
 			Verbosity:           "low",
 			ContextHardMaxBytes: 96 * 1024,
+			Unlisted:            true,
 		},
 		ModelAlias{
 			ID:                  "gpt-5.3-codex-spark-preview",
@@ -111,6 +115,7 @@ func buildModelAliases() []ModelAlias {
 			ReasoningEffort:     "low",
 			Verbosity:           "low",
 			ContextHardMaxBytes: 96 * 1024,
+			Unlisted:            true,
 		},
 	)
 	return out
@@ -122,6 +127,19 @@ func ModelAliases() []ModelAlias {
 	aliases := make([]ModelAlias, len(modelAliases))
 	copy(aliases, modelAliases)
 	return aliases
+}
+
+// ListedModelAliases returns aliases exposed by GET /v1/models.
+func ListedModelAliases() []ModelAlias {
+	aliases := ModelAliases()
+	out := make([]ModelAlias, 0, len(aliases))
+	for _, alias := range aliases {
+		if alias.Unlisted {
+			continue
+		}
+		out = append(out, alias)
+	}
+	return out
 }
 
 func ResolveModelAlias(model string) ModelAlias {

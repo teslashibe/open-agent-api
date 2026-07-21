@@ -1,6 +1,12 @@
 package gemini
 
-import "testing"
+import (
+	"errors"
+	"net/http"
+	"testing"
+
+	"github.com/teslashibe/codex-chat-api/internal/codex"
+)
 
 func TestParseStreamEventTextThoughtToolAndDone(t *testing.T) {
 	cases := []struct {
@@ -50,6 +56,36 @@ func TestParseStreamEventFunctionCallArgsObject(t *testing.T) {
 	}
 	if got := events[0].ToolCallDelta.Function.Name; got != "get_weather" {
 		t.Fatalf("name = %s", got)
+	}
+}
+
+func TestGeminiAPIErrorMarksCapacityExhaustionAsUsageLimit(t *testing.T) {
+	err := geminiAPIError(&apiError{
+		Code:    429,
+		Message: "You have exhausted your capacity on this model.",
+		Status:  "RESOURCE_EXHAUSTED",
+	})
+	if !errors.Is(err, codex.ErrUsageLimitReached) {
+		t.Fatalf("expected ErrUsageLimitReached, got %v", err)
+	}
+	serviceErr, ok := codex.ErrorAs(err)
+	if !ok {
+		t.Fatal("expected codex.Error")
+	}
+	if serviceErr.Status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", serviceErr.Status)
+	}
+	if serviceErr.Message != "You have exhausted your capacity on this model." {
+		t.Fatalf("message = %q", serviceErr.Message)
+	}
+}
+
+func TestGeminiAPIErrorMarksCapacityMessageWithoutStatus(t *testing.T) {
+	err := geminiAPIError(&apiError{
+		Message: "You have exhausted your capacity on this model.",
+	})
+	if !errors.Is(err, codex.ErrUsageLimitReached) {
+		t.Fatalf("expected ErrUsageLimitReached, got %v", err)
 	}
 }
 
