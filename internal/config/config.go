@@ -417,7 +417,7 @@ func Defaults() Config {
 		CodexScaffoldPath:                  "codex_scaffold.json",
 		CodexWebsocketURL:                  DefaultCodexWebsocketURL,
 		CodexTimeout:                       DefaultCodexTimeout,
-		GeminiAuthPath:                     filepath.Join(defaultGeminiHome(), "oauth_creds.json"),
+		GeminiAuthPath:                     defaultGeminiAuthPath(),
 		GeminiEndpoint:                     DefaultGeminiEndpoint,
 		GeminiTimeout:                      DefaultGeminiTimeout,
 		ClaudeExecutable:                   DefaultClaudeExecutable,
@@ -702,6 +702,16 @@ func defaultGeminiHome() string {
 		return filepath.Join(home, ".gemini")
 	}
 	return ".gemini"
+}
+
+// Prefer Antigravity oauth (gemini-3.* catalog) when present; else Gemini CLI.
+func defaultGeminiAuthPath() string {
+	home := defaultGeminiHome()
+	antigravity := filepath.Join(home, "antigravity_oauth_creds.json")
+	if _, err := os.Stat(antigravity); err == nil {
+		return antigravity
+	}
+	return filepath.Join(home, "oauth_creds.json")
 }
 
 func defaultCodexHome() string {

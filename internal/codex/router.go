@@ -34,6 +34,11 @@ const (
 // layers above the Router (queueing, logging) agree with where the request
 // actually goes.
 func ProviderForModel(model string) string {
+	// Antigravity gateway IDs (Claude/GPT-OSS via Cloud Code Assist) must win
+	// over the Claude Code CLI prefix match.
+	if isAntigravityGatewayModel(model) {
+		return ProviderGemini
+	}
 	if strings.HasPrefix(model, "gemini-") {
 		return ProviderGemini
 	}
@@ -41,6 +46,15 @@ func ProviderForModel(model string) string {
 		return ProviderClaude
 	}
 	return ProviderCodex
+}
+
+func isAntigravityGatewayModel(model string) bool {
+	switch model {
+	case "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r Router) route(req Request) Service {

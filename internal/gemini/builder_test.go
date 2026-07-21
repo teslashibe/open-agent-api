@@ -20,6 +20,12 @@ func TestBuildGenerateContentRequest(t *testing.T) {
 	if req.Project != "project-1" || req.Request.SessionID != "session-1" {
 		t.Fatalf("metadata not set: %#v", req)
 	}
+	if req.UserAgent != "antigravity" {
+		t.Fatalf("userAgent = %q, want antigravity", req.UserAgent)
+	}
+	if req.RequestID == "" {
+		t.Fatalf("requestId missing")
+	}
 	if req.Request.SystemInstruction == nil || req.Request.SystemInstruction.Parts[0].Text != "be brief" {
 		t.Fatalf("system instruction missing: %#v", req.Request.SystemInstruction)
 	}

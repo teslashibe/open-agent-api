@@ -72,7 +72,7 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 50 {
+	if body.Object != "list" || len(body.Data) != 60 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
 	wantIDs := []string{
@@ -82,6 +82,10 @@ func TestModels(t *testing.T) {
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
 		"gpt-5.6-luna-fast", "codex-sol", "codex-terra", "codex-luna",
 		"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
+		"gemini-3.1-pro-low", "gemini-3.1-pro-high",
+		"gemini-3.5-flash-low", "gemini-3.5-flash-medium", "gemini-3.5-flash-high",
+		"gemini-3.1-flash-lite", "gemini-3-flash",
+		"claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
 		"claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5",
 		"opus", "sonnet", "haiku", "fable",
 		"api/claude-opus-4-8", "api/claude-sonnet-5", "api/claude-haiku-4-5-20251001", "api/claude-fable-5",

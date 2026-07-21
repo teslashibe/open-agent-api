@@ -242,7 +242,7 @@ func (c *Client) projectID(ctx context.Context) (string, error) {
 	if c.loaded != "" {
 		return c.loaded, nil
 	}
-	raw := []byte(`{"metadata":{"pluginType":"GEMINI"}}`)
+	raw := []byte(`{"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}`)
 	req, err := c.newJSONRequest(ctx, http.MethodPost, c.endpoint+":loadCodeAssist", raw)
 	if err != nil {
 		return "", err
@@ -279,6 +279,9 @@ func (c *Client) newJSONRequest(ctx context.Context, method, url string, body []
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "antigravity/1.15.8 darwin/arm64")
+	req.Header.Set("X-Goog-Api-Client", "google-cloud-sdk vscode_cloudshelleditor/0.1")
+	req.Header.Set("Client-Metadata", `{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}`)
 	return req, nil
 }
 
