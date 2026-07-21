@@ -344,6 +344,70 @@ func TestPooledServiceDoesNotPinFailedReplacement(t *testing.T) {
 	}
 }
 
+func TestPooledServiceCommitsReplacementPinBeforeDone(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	recordStarted := make(chan struct{})
+	recordRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(recordRelease) })
+	var nowMu sync.Mutex
+	blockNextNow := false
+	nowFunc := func() time.Time {
+		nowMu.Lock()
+		block := blockNextNow
+		blockNextNow = false
+		nowMu.Unlock()
+		if block {
+			close(recordStarted)
+			<-recordRelease
+		}
+		return now
+	}
+
+	replacementEvents := make(chan StreamEvent, 2)
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nowFunc,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return nil, ErrClientUnavailable
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return replacementEvents, nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+
+	events, err := pool.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	replacementEvents <- StreamEvent{Delta: "from-b"}
+	if first := <-events; first.Delta != "from-b" {
+		t.Fatalf("first event = %#v", first)
+	}
+
+	nowMu.Lock()
+	blockNextNow = true
+	nowMu.Unlock()
+	replacementEvents <- StreamEvent{Done: true}
+	select {
+	case <-recordStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for replacement pin commit")
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("terminal event became visible before pin commit: %#v", event)
+	default:
+	}
+	releaseOnce.Do(func() { close(recordRelease) })
+	if terminal := <-events; !terminal.Done {
+		t.Fatalf("terminal event = %#v", terminal)
+	}
+	if got, pinned := pool.preferredIndex(req); got != 1 || !pinned {
+		t.Fatalf("preferredIndex() after Done = %d, %t", got, pinned)
+	}
+	close(replacementEvents)
+}
+
 func TestPooledServiceCoolingStickyClientIsSkippedUntilExpiry(t *testing.T) {
 	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
 	var logs bytes.Buffer
@@ -444,6 +508,63 @@ func TestPooledServiceSoftPinExpiresAndReturnsToHashAffinity(t *testing.T) {
 	}
 }
 
+func TestPooledServiceHealthyInFlightSoftPinRefreshesPastTTL(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	var logs bytes.Buffer
+	var calls [2]int
+	replacementEvents := make(chan StreamEvent, 2)
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &logs, func() time.Time { return now },
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[0]++
+			return poolEvents(StreamEvent{Delta: "from-a"}, StreamEvent{Done: true}), nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[1]++
+			return replacementEvents, nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+	pool.recordSuccessfulSelection(req, 1, &pendingUnpin{key: affinityKey(req), from: 0, reason: unpinReasonCooldown}, -1)
+	logs.Reset()
+
+	now = now.Add(defaultSoftPinTTL - time.Hour)
+	events, err := pool.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	replacementEvents <- StreamEvent{Delta: "from-b"}
+	if first := <-events; first.Delta != "from-b" {
+		t.Fatalf("first event = %#v", first)
+	}
+
+	// The pin expires while this healthy request is in flight. Its successful
+	// completion must refresh affinity from the completion time.
+	now = now.Add(2 * time.Hour)
+	replacementEvents <- StreamEvent{Done: true}
+	if terminal := <-events; !terminal.Done {
+		t.Fatalf("terminal event = %#v", terminal)
+	}
+	if event, ok := <-events; ok {
+		t.Fatalf("event after terminal Done = %#v", event)
+	}
+	close(replacementEvents)
+	if calls != [2]int{0, 1} {
+		t.Fatalf("calls = %v, want the valid soft pin", calls)
+	}
+	if strings.Contains(logs.String(), "codex_client_unpin") {
+		t.Fatalf("logs = %q, healthy pin refresh must not unpin", logs.String())
+	}
+
+	now = now.Add(defaultSoftPinTTL - time.Second)
+	if got, pinned := pool.preferredIndex(req); got != 1 || !pinned {
+		t.Fatalf("preferredIndex() before refreshed expiry = %d, %t", got, pinned)
+	}
+	now = now.Add(2 * time.Second)
+	if got, pinned := pool.preferredIndex(req); got != 0 || pinned {
+		t.Fatalf("preferredIndex() after refreshed expiry = %d, %t", got, pinned)
+	}
+}
+
 func TestPooledServiceSoftPinsUseLRUEviction(t *testing.T) {
 	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
 	pool, _ := testPool(t, ClientPoolUnavailableFail, 2, nil)
@@ -458,12 +579,12 @@ func TestPooledServiceSoftPinsUseLRUEviction(t *testing.T) {
 		}
 	}
 	for _, req := range requests[:2] {
-		pool.recordSuccessfulSelection(req, 1, &pendingUnpin{key: affinityKey(req), from: 0, reason: unpinReasonCooldown})
+		pool.recordSuccessfulSelection(req, 1, &pendingUnpin{key: affinityKey(req), from: 0, reason: unpinReasonCooldown}, -1)
 	}
 	if got, pinned := pool.preferredIndex(requests[0]); got != 1 || !pinned {
 		t.Fatalf("first preferredIndex() = %d, %t", got, pinned)
 	}
-	pool.recordSuccessfulSelection(requests[2], 1, &pendingUnpin{key: affinityKey(requests[2]), from: 0, reason: unpinReasonCooldown})
+	pool.recordSuccessfulSelection(requests[2], 1, &pendingUnpin{key: affinityKey(requests[2]), from: 0, reason: unpinReasonCooldown}, -1)
 
 	if got, pinned := pool.preferredIndex(requests[0]); got != 1 || !pinned {
 		t.Fatalf("recent pin preferredIndex() = %d, %t", got, pinned)
@@ -488,7 +609,7 @@ func TestPooledServiceConcurrentSoftPinUpdatesKeepOneWinner(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			pool.recordSuccessfulSelection(req, index, unpin)
+			pool.recordSuccessfulSelection(req, index, unpin, -1)
 		}()
 	}
 	close(start)
@@ -502,7 +623,7 @@ func TestPooledServiceConcurrentSoftPinUpdatesKeepOneWinner(t *testing.T) {
 	if winner == staleDestination {
 		staleDestination = 2
 	}
-	pool.recordSuccessfulSelection(req, staleDestination, unpin)
+	pool.recordSuccessfulSelection(req, staleDestination, unpin, -1)
 	if got, pinned := pool.preferredIndex(req); got != winner || !pinned {
 		t.Fatalf("preferredIndex() after stale completion = %d, %t; want winner %d", got, pinned, winner)
 	}
