@@ -729,6 +729,9 @@ func errorChunk(id string, created int64, model string, message string) openai.C
 }
 
 func publicErrorMessage(err error) string {
+	if errors.Is(err, codex.ErrClientPoolSaturated) {
+		return codex.ErrClientPoolSaturated.Error()
+	}
 	if errors.Is(err, codex.ErrContextWindowExceeded) {
 		return "conversation exceeds this model's context window - switch this chat to a larger model"
 	}

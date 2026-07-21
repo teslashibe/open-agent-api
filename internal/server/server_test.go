@@ -2102,6 +2102,30 @@ func TestChatCompletionsGeminiCapacityReturnsRateLimitError(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsClientPoolSaturatedReturnsRateLimitError(t *testing.T) {
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			return codex.Completion{}, codex.NewError(
+				codex.ErrorKindUpstream,
+				http.StatusTooManyRequests,
+				codex.ErrClientPoolSaturated.Error(),
+				codex.ErrClientPoolSaturated,
+			)
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, `"message":"codex client pool saturated"`) {
+		t.Fatalf("body = %q, want stable OpenAI-shaped saturation error", body)
+	}
+}
+
 func TestChatCompletionsAuthErrorIsSanitized(t *testing.T) {
 	const secret = "secret-access-token"
 	service := fakeCodexService{
