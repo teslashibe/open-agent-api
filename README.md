@@ -706,7 +706,7 @@ When multiple Agent chats overlap, queue diagnostics show the lifecycle:
 agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... position=2
 agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... wait_ms=1234 active_global=2 active_key=1
 agent_queue_lock_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... lock_wait_ms=1234
-codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default fallback=false
+codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default fallback=none
 stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
 agent_queue_lock_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=...
