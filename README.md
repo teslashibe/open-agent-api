@@ -181,14 +181,27 @@ See [`docs/gpt-5.6-sol-terra-luna.md`](docs/gpt-5.6-sol-terra-luna.md) and
 | `gpt-5.5` | `gpt-5.5` | `medium` | `medium` |
 | `gpt-5.5-high` | `gpt-5.5` | `high` | `medium` |
 | `gemini-2.5-flash` / `flash-lite` / `pro` | same | `medium` | `medium` |
+| `gemini-3.1-pro-low` | `gemini-3.1-pro-low` | `medium` | `medium` |
+| `gemini-3.1-pro-high` | `gemini-pro-agent` | `medium` | `medium` |
+| `gemini-3.5-flash-{low,medium,high}` | Antigravity wire IDs | `medium` | `medium` |
+| `claude-sonnet-4-6` / `claude-opus-4-6-thinking` / `gpt-oss-120b-medium` | same (via Antigravity) | `medium` | `medium` |
 
 All three tiers expose `-xhigh` and `-max` effort aliases. `ultra` is a Codex
 product multi-agent mode (not a `reasoning.effort` value) and is not aliased.
 
 `gpt-5.3-codex-spark` (+ `-preview`) stays resolvable for quota-overflow fallback
 but is **unlisted** from `GET /v1/models` (faithful Codex turns inject
-`image_generation`, which Spark rejects). Antigravity-only IDs such as
-`gemini-3.1-pro-high` are not exposed here; use `agy` for that catalog.
+`image_generation`, which Spark rejects).
+
+Antigravity Gemini 3.x requires Antigravity OAuth. Sync from the host keyring
+before Docker reload:
+
+```bash
+scripts/sync-antigravity-auth.sh
+```
+
+That writes `~/.gemini/antigravity_oauth_creds.json` (compose sets
+`GEMINI_AUTH_PATH` to the mounted copy).
 
 ### Non-Streaming Chat
 
@@ -788,8 +801,8 @@ Model: gpt-5.6-terra
 ```
 
 Recommended Cursor custom models to add: `gpt-5.6-sol`, `gpt-5.6-sol-high`,
-`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-luna-fast`, `gemini-2.5-flash`,
-`gemini-2.5-pro`.
+`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-luna-fast`, `gemini-3.1-pro-low`,
+`gemini-3.1-pro-high`, `gemini-3.5-flash-medium`, `gemini-2.5-flash`.
 
 `gpt-5.3-codex-spark` remains an internal overflow target (96 KiB hard context)
 and is not listed in `/v1/models`.

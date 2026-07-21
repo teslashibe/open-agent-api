@@ -8,17 +8,23 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
-// OAuth client used by the official Gemini CLI. These values are public and
-// shipped inside the CLI itself; they identify the app, not the user.
+// OAuth clients used by Google's consumer CLIs. These values are public and
+// shipped inside the binaries; they identify the app, not the user.
 const (
-	oauthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-	oauthClientSecret = "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"
-	oauthTokenURL     = "https://oauth2.googleapis.com/token"
+	geminiCLIOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+	geminiCLIOAuthClientSecret = "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"
+
+	// Antigravity CLI (agy) OAuth client — required for gemini-3.* / gateway models.
+	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+	antigravityOAuthClientSecret = "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"
+
+	oauthTokenURL = "https://oauth2.googleapis.com/token"
 
 	// Refresh a little early so in-flight requests don't race expiry.
 	tokenExpirySlack = 30 * time.Second
@@ -64,14 +70,16 @@ func ParseCredentials(data []byte) (Credentials, error) {
 	return creds, nil
 }
 
-// tokenSource loads Gemini CLI oauth_creds.json, refreshes expired access
-// tokens via the Google OAuth token endpoint, and persists refreshed tokens
-// back to disk so the CLI and this server stay in sync.
+// tokenSource loads oauth_creds.json (Gemini CLI or Antigravity), refreshes
+// expired access tokens via the matching Google OAuth client, and persists
+// refreshed tokens back to disk.
 type tokenSource struct {
-	path       string
-	httpClient *http.Client
-	now        func() time.Time
-	tokenURL   string
+	path         string
+	httpClient   *http.Client
+	now          func() time.Time
+	tokenURL     string
+	clientID     string
+	clientSecret string
 
 	mu    sync.Mutex
 	cache Credentials
@@ -84,12 +92,22 @@ func newTokenSource(path string, httpClient *http.Client, now func() time.Time) 
 	if now == nil {
 		now = time.Now
 	}
-	return &tokenSource{
-		path:       path,
-		httpClient: httpClient,
-		now:        now,
-		tokenURL:   oauthTokenURL,
+	clientID, clientSecret := geminiCLIOAuthClientID, geminiCLIOAuthClientSecret
+	if isAntigravityAuthPath(path) {
+		clientID, clientSecret = antigravityOAuthClientID, antigravityOAuthClientSecret
 	}
+	return &tokenSource{
+		path:         path,
+		httpClient:   httpClient,
+		now:          now,
+		tokenURL:     oauthTokenURL,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+	}
+}
+
+func isAntigravityAuthPath(path string) bool {
+	return strings.Contains(strings.ToLower(filepath.Base(path)), "antigravity")
 }
 
 func (t *tokenSource) Token(ctx context.Context) (string, error) {
@@ -128,8 +146,8 @@ func (t *tokenSource) Token(ctx context.Context) (string, error) {
 
 func (t *tokenSource) refresh(ctx context.Context, creds Credentials) (Credentials, error) {
 	form := url.Values{}
-	form.Set("client_id", oauthClientID)
-	form.Set("client_secret", oauthClientSecret)
+	form.Set("client_id", t.clientID)
+	form.Set("client_secret", t.clientSecret)
 	form.Set("refresh_token", creds.RefreshToken)
 	form.Set("grant_type", "refresh_token")
 

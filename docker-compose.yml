@@ -32,6 +32,8 @@ services:
       CODEX_CUSTOM_TOOL_WIRE: "${CODEX_CUSTOM_TOOL_WIRE:-function}"
       CODEX_TIMEOUT: "${CODEX_TIMEOUT:-10m}"
       GEMINI_TIMEOUT: "${GEMINI_TIMEOUT:-10m}"
+      # Prefer Antigravity oauth (synced via scripts/sync-antigravity-auth.sh).
+      GEMINI_AUTH_PATH: "${GEMINI_AUTH_PATH:-/home/codex/.gemini/antigravity_oauth_creds.json}"
       CLAUDE_TIMEOUT: "${CLAUDE_TIMEOUT:-10m}"
       CODEX_AGENT_QUEUE_LOCK_DIR: "${CODEX_AGENT_QUEUE_LOCK_DIR:-/var/lib/codex-chat-api/agent-locks}"
       CODEX_CONTEXT_MANAGEMENT_ENABLED: "${CODEX_CONTEXT_MANAGEMENT_ENABLED:-true}"

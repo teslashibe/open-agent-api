@@ -68,6 +68,19 @@ func buildModelAliases() []ModelAlias {
 		alias("gemini-2.5-flash", "gemini-2.5-flash", DefaultReasoningEffort, DefaultVerbosity),
 		alias("gemini-2.5-flash-lite", "gemini-2.5-flash-lite", DefaultReasoningEffort, DefaultVerbosity),
 		alias("gemini-2.5-pro", "gemini-2.5-pro", DefaultReasoningEffort, DefaultVerbosity),
+		// Antigravity Gemini 3.x — public IDs match agy where possible; some
+		// remap to the wire IDs Cloud Code Assist actually accepts.
+		alias("gemini-3.1-pro-low", "gemini-3.1-pro-low", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gemini-3.1-pro-high", "gemini-pro-agent", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gemini-3.5-flash-low", "gemini-3.5-flash-extra-low", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gemini-3.5-flash-medium", "gemini-3.5-flash-low", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gemini-3.5-flash-high", "gemini-3-flash-agent", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gemini-3.1-flash-lite", "gemini-3.1-flash-lite", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gemini-3-flash", "gemini-3-flash", DefaultReasoningEffort, DefaultVerbosity),
+		// Antigravity gateway non-Gemini models (routed via Gemini provider).
+		alias("claude-sonnet-4-6", "claude-sonnet-4-6", DefaultReasoningEffort, DefaultVerbosity),
+		alias("claude-opus-4-6-thinking", "claude-opus-4-6-thinking", DefaultReasoningEffort, DefaultVerbosity),
+		alias("gpt-oss-120b-medium", "gpt-oss-120b-medium", DefaultReasoningEffort, DefaultVerbosity),
 		alias("claude-opus-4-8", "claude-opus-4-8", DefaultReasoningEffort, DefaultVerbosity),
 		alias("claude-sonnet-5", "claude-sonnet-5", DefaultReasoningEffort, DefaultVerbosity),
 		alias("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", DefaultReasoningEffort, DefaultVerbosity),

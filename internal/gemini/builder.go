@@ -8,13 +8,15 @@ import (
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
 
-// Wire types for the Cloud Code Assist generateContent envelope used by the
-// Gemini CLI: {"project": ..., "model": ..., "request": {contents, ...}}.
+// Wire types for the Cloud Code Assist / Antigravity generateContent envelope:
+// {"project","model","userAgent","requestId","request":{contents,sessionId,...}}.
 
 type caGenerateContentRequest struct {
-	Model   string          `json:"model"`
-	Project string          `json:"project,omitempty"`
-	Request generateRequest `json:"request"`
+	Model     string          `json:"model"`
+	Project   string          `json:"project,omitempty"`
+	UserAgent string          `json:"userAgent,omitempty"`
+	RequestID string          `json:"requestId,omitempty"`
+	Request   generateRequest `json:"request"`
 }
 
 type generateRequest struct {
@@ -23,7 +25,7 @@ type generateRequest struct {
 	Tools             []toolDeclaration `json:"tools,omitempty"`
 	ToolConfig        *toolConfig       `json:"toolConfig,omitempty"`
 	GenerationConfig  *generationConfig `json:"generationConfig,omitempty"`
-	SessionID         string            `json:"session_id,omitempty"`
+	SessionID         string            `json:"sessionId,omitempty"`
 }
 
 type content struct {
@@ -78,9 +80,15 @@ type thinkingConfig struct {
 
 func buildGenerateContentRequest(req codex.Request, project string, sessionID string) caGenerateContentRequest {
 	contents, systemInstruction := convertMessages(req.Messages)
+	requestID := req.RequestID
+	if requestID == "" {
+		requestID = sessionID
+	}
 	out := caGenerateContentRequest{
-		Model:   req.Model,
-		Project: project,
+		Model:     req.Model,
+		Project:   project,
+		UserAgent: "antigravity",
+		RequestID: requestID,
 		Request: generateRequest{
 			Contents:          contents,
 			SystemInstruction: systemInstruction,
