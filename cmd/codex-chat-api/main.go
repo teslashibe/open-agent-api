@@ -98,6 +98,7 @@ func buildCodexService(cfg config.Config) (codex.Service, error) {
 	}
 	return codex.NewPooledService(codex.PooledServiceConfig{
 		Clients:           clients,
+		MaxInflight:       cfg.CodexClientMaxInflight,
 		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
 		LogOutput:         os.Stdout,
 	})
