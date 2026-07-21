@@ -189,9 +189,9 @@ See [`docs/gpt-5.6-sol-terra-luna.md`](docs/gpt-5.6-sol-terra-luna.md) and
 All three tiers expose `-xhigh` and `-max` effort aliases. `ultra` is a Codex
 product multi-agent mode (not a `reasoning.effort` value) and is not aliased.
 
-`gpt-5.3-codex-spark` (+ `-preview`) stays resolvable for quota-overflow fallback
-but is **unlisted** from `GET /v1/models` (faithful Codex turns inject
-`image_generation`, which Spark rejects).
+`gpt-5.3-codex-spark` (+ `-preview`) is listed for overflow / Cursor aliases
+(96 KiB hard context). Note: faithful Codex turns may inject `image_generation`,
+which Spark rejects — use `faithful:false` or client `tools` for plain chat.
 
 Antigravity Gemini 3.x requires Antigravity OAuth. Sync from the host keyring
 before Docker reload:
@@ -804,5 +804,4 @@ Recommended Cursor custom models to add: `gpt-5.6-sol`, `gpt-5.6-sol-high`,
 `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-luna-fast`, `gemini-3.1-pro-low`,
 `gemini-3.1-pro-high`, `gemini-3.5-flash-medium`, `gemini-2.5-flash`.
 
-`gpt-5.3-codex-spark` remains an internal overflow target (96 KiB hard context)
-and is not listed in `/v1/models`.
+`gpt-5.3-codex-spark` (+ `-preview`) is also listed for overflow turns (96 KiB hard context).
