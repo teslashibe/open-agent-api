@@ -17,11 +17,13 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/google/uuid"
 
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/config"
+	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 	"github.com/teslashibe/codex-chat-api/internal/sse"
 )
@@ -42,6 +44,7 @@ type options struct {
 	contextConfig      config.Config
 	drain              *atomic.Bool
 	isLocal            func(*fiber.Ctx) bool
+	metrics            *metricspkg.Metrics
 }
 
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
@@ -62,6 +65,14 @@ func WithCodexService(service codex.Service) Option {
 func WithLogOutput(output io.Writer) Option {
 	return func(opts *options) {
 		opts.logOutput = output
+	}
+}
+
+// WithMetrics shares one process-local registry across the server, queues, and
+// Codex client pool.
+func WithMetrics(metrics *metricspkg.Metrics) Option {
+	return func(opts *options) {
+		opts.metrics = metrics
 	}
 }
 
@@ -94,6 +105,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		isLocal: func(c *fiber.Ctx) bool {
 			return net.ParseIP(c.IP()).IsLoopback()
 		},
+		metrics: metricspkg.New(cfg.MetricsEnabled),
 	}
 	for _, setter := range setters {
 		setter(&opts)
@@ -114,7 +126,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 				func(format string, args ...any) {
 					logLine(opts, "provider="+provider+" "+format, args...)
 				},
-			)
+			).withMetrics(provider, opts.metrics)
 		}
 	}
 
@@ -153,6 +165,9 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	// endpoint is not discoverable and the drain state is left untouched.
 	app.Post("/drain/start", drainControl(opts, true))
 	app.Post("/drain/stop", drainControl(opts, false))
+	if opts.metrics.Enabled() {
+		app.Get("/metrics", bearerAuthMiddleware(cfg.GatewayBearerSecret), adaptor.HTTPHandler(opts.metrics.Handler()))
+	}
 	// Bearer auth guards every /v1 route but never /health, which k8s probes
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
@@ -208,6 +223,19 @@ func models(cfg config.Config) fiber.Handler {
 
 func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		provider := "unknown"
+		defer func() {
+			status := c.Response().StatusCode()
+			result := requestMetricResult(status)
+			opts.metrics.ObserveRequest(provider, result)
+			if status == fiber.StatusTooManyRequests {
+				failureClass, _ := c.Locals(metricsFailureClassLocal).(string)
+				if failureClass == "" {
+					failureClass = string(codex.FailureRateLimit)
+				}
+				opts.metrics.ObserveRateLimit(provider, failureClass)
+			}
+		}()
 		// Reject new work while draining so in-flight requests can finish before
 		// SIGTERM. Placed before any parsing or upstream call so no ChatGPT
 		// request is made (AC2).
@@ -236,7 +264,7 @@ func chatCompletions(opts options) fiber.Handler {
 			model = openai.DefaultModel
 		}
 		modelAlias := openai.ResolveModelAlias(model)
-		provider := codex.ProviderForModel(modelAlias.UpstreamModel)
+		provider = codex.ProviderForModel(modelAlias.UpstreamModel)
 		if !opts.contextConfig.ProviderEnabled(provider) {
 			logLine(opts, "provider_disabled model=%s provider=%s\n", model, provider)
 			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "model not found")
@@ -318,7 +346,7 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 
 		if req.Stream {
-			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, requestID, releaseQueue, requestStart, contextDuration, queueWait)
+			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, provider, requestID, releaseQueue, requestStart, contextDuration, queueWait)
 		}
 		defer cancel()
 		defer releaseQueue()
@@ -367,7 +395,7 @@ func chatCompletions(opts options) fiber.Handler {
 	}
 }
 
-func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
+func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, provider string, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
 	upstreamStart := opts.now()
 	events, err := opts.codexService.Stream(ctx, req)
 	if err != nil && errors.Is(err, codex.ErrUsageLimitReached) {
@@ -402,6 +430,8 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 	c.Set(fiber.HeaderCacheControl, "no-cache")
 	c.Set(fiber.HeaderConnection, "keep-alive")
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		opts.metrics.IncActiveStreams(provider)
+		defer opts.metrics.DecActiveStreams(provider)
 		defer releaseQueue()
 		defer cancel()
 
@@ -460,6 +490,19 @@ func durationMillis(duration time.Duration) int64 {
 		return -1
 	}
 	return duration.Milliseconds()
+}
+
+func requestMetricResult(status int) string {
+	switch {
+	case status == fiber.StatusTooManyRequests:
+		return "rate_limited"
+	case status >= fiber.StatusOK && status < fiber.StatusBadRequest:
+		return "success"
+	case status >= fiber.StatusBadRequest && status < fiber.StatusInternalServerError:
+		return "client_error"
+	default:
+		return "server_error"
+	}
 }
 
 func streamFinish(outcome string, toolCallEmitted bool) string {
@@ -622,6 +665,7 @@ func validateChatRequest(req openai.ChatCompletionRequest) error {
 }
 
 func mapServiceError(c *fiber.Ctx, err error) error {
+	c.Locals(metricsFailureClassLocal, string(codex.ClassifyFailure(err)))
 	if errors.Is(err, context.Canceled) {
 		return writeError(c, 499, "request_canceled", "request canceled")
 	}
@@ -654,6 +698,7 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 }
 
 func mapAgentQueueError(c *fiber.Ctx, err error) error {
+	c.Locals(metricsFailureClassLocal, string(codex.FailureRateLimit))
 	switch {
 	case errors.Is(err, errAgentQueueFull):
 		return writeError(c, fiber.StatusTooManyRequests, "rate_limit_error", "agent queue full")
@@ -663,6 +708,8 @@ func mapAgentQueueError(c *fiber.Ctx, err error) error {
 		return mapServiceError(c, err)
 	}
 }
+
+const metricsFailureClassLocal = "codex_chat_api.metrics_failure_class"
 
 func writeError(c *fiber.Ctx, status int, errorType string, message string) error {
 	return c.Status(status).JSON(openai.ErrorResponse{

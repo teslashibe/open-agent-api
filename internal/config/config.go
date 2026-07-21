@@ -45,6 +45,7 @@ const (
 	DefaultCodexClientMaxInflight             = 2
 	DefaultCodexClientPoolUnavailable         = "fail"
 	DefaultCodexClientCooldownDefault         = 5 * time.Minute
+	DefaultMetricsEnabled                     = true
 	DefaultGatewayTenantHeader                = "X-Smore-Tenant-ID"
 )
 
@@ -101,6 +102,7 @@ type Config struct {
 	CodexClientMaxInflight             int
 	CodexClientPoolUnavailable         string
 	CodexClientCooldownDefault         time.Duration
+	MetricsEnabled                     bool
 	GatewayBearerSecret                string
 	GatewayProviders                   []string
 	GatewayTenantHeader                string
@@ -367,6 +369,13 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.CodexClientCooldownDefault = cooldown
 	}
+	if value := os.Getenv("CODEX_METRICS_ENABLED"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_METRICS_ENABLED: %w", err)
+		}
+		cfg.MetricsEnabled = enabled
+	}
 	if value := os.Getenv("GATEWAY_BEARER_SECRET"); value != "" {
 		cfg.GatewayBearerSecret = value
 	}
@@ -417,6 +426,7 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.CodexClientMaxInflight, "codex-client-max-inflight", cfg.CodexClientMaxInflight, "maximum concurrent requests per Codex client")
 	fs.StringVar(&cfg.CodexClientPoolUnavailable, "codex-client-pool-unavailable", cfg.CodexClientPoolUnavailable, "Codex client pool unavailable policy: fail or fallback_first")
 	fs.DurationVar(&cfg.CodexClientCooldownDefault, "codex-client-cooldown-default", cfg.CodexClientCooldownDefault, "default cooldown for rate-limited Codex clients when no retry hint is available")
+	fs.BoolVar(&cfg.MetricsEnabled, "metrics-enabled", cfg.MetricsEnabled, "expose Prometheus metrics on /metrics")
 	fs.StringVar(&cfg.GatewayBearerSecret, "gateway-bearer-secret", cfg.GatewayBearerSecret, "shared bearer secret required on /v1 routes (empty disables inbound auth)")
 	fs.StringVar(&providersRaw, "gateway-providers", providersRaw, "comma-separated provider allowlist: codex, gemini, claude (codex is required)")
 	fs.StringVar(&cfg.GatewayTenantHeader, "gateway-tenant-header", cfg.GatewayTenantHeader, "request header whose value overrides agent queue affinity per tenant")
@@ -485,6 +495,7 @@ func Defaults() Config {
 		CodexClientMaxInflight:             DefaultCodexClientMaxInflight,
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
 		CodexClientCooldownDefault:         DefaultCodexClientCooldownDefault,
+		MetricsEnabled:                     DefaultMetricsEnabled,
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 		CustomToolWire:                     DefaultCustomToolWire,
 		QuotaFallbackModel:                 DefaultQuotaFallbackModel,

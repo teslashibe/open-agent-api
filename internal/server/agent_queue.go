@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
 )
 
 var (
@@ -25,6 +27,8 @@ type agentQueue struct {
 	priority  bool
 	now       func() time.Time
 	logf      func(string, ...any)
+	provider  string
+	metrics   *metricspkg.Metrics
 
 	mu        sync.Mutex
 	active    int
@@ -56,7 +60,13 @@ func newAgentQueue(enabled bool, maxActive int, maxActivePerKey int, limit int, 
 	}
 }
 
-func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey, class turnClass) (func(), time.Duration, error) {
+func (q *agentQueue) withMetrics(provider string, metrics *metricspkg.Metrics) *agentQueue {
+	q.provider = provider
+	q.metrics = metrics
+	return q
+}
+
+func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey, class turnClass) (release func(), wait time.Duration, err error) {
 	if q == nil {
 		return func() {}, 0, nil
 	}
@@ -64,6 +74,20 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 	priority := agentQueuePriority(class)
 
 	start := q.now()
+	defer func() {
+		result := "acquired"
+		switch {
+		case errors.Is(err, errAgentQueueFull):
+			result = "full"
+		case errors.Is(err, errAgentQueueTimeout):
+			result = "timeout"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			result = "canceled"
+		case err != nil:
+			result = "error"
+		}
+		q.metrics.ObserveQueueWait(q.provider, result, q.now().Sub(start))
+	}()
 	if !q.enabled {
 		release, err := q.acquireDistributedLock(ctx, requestID, start, key)
 		return release, 0, err
