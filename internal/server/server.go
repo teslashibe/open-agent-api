@@ -270,6 +270,12 @@ func chatCompletions(opts options) fiber.Handler {
 			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "model not found")
 		}
 		toolsPresent := rawJSONPresent(req.Tools)
+		if !toolsPresent {
+			// Non-Agent requests intentionally bypass admission control. Record the
+			// zero wait so ordinary chat traffic still advances the histogram and
+			// operators can distinguish bypasses from queued acquisitions.
+			opts.metrics.ObserveQueueWait(provider, "bypassed", 0)
+		}
 		turnClass := classifyTurn(req, toolsPresent)
 		logLine(opts, "chat_completion model=%s provider=%s stream=%t tools_present=%t turn_class=%s\n", model, provider, req.Stream, toolsPresent, turnClass)
 

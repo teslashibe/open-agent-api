@@ -32,7 +32,7 @@ The following regression tests map directly to the criteria:
 
 | Criterion | Tests |
 | --- | --- |
-| AC1 | `TestMetricsEndpointRecordsRequestsAndQueueWait`, `TestMetricsExposeStableBoundedSurface` |
+| AC1 | `TestMetricsEndpointRecordsQueueBypassForOrdinaryChat`, `TestMetricsEndpointRecordsRequestsAndQueueWait`, `TestMetricsExposeStableBoundedSurface` |
 | AC2 | `TestPooledServiceRecordsCooldownRotationAndSkipMetrics` |
 | AC3 | `TestMetricsNormalizeUntrustedLabels`, `TestMetricsEndpointRecordsRequestsAndQueueWait`, `TestPooledServiceRecordsCooldownRotationAndSkipMetrics` |
 | AC4 | `TestMetricsEndpointDisabledReturnsNotFound`, `TestDisabledMetricsAreNoopAndNotFound`, `TestMetricsEndpointUsesGatewayBearerWhenConfigured`, `TestLoadMetricsEnvironmentAndFlag` |
