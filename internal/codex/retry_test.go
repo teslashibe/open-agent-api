@@ -38,3 +38,13 @@ func TestRetryDeadlinePrefersFutureReset(t *testing.T) {
 		t.Fatalf("retryDeadline() = %s, %t, want %s", got, ok, want)
 	}
 }
+
+func TestRetryDeadlineUsesLaterRetryAfter(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	want := now.Add(2 * time.Hour)
+	err := &Error{RetryAfter: 2 * time.Hour, ResetAt: now.Add(time.Minute)}
+	got, ok := retryDeadline(err, now)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("retryDeadline() = %s, %t, want %s", got, ok, want)
+	}
+}

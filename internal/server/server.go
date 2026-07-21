@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -31,6 +32,7 @@ type options struct {
 	now                func() time.Time
 	newID              func() string
 	logOutput          io.Writer
+	logMu              *sync.Mutex
 	logBodyShape       bool
 	logRequestIdentity bool
 	agentQueueKeyMode  string
@@ -70,6 +72,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			return "chatcmpl-" + uuid.NewString()
 		},
 		logOutput:          os.Stdout,
+		logMu:              &sync.Mutex{},
 		logBodyShape:       cfg.LogBodyShape,
 		logRequestIdentity: cfg.LogRequestIdentity,
 		agentQueueKeyMode:  cfg.AgentQueueKeyMode,
@@ -471,6 +474,10 @@ func requestLogger(opts options) fiber.Handler {
 func logLine(opts options, format string, args ...any) {
 	if opts.logOutput == nil {
 		return
+	}
+	if opts.logMu != nil {
+		opts.logMu.Lock()
+		defer opts.logMu.Unlock()
 	}
 	_, _ = fmt.Fprintf(opts.logOutput, format, args...)
 }

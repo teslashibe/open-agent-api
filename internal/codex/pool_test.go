@@ -318,26 +318,30 @@ func TestPooledServiceBoundsRotationToOneAlternate(t *testing.T) {
 }
 
 func TestPooledServiceSingleClientAndAllCoolingCompatibility(t *testing.T) {
-	var calls int
-	pool := newTestPooledService(t, ClientPoolUnavailableFallbackFirst, &bytes.Buffer{}, nil,
-		PooledClientConfig{Label: "only", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
-			calls++
-			return nil, poolQuotaError()
-		}}},
-	)
+	for _, policy := range []string{ClientPoolUnavailableFail, ClientPoolUnavailableFallbackFirst} {
+		t.Run(policy, func(t *testing.T) {
+			var calls int
+			pool := newTestPooledService(t, policy, &bytes.Buffer{}, nil,
+				PooledClientConfig{Label: "only", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+					calls++
+					return nil, poolQuotaError()
+				}}},
+			)
 
-	_, firstErr := pool.Complete(context.Background(), Request{Model: "gpt-5.6-sol"})
-	if !errors.Is(firstErr, ErrUsageLimitReached) || calls != 1 {
-		t.Fatalf("first Complete() error = %v, calls = %d", firstErr, calls)
-	}
-	_, secondErr := pool.Complete(context.Background(), Request{Model: "gpt-5.6-sol"})
-	if !errors.Is(secondErr, ErrUsageLimitReached) || calls != 1 {
-		t.Fatalf("cooling Complete() error = %v, calls = %d", secondErr, calls)
-	}
+			_, firstErr := pool.Complete(context.Background(), Request{Model: "gpt-5.6-sol"})
+			if !errors.Is(firstErr, ErrUsageLimitReached) || calls != 1 {
+				t.Fatalf("first Complete() error = %v, calls = %d", firstErr, calls)
+			}
+			_, secondErr := pool.Complete(context.Background(), Request{Model: "gpt-5.6-sol"})
+			if !errors.Is(secondErr, ErrUsageLimitReached) || calls != 1 {
+				t.Fatalf("cooling Complete() error = %v, calls = %d", secondErr, calls)
+			}
 
-	_, fallbackErr := pool.Complete(context.Background(), Request{Model: "gpt-5.3-codex-spark", AllowCooling: true})
-	if !errors.Is(fallbackErr, ErrUsageLimitReached) || calls != 2 {
-		t.Fatalf("fallback Complete() error = %v, calls = %d", fallbackErr, calls)
+			_, fallbackErr := pool.Complete(context.Background(), Request{Model: "gpt-5.3-codex-spark", AllowCooling: true})
+			if !errors.Is(fallbackErr, ErrUsageLimitReached) || calls != 2 {
+				t.Fatalf("fallback Complete() error = %v, calls = %d", fallbackErr, calls)
+			}
+		})
 	}
 }
 

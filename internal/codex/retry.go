@@ -22,13 +22,14 @@ func retryDeadline(err error, now time.Time) (time.Time, bool) {
 	if !ok {
 		return time.Time{}, false
 	}
-	if codexErr.ResetAt.After(now) {
-		return codexErr.ResetAt, true
-	}
+	deadline := time.Time{}
 	if codexErr.RetryAfter > 0 {
-		return now.Add(codexErr.RetryAfter), true
+		deadline = now.Add(codexErr.RetryAfter)
 	}
-	return time.Time{}, false
+	if codexErr.ResetAt.After(deadline) && codexErr.ResetAt.After(now) {
+		deadline = codexErr.ResetAt
+	}
+	return deadline, !deadline.IsZero()
 }
 
 func retryHintFromHeader(value string, now time.Time) (time.Duration, time.Time) {
