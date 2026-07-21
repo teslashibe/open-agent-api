@@ -346,6 +346,32 @@ func TestPooledServiceSingleClientAndAllCoolingCompatibility(t *testing.T) {
 	}
 }
 
+func TestPooledServiceAllCoolingPreservesStickyClientFailureClass(t *testing.T) {
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "rate-limited", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			t.Fatal("cooling rate-limited client must not receive an upstream call")
+			return nil, nil
+		}}},
+		PooledClientConfig{Label: "quota-limited", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			t.Fatal("cooling quota-limited client must not receive an upstream call")
+			return nil, nil
+		}}},
+	)
+	rateLimitErr := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "too many requests", errors.New("capacity"))
+	pool.coolClient(0, rateLimitErr)
+	pool.coolClient(1, poolQuotaError())
+
+	_, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
+	if errors.Is(err, ErrUsageLimitReached) || ClassifyFailure(err) != FailureRateLimit {
+		t.Fatalf("rate-limit shard error = %v, class = %s", err, ClassifyFailure(err))
+	}
+
+	_, err = pool.Complete(context.Background(), requestForPoolIndex(pool, 1))
+	if !errors.Is(err, ErrUsageLimitReached) || ClassifyFailure(err) != FailureQuota {
+		t.Fatalf("quota shard error = %v, class = %s", err, ClassifyFailure(err))
+	}
+}
+
 func TestPooledServiceHonorsRetryHint(t *testing.T) {
 	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
 	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, func() time.Time { return now },

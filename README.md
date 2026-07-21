@@ -575,7 +575,8 @@ never switches accounts mid-stream.
 Cooldowns are held in memory per process and expire automatically. Replicas do
 not share cooldown state, so each replica may independently discover the same
 limited account. When every account is cooling, ordinary requests retain the
-existing OpenAI-compatible 429/model-overflow behavior.
+existing OpenAI-compatible behavior: quota cooldowns may proceed to the
+configured overflow model, while capacity rate limits remain 429 responses.
 
 Each selected Codex client also has a process-local inflight lease capped by
 `CODEX_CLIENT_MAX_INFLIGHT`. The default is `2`, matching the default global

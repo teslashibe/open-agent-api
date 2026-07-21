@@ -32,10 +32,15 @@ type PooledService struct {
 	cooldownDefault   time.Duration
 	now               func() time.Time
 
-	mu            sync.Mutex
-	cooldownUntil []time.Time
-	inflight      map[string]int
-	logMu         sync.Mutex
+	mu        sync.Mutex
+	cooldowns []clientCooldown
+	inflight  map[string]int
+	logMu     sync.Mutex
+}
+
+type clientCooldown struct {
+	until time.Time
+	class FailureClass
 }
 
 type pooledClient struct {
@@ -110,7 +115,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		logOutput:         cfg.LogOutput,
 		cooldownDefault:   cfg.CooldownDefault,
 		now:               cfg.Now,
-		cooldownUntil:     make([]time.Time, len(clients)),
+		cooldowns:         make([]clientCooldown, len(clients)),
 		inflight:          map[string]int{},
 	}, nil
 }
@@ -297,12 +302,13 @@ func (p *PooledService) coolClient(index int, err error) time.Time {
 	if !ok {
 		until = now.Add(p.cooldownDefault)
 	}
+	class := ClassifyFailure(err)
 
 	p.mu.Lock()
-	if p.cooldownUntil[index].After(until) {
-		until = p.cooldownUntil[index]
+	if p.cooldowns[index].until.After(until) {
+		until = p.cooldowns[index].until
 	} else {
-		p.cooldownUntil[index] = until
+		p.cooldowns[index] = clientCooldown{until: until, class: class}
 	}
 	p.mu.Unlock()
 	p.logCooldown(index, until)
@@ -327,9 +333,13 @@ func (p *PooledService) shouldFallback(index int, err error) bool {
 // Prefer cooldown errors when every client is cooling; otherwise saturation.
 func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, func(), error) {
 	sawEligible := false
+	var selectedCooldownClass FailureClass
 	for offset := range len(p.clients) {
 		index := (selected + offset) % len(p.clients)
-		if p.clientCooling(index) {
+		if class, cooling := p.clientCooldown(index); cooling {
+			if index == selected {
+				selectedCooldownClass = class
+			}
 			continue
 		}
 		sawEligible = true
@@ -346,7 +356,7 @@ func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, f
 			}
 			return 0, 0, nil, p.saturatedError(req)
 		}
-		return 0, 0, nil, allClientsCoolingError()
+		return 0, 0, nil, allClientsCoolingError(selectedCooldownClass)
 	}
 	return 0, 0, nil, p.saturatedError(req)
 }
@@ -394,9 +404,20 @@ func (p *PooledService) acquireClient(req Request, index int) (int, func(), bool
 }
 
 func (p *PooledService) clientCooling(index int) bool {
+	_, cooling := p.clientCooldown(index)
+	return cooling
+}
+
+func (p *PooledService) clientCooldown(index int) (FailureClass, bool) {
+	now := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.cooldownUntil[index].After(p.now())
+	cooldown := p.cooldowns[index]
+	if !cooldown.until.After(now) {
+		p.cooldowns[index] = clientCooldown{}
+		return "", false
+	}
+	return cooldown.class, true
 }
 
 func (p *PooledService) saturatedError(req Request) error {
@@ -497,11 +518,21 @@ func requestID(req Request) string {
 	return req.RequestID
 }
 
-func allClientsCoolingError() error {
+func allClientsCoolingError(class FailureClass) error {
+	// Preserve the sticky client's cooldown class. In particular, a capacity
+	// 429 must not acquire the quota sentinel and trigger model overflow.
+	if class == FailureQuota {
+		return NewError(
+			ErrorKindUpstream,
+			http.StatusTooManyRequests,
+			"usage limit reached",
+			fmt.Errorf("%w: all codex clients are cooling", ErrUsageLimitReached),
+		)
+	}
 	return NewError(
 		ErrorKindUpstream,
-		429,
-		"usage limit reached",
-		fmt.Errorf("%w: all codex clients are cooling", ErrUsageLimitReached),
+		http.StatusTooManyRequests,
+		"rate limit reached",
+		errors.New("all codex clients are cooling"),
 	)
 }
