@@ -20,7 +20,15 @@ type agentQueueKey struct {
 	Hash  string
 }
 
-func resolveAgentQueueKey(mode string, c *fiber.Ctx, rawBody []byte) agentQueueKey {
+func resolveAgentQueueKey(mode string, tenantHeader string, c *fiber.Ctx, rawBody []byte) agentQueueKey {
+	// An explicit tenant header (smore free-tier traffic) always wins over the
+	// configured key mode so fairness is per tenant, not per Cursor session.
+	if name := strings.TrimSpace(tenantHeader); name != "" {
+		if tenant := strings.TrimSpace(c.Get(name)); tenant != "" {
+			return newAgentQueueKey("tenant", tenant)
+		}
+	}
+
 	mode = strings.TrimSpace(mode)
 	if mode == "" {
 		mode = defaultAgentQueueKeyMode
