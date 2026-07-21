@@ -306,6 +306,43 @@ Flags override environment values.
 | Context recent messages kept | `CODEX_CONTEXT_RECENT_MESSAGES` | `--context-recent-messages` | `24` |
 | Tool output max bytes | `CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES` | `--context-tool-output-max-bytes` | `32768` |
 | Compacted tool output max bytes | `CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES` | `--context-compacted-tool-output-max-bytes` | `512` |
+| Gateway bearer secret | `GATEWAY_BEARER_SECRET` | `--gateway-bearer-secret` | empty (inbound auth disabled) |
+| Gateway provider allowlist | `GATEWAY_PROVIDERS` | `--gateway-providers` | `codex,gemini,claude` |
+| Gateway tenant header | `GATEWAY_TENANT_HEADER` | `--gateway-tenant-header` | `X-Smore-Tenant-ID` |
+
+### Internal gateway / smore deployment
+
+When this service runs as an internal free-tier backend (behind smore-api),
+harden it with:
+
+```bash
+GATEWAY_BEARER_SECRET=<shared-secret>   # required bearer on /v1 routes
+GATEWAY_PROVIDERS=codex,gemini          # drop claude from routing and /v1/models
+```
+
+- **Bearer auth.** When `GATEWAY_BEARER_SECRET` is set, `/v1/models` and
+  `/v1/chat/completions` require `Authorization: Bearer <secret>`; anything
+  else gets a `401` with an OpenAI-style `authentication_error` body and no
+  upstream call is made. `/health` stays unauthenticated for k8s probes. When
+  the secret is unset (the dev default), any Authorization value passes
+  through, so the local Cursor workflow — including its BYOK model discovery
+  against `/v1/models` — is unchanged.
+- **Provider allowlist.** `GATEWAY_PROVIDERS` is a comma-separated subset of
+  `codex,gemini,claude`; `codex` is mandatory (it is the router fallback).
+  Disabled providers are removed from `/v1/models`, their models return
+  `404 model not found` before any queueing, and their upstream clients
+  (including the `claude` CLI) are never constructed.
+- **Tenant queueing.** When a request carries the header named by
+  `GATEWAY_TENANT_HEADER` (default `X-Smore-Tenant-ID`), agent queue affinity
+  keys by that tenant id instead of the Cursor-session heuristics, so tenants
+  share the upstream fairly. Callers behind smore should always set it.
+- **Concurrency stays small on purpose.** The defaults
+  (`CODEX_AGENT_MAX_ACTIVE=2`, `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`) protect the
+  shared ChatGPT/Gemini operator accounts; raise them deliberately, not as
+  part of enabling the gateway.
+- Deliver the secret via a k8s Secret (env var or mounted file sourced into
+  the env), not a committed compose/manifest file. The request logger only
+  records `authorization_present=true/false`, never the header value.
 
 Request body options beyond the core OpenAI chat schema:
 
