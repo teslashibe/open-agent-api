@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -36,6 +38,8 @@ type options struct {
 	agentQueueKeyMode  string
 	agentQueues        map[string]*agentQueue
 	contextConfig      config.Config
+	drain              *atomic.Bool
+	isLocal            func(*fiber.Ctx) bool
 }
 
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
@@ -59,6 +63,15 @@ func WithLogOutput(output io.Writer) Option {
 	}
 }
 
+// withLocalCheck overrides the loopback detection used by the drain controls.
+// app.Test() connections are not loopback, so tests that need to exercise the
+// positive drain path inject their own predicate.
+func withLocalCheck(isLocal func(*fiber.Ctx) bool) Option {
+	return func(opts *options) {
+		opts.isLocal = isLocal
+	}
+}
+
 func New(cfg config.Config, setters ...Option) *fiber.App {
 	opts := options{
 		codexService: codex.UnavailableService{},
@@ -74,6 +87,10 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		logRequestIdentity: cfg.LogRequestIdentity,
 		agentQueueKeyMode:  cfg.AgentQueueKeyMode,
 		contextConfig:      cfg,
+		drain:              &atomic.Bool{},
+		isLocal: func(c *fiber.Ctx) bool {
+			return net.ParseIP(c.IP()).IsLoopback()
+		},
 	}
 	for _, setter := range setters {
 		setter(&opts)
@@ -106,11 +123,33 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	app.Use(recover.New())
 	app.Use(requestLogger(opts))
 
-	app.Get("/health", func(c *fiber.Ctx) error {
+	// live reports that the process is up. It must never depend on upstream
+	// ChatGPT so an OpenAI outage does not get the pod killed.
+	live := func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status": "ok",
+		})
+	}
+	// /health is kept as a live alias so existing k8s probes need no change.
+	app.Get("/health", live)
+	app.Get("/health/live", live)
+	// ready fails while draining so Services stop routing new traffic during
+	// rollouts. It deliberately does not ping upstream ChatGPT.
+	app.Get("/health/ready", func(c *fiber.Ctx) error {
+		if opts.drain.Load() {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"status": "draining",
+			})
+		}
 		return c.JSON(fiber.Map{
 			"status": "ok",
 		})
 	})
+	// Drain controls are localhost-only: a new pod signals the old one to stop
+	// accepting work before SIGTERM. Non-loopback callers get a 404 so the
+	// endpoint is not discoverable and the drain state is left untouched.
+	app.Post("/drain/start", drainControl(opts, true))
+	app.Post("/drain/stop", drainControl(opts, false))
 	// Bearer auth guards every /v1 route but never /health, which k8s probes
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
@@ -121,6 +160,25 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	})
 
 	return app
+}
+
+// drainControl sets or clears the draining flag, but only for loopback callers.
+// Remote callers get a 404 and the state is left untouched (AC3).
+func drainControl(opts options, draining bool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if !opts.isLocal(c) {
+			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "not found")
+		}
+		opts.drain.Store(draining)
+		status := "ok"
+		if draining {
+			status = "draining"
+		}
+		return c.JSON(fiber.Map{
+			"status":   status,
+			"draining": draining,
+		})
+	}
 }
 
 func models(cfg config.Config) fiber.Handler {
@@ -147,6 +205,12 @@ func models(cfg config.Config) fiber.Handler {
 
 func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		// Reject new work while draining so in-flight requests can finish before
+		// SIGTERM. Placed before any parsing or upstream call so no ChatGPT
+		// request is made (AC2).
+		if opts.drain.Load() {
+			return writeError(c, fiber.StatusServiceUnavailable, "server_error", "server draining")
+		}
 		requestStart := opts.now()
 		requestID := opts.newID()
 		if opts.logBodyShape {

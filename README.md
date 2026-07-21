@@ -121,7 +121,11 @@ GOCACHE=$PWD/.gocache go build ./...
 
 The server implements:
 
-- `GET /health`
+- `GET /health` (live alias)
+- `GET /health/live`
+- `GET /health/ready`
+- `POST /drain/start` (localhost-only)
+- `POST /drain/stop` (localhost-only)
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
@@ -344,6 +348,36 @@ GATEWAY_PROVIDERS=codex,gemini          # drop claude from routing and /v1/model
   the env), not a committed compose/manifest file. The request logger only
   records `authorization_present=true/false`, never the header value.
 
+### Health, readiness, and drain
+
+Health is split so rollouts can drain a pod without killing it for upstream
+outages. All health endpoints are unauthenticated so k8s probes reach them.
+
+| Endpoint | Meaning |
+| --- | --- |
+| `GET /health` | Live alias — `200` whenever the process is up (unchanged body `{"status":"ok"}`). |
+| `GET /health/live` | Liveness — `200` whenever the process is up. |
+| `GET /health/ready` | Readiness — `200` when serving, `503 {"status":"draining"}` while draining. |
+| `POST /drain/start` | Localhost-only. Begin draining; readiness flips to `503`. |
+| `POST /drain/stop` | Localhost-only. Resume serving. |
+
+- **Live never depends on upstream ChatGPT.** If OpenAI blips, `/health/live`
+  (and `/health`) stay `200` so the pod is not restarted for an upstream
+  outage. Readiness likewise never pings chatgpt.com; it only reflects the
+  local drain flag.
+- **Draining rejects new work, drains in-flight.** While draining, new
+  `POST /v1/chat/completions` requests return `503` (`server draining`) *before*
+  any upstream call, while requests already past that check finish normally.
+- **Drain is localhost-only.** `/drain/start` and `/drain/stop` only act for a
+  loopback connection remote address (`127.0.0.1`/`::1`); any other caller gets
+  a `404` and the drain state is left untouched. The check uses the connection
+  remote IP and does **not** honor `X-Forwarded-For`, so a fronting proxy
+  cannot trigger a drain.
+- **Probe mapping (compat).** Existing k8s probes hit `/health`, which maps to
+  **live**, so no probe change is required for this release. Draining only
+  gates Service routing once a manifest adopts a `/health/ready` readiness
+  probe — that k8s-control manifest tweak is a follow-up and out of scope here.
+
 Request body options beyond the core OpenAI chat schema:
 
 | Field | Values | Default |
@@ -369,7 +403,8 @@ endpoints.
 
 | Feature | Status |
 | --- | --- |
-| `GET /health` | Supported |
+| `GET /health` | Supported (live alias) |
+| `GET /health/live`, `GET /health/ready` | Supported (liveness / readiness split for rollouts) |
 | `GET /v1/models` | Supported (returns GPT-5.6 / 5.5 / Spark / Claude / Gemini aliases) |
 | `POST /v1/chat/completions` (non-streaming) | Supported |
 | `POST /v1/chat/completions` (streaming SSE) | Supported |
