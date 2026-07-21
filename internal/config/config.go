@@ -42,6 +42,7 @@ const (
 	DefaultContextToolOutputMaxBytes          = 32 * 1024
 	DefaultContextCompactedToolOutputMaxBytes = 512
 	DefaultDegenerateTurnRetryEnabled         = true
+	DefaultCodexClientMaxInflight             = 2
 	DefaultCodexClientPoolUnavailable         = "fail"
 	DefaultGatewayTenantHeader                = "X-Smore-Tenant-ID"
 )
@@ -96,6 +97,7 @@ type Config struct {
 	ContextCompactedToolOutputMaxBytes int
 	DegenerateTurnRetryEnabled         bool
 	CodexClients                       []CodexClient
+	CodexClientMaxInflight             int
 	CodexClientPoolUnavailable         string
 	GatewayBearerSecret                string
 	GatewayProviders                   []string
@@ -346,6 +348,13 @@ func Load(args []string) (Config, error) {
 	if value := os.Getenv("CODEX_CLIENTS"); value != "" {
 		clientsJSON = value
 	}
+	if value := os.Getenv("CODEX_CLIENT_MAX_INFLIGHT"); value != "" {
+		maxInflight, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CLIENT_MAX_INFLIGHT: %w", err)
+		}
+		cfg.CodexClientMaxInflight = maxInflight
+	}
 	if value := os.Getenv("CODEX_CLIENT_POOL_UNAVAILABLE"); value != "" {
 		cfg.CodexClientPoolUnavailable = value
 	}
@@ -396,6 +405,7 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.ContextCompactedToolOutputMaxBytes, "context-compacted-tool-output-max-bytes", cfg.ContextCompactedToolOutputMaxBytes, "maximum bytes to keep from an older compacted tool output")
 	fs.BoolVar(&cfg.DegenerateTurnRetryEnabled, "degenerate-turn-retry", cfg.DegenerateTurnRetryEnabled, "retry tool-capable turns that finish with text-only stop using tool_choice required")
 	fs.StringVar(&clientsJSON, "codex-clients", clientsJSON, "JSON array of Codex clients with non-sensitive labels and optional codex_home, auth_path, profile_path, and scaffold_path")
+	fs.IntVar(&cfg.CodexClientMaxInflight, "codex-client-max-inflight", cfg.CodexClientMaxInflight, "maximum concurrent requests per Codex client")
 	fs.StringVar(&cfg.CodexClientPoolUnavailable, "codex-client-pool-unavailable", cfg.CodexClientPoolUnavailable, "Codex client pool unavailable policy: fail or fallback_first")
 	fs.StringVar(&cfg.GatewayBearerSecret, "gateway-bearer-secret", cfg.GatewayBearerSecret, "shared bearer secret required on /v1 routes (empty disables inbound auth)")
 	fs.StringVar(&providersRaw, "gateway-providers", providersRaw, "comma-separated provider allowlist: codex, gemini, claude (codex is required)")
@@ -462,6 +472,7 @@ func Defaults() Config {
 		ContextToolOutputMaxBytes:          DefaultContextToolOutputMaxBytes,
 		ContextCompactedToolOutputMaxBytes: DefaultContextCompactedToolOutputMaxBytes,
 		DegenerateTurnRetryEnabled:         DefaultDegenerateTurnRetryEnabled,
+		CodexClientMaxInflight:             DefaultCodexClientMaxInflight,
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 		CustomToolWire:                     DefaultCustomToolWire,
@@ -596,6 +607,9 @@ func (c Config) Validate() error {
 	}
 	if c.ContextCompactedToolOutputMaxBytes < 0 {
 		return errors.New("context compacted tool output max bytes must be non-negative")
+	}
+	if c.CodexClientMaxInflight < 1 {
+		return errors.New("codex client max inflight must be at least 1")
 	}
 	if err := validateCodexClientPoolUnavailable(c.CodexClientPoolUnavailable); err != nil {
 		return err
