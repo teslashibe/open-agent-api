@@ -181,16 +181,20 @@ func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, 
 }
 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
-	selected, _ := p.preferredIndex(req)
+	selected, pinned := p.preferredIndex(req)
 	index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
 	if err != nil {
 		return nil, err
 	}
+	refreshPin := -1
+	if pinned && index == selected {
+		refreshPin = selected
+	}
 	p.logSelection(req, index, false, index != selected, inflight)
-	return p.streamAttempt(ctx, req, index, false, release, unpin)
+	return p.streamAttempt(ctx, req, index, false, release, unpin, refreshPin)
 }
 
-func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin) (<-chan StreamEvent, error) {
+func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin, refreshPin int) (<-chan StreamEvent, error) {
 	attemptCtx, cancel := context.WithCancel(ctx)
 	events, err := p.clients[index].service.Stream(attemptCtx, req)
 	if err != nil {
@@ -204,7 +208,7 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 				if alternate, inflight, altRelease, ok := p.acquireAlternate(req, index); ok {
 					unpin = firstPendingUnpin(req, unpin, index, reason)
 					p.logSelection(req, alternate, false, true, inflight)
-					return p.streamAttempt(ctx, req, alternate, true, altRelease, unpin)
+					return p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin)
 				}
 			}
 			return nil, err
@@ -213,14 +217,14 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 		if !retried && p.shouldFallback(index, err) {
 			if inflight, fbRelease, ok, _, _ := p.tryAcquireClient(req, 0, false); ok {
 				p.logSelection(req, 0, true, false, inflight)
-				return p.streamAttempt(ctx, req, 0, true, fbRelease, unpin)
+				return p.streamAttempt(ctx, req, 0, true, fbRelease, unpin, refreshPin)
 			}
 		}
 		return nil, err
 	}
 
 	out := make(chan StreamEvent, 1)
-	go p.forwardAttempt(ctx, cancel, req, index, events, out, retried, release, unpin)
+	go p.forwardAttempt(ctx, cancel, req, index, events, out, retried, release, unpin, refreshPin)
 	return out, nil
 }
 
@@ -234,6 +238,7 @@ func (p *PooledService) forwardAttempt(
 	retried bool,
 	release func(),
 	unpin *pendingUnpin,
+	refreshPin int,
 ) {
 	defer close(out)
 	defer cancel()
@@ -256,51 +261,63 @@ func (p *PooledService) forwardAttempt(
 				release()
 				unpin = firstPendingUnpin(req, unpin, index, reason)
 				p.logSelection(req, alternate, false, true, inflight)
-				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease, unpin)
+				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin)
 				if err != nil {
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
 				}
-				p.forwardRemaining(ctx, out, retryEvents)
+				p.forwardRemaining(ctx, out, retryEvents, nil)
 				return
 			}
 		}
 	}
 
 	defer release()
-	if !p.sendPoolEvent(ctx, out, first) {
-		return
-	}
 	if first.Err != nil {
+		p.sendPoolEvent(ctx, out, first)
 		return
 	}
 	if first.Done {
-		p.recordSuccessfulSelection(req, index, unpin)
+		// Commit affinity before the terminal event can release a queued turn.
+		p.recordSuccessfulSelection(req, index, unpin, refreshPin)
+		p.sendPoolEvent(ctx, out, first)
 		return
 	}
-	if p.forwardRemaining(ctx, out, events) {
-		p.recordSuccessfulSelection(req, index, unpin)
+	if !p.sendPoolEvent(ctx, out, first) {
+		return
 	}
+	p.forwardRemaining(ctx, out, events, func() {
+		p.recordSuccessfulSelection(req, index, unpin, refreshPin)
+	})
 }
 
-func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent) bool {
+func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func()) {
 	for {
 		select {
 		case <-ctx.Done():
 			trySendContextError(out, ctx.Err())
-			return false
+			return
 		case event, ok := <-events:
 			if !ok {
-				return true
-			}
-			if !p.sendPoolEvent(ctx, out, event) {
-				return false
+				if success != nil {
+					success()
+				}
+				return
 			}
 			if event.Err != nil {
-				return false
+				p.sendPoolEvent(ctx, out, event)
+				return
 			}
 			if event.Done {
-				return true
+				// Commit affinity before the terminal event can release a queued turn.
+				if success != nil {
+					success()
+				}
+				p.sendPoolEvent(ctx, out, event)
+				return
+			}
+			if !p.sendPoolEvent(ctx, out, event) {
+				return
 			}
 		}
 	}
@@ -538,7 +555,7 @@ func (p *PooledService) preferredIndex(req Request) (int, bool) {
 	return pin.index, true
 }
 
-func (p *PooledService) recordSuccessfulSelection(req Request, index int, unpin *pendingUnpin) {
+func (p *PooledService) recordSuccessfulSelection(req Request, index int, unpin *pendingUnpin, refreshPin int) {
 	if len(p.clients) == 1 {
 		return
 	}
@@ -558,7 +575,7 @@ func (p *PooledService) recordSuccessfulSelection(req Request, index int, unpin 
 		} else if element.Value.(*softPin).index == index {
 			p.setSoftPinLocked(key, index, now)
 		}
-	} else if element != nil && element.Value.(*softPin).index == index {
+	} else if refreshPin == index && (element == nil || element.Value.(*softPin).index == index) {
 		p.setSoftPinLocked(key, index, now)
 	}
 	p.mu.Unlock()
