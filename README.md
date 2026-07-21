@@ -714,6 +714,30 @@ Upstream Codex errors are logged server-side as `stream_error` or
 `complete_error` with the real payload. Clients still receive the sanitized
 `[error: upstream error]` message.
 
+#### Failure taxonomy (operators)
+
+Every `stream_error` and `complete_error` line also carries a redacted
+`failure_class` and `failure_phase` used by pool cooldown / rotation logic.
+These fields are derived only from the error type, status code, and body
+markers the server already knows — they never contain auth tokens, account
+emails, or raw upstream bodies.
+
+`failure_class` maps upstream failures deterministically:
+
+| `failure_class` | Meaning | Mapped from |
+| --- | --- | --- |
+| `quota` | Account-scoped usage limit | `usage_limit_reached` (`ErrUsageLimitReached`) |
+| `rate_limit` | Transient capacity throttle | non-usage-limit `429` upstream errors |
+| `auth` | Credential/authorization failure | `auth`-kind Codex errors |
+| `permanent` | Client-side, rotation cannot help | `context_length_exceeded`, other `client`-kind (`400`) errors |
+| `transient` | Retryable/unknown upstream or transport failure | `5xx`, unavailable clients, and any unmapped error |
+
+`failure_phase` records how far the request progressed when it failed:
+`connect` (before any upstream event), `first_event` (the failure is the first
+event, nothing sent to the client yet), or `mid_stream` (content already
+streamed). Rotation logic refuses to switch accounts `mid_stream`, since that
+would corrupt an in-flight Agent tool turn.
+
 ### Troubleshooting
 
 | Symptom | Likely cause | Fix |
