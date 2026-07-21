@@ -100,6 +100,7 @@ func buildCodexService(cfg config.Config) (codex.Service, error) {
 		Clients:           clients,
 		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
 		LogOutput:         os.Stdout,
+		CooldownDefault:   cfg.CodexClientCooldownDefault,
 	})
 }
 

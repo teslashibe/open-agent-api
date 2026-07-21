@@ -266,7 +266,7 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 		upstreamDuration := opts.now().Sub(upstreamStart)
 		if err != nil {
-			logLine(opts, "complete_error model=%s err=%s\n", model, detailedError(err))
+			logLine(opts, "complete_error model=%s err=%s failure_class=%s failure_phase=%s\n", model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
 			logRequestTiming(opts, requestID, contextDuration, queueWait, upstreamDuration, -1, opts.now().Sub(requestStart))
 			return mapServiceError(c, err)
 		}
@@ -303,9 +303,24 @@ func chatCompletions(opts options) fiber.Handler {
 func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
 	upstreamStart := opts.now()
 	events, err := opts.codexService.Stream(ctx, req)
+	if err != nil && errors.Is(err, codex.ErrUsageLimitReached) {
+		if fallbackReq, ok := buildQuotaFallbackRequest(req, opts.contextConfig); ok {
+			fallbackEvents, fallbackErr := opts.codexService.Stream(ctx, fallbackReq)
+			if fallbackErr != nil {
+				logLine(opts, "quota_fallback_error request_id=%s from=%s to=%s err=%s\n", requestID, req.Model, fallbackReq.Model, detailedError(fallbackErr))
+				err = fallbackErr
+			} else {
+				logLine(opts, "quota_fallback request_id=%s from=%s to=%s messages=%d\n", requestID, req.Model, fallbackReq.Model, len(fallbackReq.Messages))
+				req = fallbackReq
+				events = fallbackEvents
+				err = nil
+			}
+		}
+	}
 	if err != nil {
 		cancel()
 		releaseQueue()
+		logLine(opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", requestID, req.Model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
 		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
 		return mapServiceError(c, err)
 	}
