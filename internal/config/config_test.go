@@ -40,6 +40,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CLIENT_MAX_INFLIGHT")
 	unsetenv(t, "CODEX_CLIENT_POOL_UNAVAILABLE")
 	unsetenv(t, "CODEX_CLIENT_COOLDOWN_DEFAULT")
+	unsetenv(t, "CODEX_METRICS_ENABLED")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -133,11 +134,44 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.CodexClientCooldownDefault != DefaultCodexClientCooldownDefault {
 		t.Fatalf("CodexClientCooldownDefault = %s, want %s", cfg.CodexClientCooldownDefault, DefaultCodexClientCooldownDefault)
 	}
+	if cfg.MetricsEnabled != DefaultMetricsEnabled {
+		t.Fatalf("MetricsEnabled = %t, want %t", cfg.MetricsEnabled, DefaultMetricsEnabled)
+	}
 	if len(cfg.CodexClients) != 1 {
 		t.Fatalf("CodexClients length = %d, want 1", len(cfg.CodexClients))
 	}
 	if cfg.CodexClients[0].Label != "default" || cfg.CodexClients[0].AuthPath != cfg.AuthPath || cfg.CodexClients[0].CodexHome != cfg.CodexHome {
 		t.Fatalf("default codex client = %#v", cfg.CodexClients[0])
+	}
+}
+
+func TestLoadMetricsEnvironmentAndFlag(t *testing.T) {
+	t.Setenv("CODEX_METRICS_ENABLED", "false")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.MetricsEnabled {
+		t.Fatal("MetricsEnabled = true, want false from environment")
+	}
+
+	cfg, err = Load([]string{"--metrics-enabled=true"})
+	if err != nil {
+		t.Fatalf("Load() with flag error = %v", err)
+	}
+	if !cfg.MetricsEnabled {
+		t.Fatal("MetricsEnabled = false, want true from flag")
+	}
+}
+
+func TestLoadInvalidMetricsEnabled(t *testing.T) {
+	t.Setenv("CODEX_METRICS_ENABLED", "sometimes")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid metrics boolean error")
 	}
 }
 

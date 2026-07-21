@@ -295,6 +295,7 @@ Flags override environment values.
 | Codex max inflight per client | `CODEX_CLIENT_MAX_INFLIGHT` | `--codex-client-max-inflight` | `2` |
 | Codex pool unavailable policy | `CODEX_CLIENT_POOL_UNAVAILABLE` | `--codex-client-pool-unavailable` | `fail` |
 | Codex client cooldown default | `CODEX_CLIENT_COOLDOWN_DEFAULT` | `--codex-client-cooldown-default` | `5m` |
+| Prometheus metrics enabled | `CODEX_METRICS_ENABLED` | `--metrics-enabled` | `true` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 | Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
 | Redacted Codex tool-event logging | `CODEX_LOG_CODEX_TOOL_EVENTS` | `--log-codex-tool-events` | `false` |
@@ -629,6 +630,54 @@ the same queue key is still recommended to reduce lock contention.
 The supplied Docker Compose file mounts this path on a named volume by default
 at `/var/lib/codex-chat-api/agent-locks`, so replicas started from that Compose
 project share locks without extra volume wiring.
+
+### Prometheus metrics
+
+The process exposes a small Prometheus text endpoint at `GET /metrics` on the
+same bind address and port as the gateway. It is enabled by default and does not
+require a sidecar. When `GATEWAY_BEARER_SECRET` is set, `/metrics` requires the
+same `Authorization: Bearer <secret>` header as `/v1`; when the secret is empty,
+the endpoint is open on the configured bind address. Set
+`CODEX_METRICS_ENABLED=false` (or `--metrics-enabled=false`) to remove the route
+and restore the pre-metrics HTTP surface.
+
+The metric names and label keys are the stable operator contract:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `codex_chat_api_requests_total` | counter | `provider`, `result` | Chat completion requests by final HTTP result. |
+| `codex_chat_api_rate_limit_responses_total` | counter | `provider`, `failure_class` | Final HTTP 429 responses, including quota, capacity, pool, and queue paths. |
+| `codex_chat_api_pool_selections_total` | counter | `client_label`, `result` | Codex pool selections (`normal`, `rotated`, or `fallback`). |
+| `codex_chat_api_pool_cooldowns_total` | counter | `client_label`, `failure_class` | Cooldown tickets created or refreshed after a quota/rate-limit failure. |
+| `codex_chat_api_pool_cooldown_skips_total` | counter | `client_label`, `failure_class` | Selection attempts that skipped a currently cooling client. |
+| `codex_chat_api_queue_wait_seconds` | histogram | `provider`, `result` | Agent queue wait through acquisition, rejection, timeout, cancellation, or error; ordinary chats record a zero-second `bypassed` observation. |
+| `codex_chat_api_active_streams` | gauge | `provider` | Downstream streaming responses currently being written. |
+
+`provider`, `result`, and `failure_class` are fixed allowlists. `client_label`
+comes only from the validated, bounded labels in `CODEX_CLIENTS`; keep those
+labels non-sensitive operational aliases. Metrics never use raw tenant IDs,
+bearer tokens, request IDs, queue/auth hashes, model IDs, prompt text, or prompt
+hashes as labels.
+
+For an open local bind:
+
+```bash
+curl -fsS http://127.0.0.1:8088/metrics
+```
+
+For a bearer-protected ClusterIP scrape, configure Prometheus with the same
+gateway secret (prefer a mounted secret file over an inline value):
+
+```yaml
+scrape_configs:
+  - job_name: codex-chat-api
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/codex-chat-api-gateway
+    static_configs:
+      - targets: [codex-chat-api.default.svc.cluster.local:8088]
+```
 
 The queue classifies request shapes as `tool_generating`,
 `tool_result_continuation`, `final_prose_continuation`, or `simple_no_tool` and
