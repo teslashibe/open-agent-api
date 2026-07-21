@@ -39,7 +39,7 @@ The following regression tests map directly to the criteria:
 | AC1 | `TestPooledServiceRotatesConnectQuotaWithoutChangingModel`, `TestPooledServiceRotatesFirstEventQuota`, `TestApplyQuotaFallbackUsesAccountRotationBeforeModelOverflow` |
 | AC2 | `TestPooledServiceCoolingStickyClientIsSkippedUntilExpiry`, `TestPooledServiceHonorsRetryHint` |
 | AC3 | `TestPooledServiceDoesNotRotateAfterContentOrToolDelta`, `TestPooledServiceBoundsRotationToOneAlternate` |
-| AC4 | `TestPooledServiceSingleClientAndAllCoolingCompatibility`, `TestApplyQuotaFallbackRunsOverflowAfterPoolExhaustion`, `TestStreamingConnectQuotaRunsModelFallback` |
+| AC4 | `TestPooledServiceSingleClientAndAllCoolingCompatibility`, `TestPooledServiceAllCoolingPreservesStickyClientFailureClass`, `TestApplyQuotaFallbackRunsOverflowAfterPoolExhaustion`, `TestStreamingConnectQuotaRunsModelFallback`, `TestAllCoolingRateLimitDoesNotRunModelFallback` |
 
 The race suite covers the new mutex-protected cooldown state and concurrent
 server diagnostics. The full functional suite also verifies config parsing,

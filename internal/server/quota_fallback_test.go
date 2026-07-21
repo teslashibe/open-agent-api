@@ -264,6 +264,47 @@ func TestStreamingConnectQuotaRunsModelFallback(t *testing.T) {
 	}
 }
 
+func TestAllCoolingRateLimitDoesNotRunModelFallback(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			var calls int
+			var models []string
+			rateLimitErr := codex.NewError(codex.ErrorKindUpstream, http.StatusTooManyRequests, "too many requests", errors.New("capacity"))
+			pool, err := codex.NewPooledService(codex.PooledServiceConfig{
+				UnavailablePolicy: codex.ClientPoolUnavailableFail,
+				LogOutput:         io.Discard,
+				Clients: []codex.PooledClientConfig{{Label: "only", Service: &streamFuncService{stream: func(req codex.Request) (<-chan codex.StreamEvent, error) {
+					calls++
+					models = append(models, req.Model)
+					return nil, rateLimitErr
+				}}}},
+			})
+			if err != nil {
+				t.Fatalf("NewPooledService() error = %v", err)
+			}
+			var logs synchronizedBuffer
+			app := New(config.Defaults(), WithCodexService(pool), WithLogOutput(&logs), fixedServerOptions())
+			body := fmt.Sprintf(`{"model":"gpt-5.5","stream":%t,"messages":[{"role":"user","content":"hi"}]}`, stream)
+
+			for attempt := 1; attempt <= 2; attempt++ {
+				resp := doJSON(t, app, body)
+				responseBody := readString(t, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusTooManyRequests {
+					t.Fatalf("attempt %d status = %d, want %d; body = %q", attempt, resp.StatusCode, http.StatusTooManyRequests, responseBody)
+				}
+			}
+
+			if calls != 1 || fmt.Sprint(models) != "[gpt-5.5]" {
+				t.Fatalf("calls = %d, models = %v; model fallback must not run", calls, models)
+			}
+			if strings.Contains(logs.String(), "quota_fallback") {
+				t.Fatalf("logs = %q, ordinary rate limit triggered model fallback", logs.String())
+			}
+		})
+	}
+}
+
 type streamFuncService struct {
 	stream func(codex.Request) (<-chan codex.StreamEvent, error)
 }
