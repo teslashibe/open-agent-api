@@ -155,7 +155,7 @@ func normalizeRequestResult(value string) string {
 }
 
 func normalizePoolResult(value string) string {
-	return allow(value, "normal", "normal", "rotated", "fallback")
+	return allow(value, "normal", "normal", "rotated", "fallback", "pinned")
 }
 
 func normalizeQueueResult(value string) string {

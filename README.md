@@ -647,7 +647,7 @@ The metric names and label keys are the stable operator contract:
 | --- | --- | --- | --- |
 | `codex_chat_api_requests_total` | counter | `provider`, `result` | Chat completion requests by final HTTP result. |
 | `codex_chat_api_rate_limit_responses_total` | counter | `provider`, `failure_class` | Final HTTP 429 responses, including quota, capacity, pool, and queue paths. |
-| `codex_chat_api_pool_selections_total` | counter | `client_label`, `result` | Codex pool selections (`normal`, `rotated`, or `fallback`). |
+| `codex_chat_api_pool_selections_total` | counter | `client_label`, `result` | Codex pool selections (`normal`, `rotated`, `fallback`, or `pinned`). |
 | `codex_chat_api_pool_cooldowns_total` | counter | `client_label`, `failure_class` | Cooldown tickets created or refreshed after a quota/rate-limit failure. |
 | `codex_chat_api_pool_cooldown_skips_total` | counter | `client_label`, `failure_class` | Selection attempts that skipped a currently cooling client. |
 | `codex_chat_api_queue_wait_seconds` | histogram | `provider`, `result` | Agent queue wait through acquisition, rejection, timeout, cancellation, or error; ordinary chats record a zero-second `bypassed` observation. |

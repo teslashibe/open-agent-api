@@ -195,7 +195,7 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 	if pinned && index == selected {
 		refreshPin = selected
 	}
-	p.logSelection(req, index, false, index != selected, inflight)
+	p.logSelection(req, index, false, index != selected, pinned && index == selected, inflight)
 	return p.streamAttempt(ctx, req, index, false, release, unpin, refreshPin)
 }
 
@@ -212,7 +212,7 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 			if !retried {
 				if alternate, inflight, altRelease, ok := p.acquireAlternate(req, index); ok {
 					unpin = firstPendingUnpin(req, unpin, index, reason)
-					p.logSelection(req, alternate, false, true, inflight)
+					p.logSelection(req, alternate, false, true, false, inflight)
 					return p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin)
 				}
 			}
@@ -221,7 +221,7 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 		release()
 		if !retried && p.shouldFallback(index, err) {
 			if inflight, fbRelease, ok, _, _ := p.tryAcquireClient(req, 0, false); ok {
-				p.logSelection(req, 0, true, false, inflight)
+				p.logSelection(req, 0, true, false, false, inflight)
 				return p.streamAttempt(ctx, req, 0, true, fbRelease, unpin, refreshPin)
 			}
 		}
@@ -265,7 +265,7 @@ func (p *PooledService) forwardAttempt(
 				cancel()
 				release()
 				unpin = firstPendingUnpin(req, unpin, index, reason)
-				p.logSelection(req, alternate, false, true, inflight)
+				p.logSelection(req, alternate, false, true, false, inflight)
 				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin)
 				if err != nil {
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
@@ -629,12 +629,14 @@ func affinityKey(req Request) string {
 	return "global"
 }
 
-func (p *PooledService) logSelection(req Request, index int, fallback bool, rotated bool, inflight int) {
+func (p *PooledService) logSelection(req Request, index int, fallback bool, rotated bool, pinned bool, inflight int) {
 	result := "normal"
 	if fallback {
 		result = "fallback"
 	} else if rotated {
 		result = "rotated"
+	} else if pinned {
+		result = "pinned"
 	}
 	p.metrics.ObservePoolSelection(p.clients[index].label, result)
 	keyMode := req.AffinityKeyMode
