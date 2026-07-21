@@ -37,7 +37,7 @@ The following regression tests map directly to the criteria:
 | Criterion | Tests |
 | --- | --- |
 | AC1 | `TestPooledServiceRotatesConnectQuotaWithoutChangingModel`, `TestPooledServiceRotatesFirstEventQuota`, `TestApplyQuotaFallbackUsesAccountRotationBeforeModelOverflow` |
-| AC2 | `TestPooledServiceCoolingStickyClientIsSkippedUntilExpiry`, `TestPooledServiceHonorsRetryHint` |
+| AC2 | `TestPooledServiceCoolingStickyClientIsSkippedUntilExpiry`, `TestPooledServiceCooldownAndLeaseAcquisitionAreAtomic`, `TestPooledServiceHonorsRetryHint` |
 | AC3 | `TestPooledServiceDoesNotRotateAfterContentOrToolDelta`, `TestPooledServiceBoundsRotationToOneAlternate` |
 | AC4 | `TestPooledServiceSingleClientAndAllCoolingCompatibility`, `TestPooledServiceAllCoolingPreservesStickyClientFailureClass`, `TestApplyQuotaFallbackRunsOverflowAfterPoolExhaustion`, `TestStreamingConnectQuotaRunsModelFallback`, `TestAllCoolingRateLimitDoesNotRunModelFallback` |
 
