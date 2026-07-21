@@ -264,6 +264,48 @@ func TestPooledServiceCoolingStickyClientIsSkippedUntilExpiry(t *testing.T) {
 	}
 }
 
+func TestPooledServiceCooldownAndLeaseAcquisitionAreAtomic(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	var calls [2]int
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, func() time.Time { return now },
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[0]++
+			return poolEvents(StreamEvent{Delta: "unexpected"}, StreamEvent{Done: true}), nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[1]++
+			return poolEvents(StreamEvent{Delta: "from-b"}, StreamEvent{Done: true}), nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+
+	// Hold the pool mutex so the request and cooldown update contend on the
+	// same critical section. Install the cooldown before allowing selection to
+	// proceed; a split check/acquire implementation can lease client A after
+	// observing stale eligibility, while the atomic implementation cannot.
+	started := make(chan struct{})
+	result := make(chan Completion, 1)
+	errResult := make(chan error, 1)
+	pool.mu.Lock()
+	go func() {
+		close(started)
+		completion, err := pool.Complete(context.Background(), req)
+		result <- completion
+		errResult <- err
+	}()
+	<-started
+	pool.cooldowns[0] = clientCooldown{until: now.Add(time.Minute), class: FailureQuota}
+	pool.mu.Unlock()
+
+	completion := <-result
+	if err := <-errResult; err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if completion.Text != "from-b" || calls != [2]int{0, 1} {
+		t.Fatalf("Complete() = %#v; calls = %v, cooling client was leased", completion, calls)
+	}
+}
+
 func TestPooledServiceDoesNotRotateAfterContentOrToolDelta(t *testing.T) {
 	tests := map[string]StreamEvent{
 		"content": {Delta: "partial"},

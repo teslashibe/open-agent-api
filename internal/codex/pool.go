@@ -169,9 +169,9 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 	events, err := p.clients[index].service.Stream(attemptCtx, req)
 	if err != nil {
 		cancel()
-		release()
 		if p.cooldownEligible(err, PhaseConnect) {
 			p.coolClient(index, err)
+			release()
 			if !retried {
 				if alternate, inflight, altRelease, ok := p.acquireAlternate(req, index); ok {
 					p.logSelection(req, alternate, false, true, inflight)
@@ -180,8 +180,9 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 			}
 			return nil, err
 		}
-		if !retried && p.shouldFallback(index, err) && !p.clientCooling(0) {
-			if inflight, fbRelease, ok := p.acquireClient(req, 0); ok {
+		release()
+		if !retried && p.shouldFallback(index, err) {
+			if inflight, fbRelease, ok, _, _ := p.tryAcquireClient(req, 0, false); ok {
 				p.logSelection(req, 0, true, false, inflight)
 				return p.streamAttempt(ctx, req, 0, true, fbRelease)
 			}
@@ -336,22 +337,22 @@ func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, f
 	var selectedCooldownClass FailureClass
 	for offset := range len(p.clients) {
 		index := (selected + offset) % len(p.clients)
-		if class, cooling := p.clientCooldown(index); cooling {
+		inflight, release, acquired, class, cooling := p.tryAcquireClient(req, index, false)
+		if cooling {
 			if index == selected {
 				selectedCooldownClass = class
 			}
 			continue
 		}
 		sawEligible = true
-		inflight, release, ok := p.acquireClient(req, index)
-		if ok {
+		if acquired {
 			return index, inflight, release, nil
 		}
 	}
 	if !sawEligible {
 		if req.AllowCooling {
-			inflight, release, ok := p.acquireClient(req, selected)
-			if ok {
+			inflight, release, acquired, _, _ := p.tryAcquireClient(req, selected, true)
+			if acquired {
 				return selected, inflight, release, nil
 			}
 			return 0, 0, nil, p.saturatedError(req)
@@ -364,25 +365,33 @@ func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, f
 func (p *PooledService) acquireAlternate(req Request, failed int) (int, int, func(), bool) {
 	for offset := 1; offset < len(p.clients); offset++ {
 		index := (failed + offset) % len(p.clients)
-		if p.clientCooling(index) {
-			continue
-		}
-		inflight, release, ok := p.acquireClient(req, index)
-		if ok {
+		inflight, release, acquired, _, _ := p.tryAcquireClient(req, index, false)
+		if acquired {
 			return index, inflight, release, true
 		}
 	}
 	return 0, 0, nil, false
 }
 
-func (p *PooledService) acquireClient(req Request, index int) (int, func(), bool) {
+// tryAcquireClient checks cooldown eligibility and increments the inflight
+// lease in one critical section. This prevents a concurrent failure from
+// cooling a client between selection and lease acquisition.
+func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bool) (int, func(), bool, FailureClass, bool) {
 	label := p.clients[index].label
+	now := p.now()
 	p.mu.Lock()
+	cooldown := p.cooldowns[index]
+	if !cooldown.until.After(now) {
+		p.cooldowns[index] = clientCooldown{}
+	} else if !allowCooling {
+		p.mu.Unlock()
+		return 0, nil, false, cooldown.class, true
+	}
 	current := p.inflight[label]
 	if current >= p.maxInflight {
 		p.mu.Unlock()
 		p.logClientSaturated(req, index, current)
-		return current, nil, false
+		return current, nil, false, "", false
 	}
 	current++
 	p.inflight[label] = current
@@ -400,24 +409,7 @@ func (p *PooledService) acquireClient(req Request, index int) (int, func(), bool
 			p.logRelease(req, index, remaining)
 		})
 	}
-	return current, release, true
-}
-
-func (p *PooledService) clientCooling(index int) bool {
-	_, cooling := p.clientCooldown(index)
-	return cooling
-}
-
-func (p *PooledService) clientCooldown(index int) (FailureClass, bool) {
-	now := p.now()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	cooldown := p.cooldowns[index]
-	if !cooldown.until.After(now) {
-		p.cooldowns[index] = clientCooldown{}
-		return "", false
-	}
-	return cooldown.class, true
+	return current, release, true, "", false
 }
 
 func (p *PooledService) saturatedError(req Request) error {
