@@ -130,6 +130,15 @@ func (p *streamProcessor) markFirstDelta() {
 	*p.firstDeltaLatency = p.opts.now().Sub(p.upstreamStart)
 }
 
+// emittedContent reports whether any text delta or tool call has already been
+// forwarded to the client, which makes the stream unsafe to rotate mid-flight.
+func (p *streamProcessor) emittedContent() bool {
+	if p.deltas != nil && *p.deltas > 0 {
+		return true
+	}
+	return p.toolCallEmitted != nil && *p.toolCallEmitted
+}
+
 func (p *streamProcessor) normalizeToolCallIndex(key string) int {
 	if mapped, ok := p.toolCallIndexByKey[key]; ok {
 		return mapped
@@ -409,7 +418,9 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 	*p.upstreamEvents++
 	if event.Err != nil {
 		if write {
-			logLine(p.opts, "stream_error id=%s model=%s err=%s\n", p.streamID, defaultString(event.Model, *p.model), detailedError(event.Err))
+			failureClass := codex.ClassifyFailure(event.Err)
+			failurePhase := codex.ClassifyPhase(*p.upstreamEvents, p.emittedContent())
+			logLine(p.opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", p.streamID, defaultString(event.Model, *p.model), detailedError(event.Err), failureClass, failurePhase)
 			_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, defaultString(event.Model, *p.model), publicErrorMessage(event.Err)))
 		}
 		*p.outcome = "upstream_error"
