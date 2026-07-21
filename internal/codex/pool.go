@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -18,6 +19,11 @@ const (
 	ClientPoolUnavailableFallbackFirst = "fallback_first"
 	DefaultClientCooldown              = 5 * time.Minute
 	defaultClientMaxInflight           = 2
+	defaultSoftPinCapacity             = 10_000
+	defaultSoftPinTTL                  = 24 * time.Hour
+	unpinReasonAuth                    = "auth"
+	unpinReasonCooldown                = "cooldown"
+	unpinReasonUnavailable             = "unavailable"
 )
 
 // ErrClientPoolSaturated marks requests rejected before an upstream call
@@ -32,15 +38,31 @@ type PooledService struct {
 	cooldownDefault   time.Duration
 	now               func() time.Time
 
-	mu        sync.Mutex
-	cooldowns []clientCooldown
-	inflight  map[string]int
-	logMu     sync.Mutex
+	mu              sync.Mutex
+	cooldowns       []clientCooldown
+	inflight        map[string]int
+	softPins        map[string]*list.Element
+	softPinLRU      *list.List
+	softPinCapacity int
+	softPinTTL      time.Duration
+	logMu           sync.Mutex
 }
 
 type clientCooldown struct {
 	until time.Time
 	class FailureClass
+}
+
+type softPin struct {
+	key       string
+	index     int
+	expiresAt time.Time
+}
+
+type pendingUnpin struct {
+	key    string
+	from   int
+	reason string
 }
 
 type pooledClient struct {
@@ -117,6 +139,10 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		now:               cfg.Now,
 		cooldowns:         make([]clientCooldown, len(clients)),
 		inflight:          map[string]int{},
+		softPins:          map[string]*list.Element{},
+		softPinLRU:        list.New(),
+		softPinCapacity:   defaultSoftPinCapacity,
+		softPinTTL:        defaultSoftPinTTL,
 	}, nil
 }
 
@@ -155,27 +181,30 @@ func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, 
 }
 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
-	selected := p.selectIndex(req)
-	index, inflight, release, err := p.acquireAvailable(req, selected)
+	selected, _ := p.preferredIndex(req)
+	index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
 	if err != nil {
 		return nil, err
 	}
 	p.logSelection(req, index, false, index != selected, inflight)
-	return p.streamAttempt(ctx, req, index, false, release)
+	return p.streamAttempt(ctx, req, index, false, release, unpin)
 }
 
-func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func()) (<-chan StreamEvent, error) {
+func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin) (<-chan StreamEvent, error) {
 	attemptCtx, cancel := context.WithCancel(ctx)
 	events, err := p.clients[index].service.Stream(attemptCtx, req)
 	if err != nil {
 		cancel()
-		if p.cooldownEligible(err, PhaseConnect) {
-			p.coolClient(index, err)
+		if reason, unhealthy := p.unpinReason(err, PhaseConnect); unhealthy {
+			if reason == unpinReasonCooldown {
+				p.coolClient(index, err)
+			}
 			release()
 			if !retried {
 				if alternate, inflight, altRelease, ok := p.acquireAlternate(req, index); ok {
+					unpin = firstPendingUnpin(req, unpin, index, reason)
 					p.logSelection(req, alternate, false, true, inflight)
-					return p.streamAttempt(ctx, req, alternate, true, altRelease)
+					return p.streamAttempt(ctx, req, alternate, true, altRelease, unpin)
 				}
 			}
 			return nil, err
@@ -184,14 +213,14 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 		if !retried && p.shouldFallback(index, err) {
 			if inflight, fbRelease, ok, _, _ := p.tryAcquireClient(req, 0, false); ok {
 				p.logSelection(req, 0, true, false, inflight)
-				return p.streamAttempt(ctx, req, 0, true, fbRelease)
+				return p.streamAttempt(ctx, req, 0, true, fbRelease, unpin)
 			}
 		}
 		return nil, err
 	}
 
 	out := make(chan StreamEvent, 1)
-	go p.forwardAttempt(ctx, cancel, req, index, events, out, retried, release)
+	go p.forwardAttempt(ctx, cancel, req, index, events, out, retried, release, unpin)
 	return out, nil
 }
 
@@ -204,6 +233,7 @@ func (p *PooledService) forwardAttempt(
 	out chan<- StreamEvent,
 	retried bool,
 	release func(),
+	unpin *pendingUnpin,
 ) {
 	defer close(out)
 	defer cancel()
@@ -216,14 +246,17 @@ func (p *PooledService) forwardAttempt(
 		}
 		return
 	}
-	if first.Err != nil && p.cooldownEligible(first.Err, PhaseFirstEvent) {
-		p.coolClient(index, first.Err)
+	if reason, unhealthy := p.unpinReason(first.Err, PhaseFirstEvent); first.Err != nil && unhealthy {
+		if reason == unpinReasonCooldown {
+			p.coolClient(index, first.Err)
+		}
 		if !retried {
 			if alternate, inflight, altRelease, available := p.acquireAlternate(req, index); available {
 				cancel()
 				release()
+				unpin = firstPendingUnpin(req, unpin, index, reason)
 				p.logSelection(req, alternate, false, true, inflight)
-				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease)
+				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease, unpin)
 				if err != nil {
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
@@ -238,27 +271,36 @@ func (p *PooledService) forwardAttempt(
 	if !p.sendPoolEvent(ctx, out, first) {
 		return
 	}
-	if first.Err != nil || first.Done {
+	if first.Err != nil {
 		return
 	}
-	p.forwardRemaining(ctx, out, events)
+	if first.Done {
+		p.recordSuccessfulSelection(req, index, unpin)
+		return
+	}
+	if p.forwardRemaining(ctx, out, events) {
+		p.recordSuccessfulSelection(req, index, unpin)
+	}
 }
 
-func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent) {
+func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent) bool {
 	for {
 		select {
 		case <-ctx.Done():
 			trySendContextError(out, ctx.Err())
-			return
+			return false
 		case event, ok := <-events:
 			if !ok {
-				return
+				return true
 			}
 			if !p.sendPoolEvent(ctx, out, event) {
-				return
+				return false
 			}
-			if event.Err != nil || event.Done {
-				return
+			if event.Err != nil {
+				return false
+			}
+			if event.Done {
+				return true
 			}
 		}
 	}
@@ -297,6 +339,37 @@ func (p *PooledService) cooldownEligible(err error, phase FailurePhase) bool {
 	return MayRotateAccount(class, phase)
 }
 
+func (p *PooledService) unpinReason(err error, phase FailurePhase) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if p.cooldownEligible(err, phase) {
+		return unpinReasonCooldown, true
+	}
+	class := ClassifyFailure(err)
+	if !MayRotateAccount(class, phase) {
+		return "", false
+	}
+	if errors.Is(err, ErrClientUnavailable) {
+		return unpinReasonUnavailable, true
+	}
+	if class == FailureAuth {
+		return unpinReasonAuth, true
+	}
+	return "", false
+}
+
+func firstPendingUnpin(req Request, current *pendingUnpin, from int, reason string) *pendingUnpin {
+	if current != nil {
+		return current
+	}
+	return &pendingUnpin{
+		key:    affinityKey(req),
+		from:   from,
+		reason: reason,
+	}
+}
+
 func (p *PooledService) coolClient(index int, err error) time.Time {
 	now := p.now()
 	until, ok := retryDeadline(err, now)
@@ -332,8 +405,9 @@ func (p *PooledService) shouldFallback(index int, err error) bool {
 // acquireAvailable leases the sticky client when it is healthy (not cooling and
 // under the inflight cap). Otherwise it walks other clients in shard order.
 // Prefer cooldown errors when every client is cooling; otherwise saturation.
-func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, func(), error) {
+func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, func(), *pendingUnpin, error) {
 	sawEligible := false
+	selectedCooling := false
 	var selectedCooldownClass FailureClass
 	for offset := range len(p.clients) {
 		index := (selected + offset) % len(p.clients)
@@ -341,25 +415,30 @@ func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, f
 		if cooling {
 			if index == selected {
 				selectedCooldownClass = class
+				selectedCooling = true
 			}
 			continue
 		}
 		sawEligible = true
 		if acquired {
-			return index, inflight, release, nil
+			var unpin *pendingUnpin
+			if selectedCooling && index != selected {
+				unpin = firstPendingUnpin(req, nil, selected, unpinReasonCooldown)
+			}
+			return index, inflight, release, unpin, nil
 		}
 	}
 	if !sawEligible {
 		if req.AllowCooling {
 			inflight, release, acquired, _, _ := p.tryAcquireClient(req, selected, true)
 			if acquired {
-				return selected, inflight, release, nil
+				return selected, inflight, release, nil, nil
 			}
-			return 0, 0, nil, p.saturatedError(req)
+			return 0, 0, nil, nil, p.saturatedError(req)
 		}
-		return 0, 0, nil, allClientsCoolingError(selectedCooldownClass)
+		return 0, 0, nil, nil, allClientsCoolingError(selectedCooldownClass)
 	}
-	return 0, 0, nil, p.saturatedError(req)
+	return 0, 0, nil, nil, p.saturatedError(req)
 }
 
 func (p *PooledService) acquireAlternate(req Request, failed int) (int, int, func(), bool) {
@@ -431,16 +510,99 @@ func (p *PooledService) selectIndex(req Request) int {
 	if len(p.clients) == 1 {
 		return 0
 	}
-	key := req.AffinityKey
-	if key == "" {
-		key = req.AffinityKeyHash
-	}
-	if key == "" {
-		key = "global"
-	}
+	key := affinityKey(req)
 	sum := sha256.Sum256([]byte(key))
 	value := binary.BigEndian.Uint64(sum[:8])
 	return int(value % uint64(len(p.clients)))
+}
+
+func (p *PooledService) preferredIndex(req Request) (int, bool) {
+	selected := p.selectIndex(req)
+	if len(p.clients) == 1 {
+		return selected, false
+	}
+	key := affinityKey(req)
+	now := p.now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	element, ok := p.softPins[key]
+	if !ok {
+		return selected, false
+	}
+	pin := element.Value.(*softPin)
+	if !pin.expiresAt.After(now) {
+		p.removeSoftPinLocked(element)
+		return selected, false
+	}
+	p.softPinLRU.MoveToFront(element)
+	return pin.index, true
+}
+
+func (p *PooledService) recordSuccessfulSelection(req Request, index int, unpin *pendingUnpin) {
+	if len(p.clients) == 1 {
+		return
+	}
+	key := affinityKey(req)
+	now := p.now()
+	shouldLog := false
+	p.mu.Lock()
+	element := p.softPins[key]
+	if element != nil && !element.Value.(*softPin).expiresAt.After(now) {
+		p.removeSoftPinLocked(element)
+		element = nil
+	}
+	if unpin != nil && unpin.key == key && unpin.from != index {
+		if element == nil || element.Value.(*softPin).index == unpin.from {
+			p.setSoftPinLocked(key, index, now)
+			shouldLog = true
+		} else if element.Value.(*softPin).index == index {
+			p.setSoftPinLocked(key, index, now)
+		}
+	} else if element != nil && element.Value.(*softPin).index == index {
+		p.setSoftPinLocked(key, index, now)
+	}
+	p.mu.Unlock()
+	if shouldLog {
+		p.logUnpin(req, unpin.from, index, unpin.reason)
+	}
+}
+
+func (p *PooledService) setSoftPinLocked(key string, index int, now time.Time) {
+	if element := p.softPins[key]; element != nil {
+		pin := element.Value.(*softPin)
+		pin.index = index
+		pin.expiresAt = now.Add(p.softPinTTL)
+		p.softPinLRU.MoveToFront(element)
+		return
+	}
+	element := p.softPinLRU.PushFront(&softPin{
+		key:       key,
+		index:     index,
+		expiresAt: now.Add(p.softPinTTL),
+	})
+	p.softPins[key] = element
+	for len(p.softPins) > p.softPinCapacity {
+		p.removeSoftPinLocked(p.softPinLRU.Back())
+	}
+}
+
+func (p *PooledService) removeSoftPinLocked(element *list.Element) {
+	if element == nil {
+		return
+	}
+	pin := element.Value.(*softPin)
+	delete(p.softPins, pin.key)
+	p.softPinLRU.Remove(element)
+}
+
+func affinityKey(req Request) string {
+	if req.AffinityKey != "" {
+		return req.AffinityKey
+	}
+	if req.AffinityKeyHash != "" {
+		return req.AffinityKeyHash
+	}
+	return "global"
 }
 
 func (p *PooledService) logSelection(req Request, index int, fallback bool, rotated bool, inflight int) {
@@ -470,6 +632,20 @@ func (p *PooledService) logCooldown(index int, until time.Time) {
 		"codex_client_cooldown label=%s until=%s\n",
 		p.clients[index].label,
 		until.UTC().Format(time.RFC3339),
+	)
+}
+
+func (p *PooledService) logUnpin(req Request, from int, to int, reason string) {
+	keyHash := req.AffinityKeyHash
+	if keyHash == "" {
+		keyHash = "none"
+	}
+	p.logf(
+		"codex_client_unpin key_hash=%s from=%s to=%s reason=%s\n",
+		keyHash,
+		p.clients[from].label,
+		p.clients[to].label,
+		reason,
 	)
 }
 

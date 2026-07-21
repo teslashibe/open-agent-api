@@ -568,13 +568,18 @@ stream event, the server cools that account until the upstream `Retry-After` or
 reset hint. Without a valid hint it uses `CODEX_CLIENT_COOLDOWN_DEFAULT`. The
 same request is retried once on another healthy account without changing its
 model; model-level quota fallback runs only after that account rotation is
-exhausted. New requests keep their sticky shard while it is healthy and skip it
-while it is cooling. A quota failure after a content, reasoning, or tool delta
-never switches accounts mid-stream.
+exhausted. If the sticky shard is cooling, unavailable, or returns an auth
+failure before output, the pool deterministically tries the next selectable
+shard. After that replacement stream succeeds, the conversation is soft-pinned
+to the replacement, so later turns do not snap back when the original shard's
+cooldown expires. A failure after a content, reasoning, or tool delta never
+switches accounts mid-stream.
 
-Cooldowns are held in memory per process and expire automatically. Replicas do
-not share cooldown state, so each replica may independently discover the same
-limited account. When every account is cooling, ordinary requests retain the
+Cooldowns and soft pins are held in memory per process; replicas do not share
+them. Soft pins expire 24 hours after their last successful use and are bounded
+to 10,000 conversation keys with least-recently-used eviction. New keys always
+use normal deterministic hashing, so a recovered account remains eligible for
+new conversations. When every account is cooling, ordinary requests retain the
 existing OpenAI-compatible behavior: quota cooldowns may proceed to the
 configured overflow model, while capacity rate limits remain 429 responses.
 
@@ -597,17 +602,19 @@ upstream call is attempted on a capped client, it neither consumes nor creates a
 cooldown ticket. Cooling clients stay ineligible and rotation considers the
 other eligible clients.
 
-When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, an unavailable selected client returns
-the upstream/auth error. `fallback_first` retries the first configured client
-when a non-primary shard fails before a stream starts, but it can break strict
-conversation affinity after a conversation has already used that shard. Use
-`fail` unless availability is more important than shard continuity.
+Unavailable and auth-failed shards rotate once to the next selectable client
+under either unavailable policy, then soft-pin only after the replacement
+succeeds. When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, other startup errors still
+return normally. `fallback_first` additionally retries the first configured
+client for other upstream startup errors from a non-primary shard. Use `fail`
+unless that broader legacy fallback is required.
 
 Pool logs are redacted:
 
 ```text
 codex_client_cooldown label=work-a until=2026-07-21T21:05:00Z
 codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b inflight=1 fallback=false rotated=true
+codex_client_unpin key_hash=... from=work-a to=work-b reason=cooldown
 codex_client_saturated request_id=... shard=1 client_label=work-b inflight=2 max_inflight=2
 codex_client_release request_id=... shard=1 client_label=work-b inflight=0
 ```
