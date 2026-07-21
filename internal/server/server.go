@@ -266,7 +266,7 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 		upstreamDuration := opts.now().Sub(upstreamStart)
 		if err != nil {
-			logLine(opts, "complete_error model=%s err=%s\n", model, detailedError(err))
+			logLine(opts, "complete_error model=%s err=%s failure_class=%s failure_phase=%s\n", model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
 			logRequestTiming(opts, requestID, contextDuration, queueWait, upstreamDuration, -1, opts.now().Sub(requestStart))
 			return mapServiceError(c, err)
 		}
@@ -306,6 +306,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 	if err != nil {
 		cancel()
 		releaseQueue()
+		logLine(opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", requestID, req.Model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
 		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
 		return mapServiceError(c, err)
 	}
