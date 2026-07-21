@@ -292,6 +292,7 @@ Flags override environment values.
 | Codex websocket URL | `CODEX_WEBSOCKET_URL` | `--codex-websocket-url` | `wss://chatgpt.com/backend-api/codex/responses` |
 | Codex request timeout | `CODEX_TIMEOUT` | `--codex-timeout` | `120s` |
 | Codex client pool | `CODEX_CLIENTS` | `--codex-clients` | single client from `CODEX_HOME` / `CODEX_AUTH_PATH` |
+| Codex max inflight per client | `CODEX_CLIENT_MAX_INFLIGHT` | `--codex-client-max-inflight` | `2` |
 | Codex pool unavailable policy | `CODEX_CLIENT_POOL_UNAVAILABLE` | `--codex-client-pool-unavailable` | `fail` |
 | Codex client cooldown default | `CODEX_CLIENT_COOLDOWN_DEFAULT` | `--codex-client-cooldown-default` | `5m` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
@@ -342,9 +343,9 @@ GATEWAY_PROVIDERS=codex,gemini          # drop claude from routing and /v1/model
   keys by that tenant id instead of the Cursor-session heuristics, so tenants
   share the upstream fairly. Callers behind smore should always set it.
 - **Concurrency stays small on purpose.** The defaults
-  (`CODEX_AGENT_MAX_ACTIVE=2`, `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`) protect the
-  shared ChatGPT/Gemini operator accounts; raise them deliberately, not as
-  part of enabling the gateway.
+  (`CODEX_AGENT_MAX_ACTIVE=2`, `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, and
+  `CODEX_CLIENT_MAX_INFLIGHT=2`) protect shared operator accounts; raise them
+  deliberately, not as part of enabling the gateway.
 - Deliver the secret via a k8s Secret (env var or mounted file sourced into
   the env), not a committed compose/manifest file. The request logger only
   records `authorization_present=true/false`, never the header value.
@@ -552,6 +553,7 @@ CODEX_CLIENTS='[
   {"label":"work-a","codex_home":"/home/codex/.codex-a"},
   {"label":"work-b","auth_path":"/run/secrets/codex-b-auth.json"}
 ]'
+CODEX_CLIENT_MAX_INFLIGHT=2
 CODEX_CLIENT_POOL_UNAVAILABLE=fail
 CODEX_CLIENT_COOLDOWN_DEFAULT=5m
 ```
@@ -575,6 +577,25 @@ not share cooldown state, so each replica may independently discover the same
 limited account. When every account is cooling, ordinary requests retain the
 existing OpenAI-compatible 429/model-overflow behavior.
 
+Each selected Codex client also has a process-local inflight lease capped by
+`CODEX_CLIENT_MAX_INFLIGHT`. The default is `2`, matching the default global
+Agent concurrency and preserving the usual single-client local Cursor workflow.
+Agent queue admission happens first; the account lease is a second bulkhead
+acquired immediately before the upstream call, so it is never held while a
+request waits in the Agent queue. The lease covers the entire completion or
+stream and is released on normal completion, startup or midstream failure,
+client cancellation, and context cancellation.
+
+If the sticky-selected client is cooling or at its inflight cap, the pool
+immediately checks the remaining clients in deterministic shard order. It opens
+no upstream on an ineligible client. If every non-cooling client is saturated,
+the request does not wait: it returns an OpenAI-shaped `429` with the stable
+message `codex client pool saturated`, so callers should retry with backoff.
+Saturation rotation is independent of upstream cooldown handling: because no
+upstream call is attempted on a capped client, it neither consumes nor creates a
+cooldown ticket. Cooling clients stay ineligible and rotation considers the
+other eligible clients.
+
 When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, an unavailable selected client returns
 the upstream/auth error. `fallback_first` retries the first configured client
 when a non-primary shard fails before a stream starts, but it can break strict
@@ -585,7 +606,9 @@ Pool logs are redacted:
 
 ```text
 codex_client_cooldown label=work-a until=2026-07-21T21:05:00Z
-codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b fallback=rotate
+codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b inflight=1 fallback=false rotated=true
+codex_client_saturated request_id=... shard=1 client_label=work-b inflight=2 max_inflight=2
+codex_client_release request_id=... shard=1 client_label=work-b inflight=0
 ```
 
 Do not put credentials, account IDs, auth paths, hostnames with secrets, or user
@@ -741,7 +764,7 @@ When multiple Agent chats overlap, queue diagnostics show the lifecycle:
 agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... position=2
 agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... wait_ms=1234 active_global=2 active_key=1
 agent_queue_lock_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... lock_wait_ms=1234
-codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default fallback=none
+codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default inflight=1 fallback=false rotated=false
 stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
 agent_queue_lock_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=...
