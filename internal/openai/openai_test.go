@@ -34,12 +34,6 @@ func TestModelAliases(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModelAliases IDs = %#v, want %#v", got, want)
 	}
-	for _, id := range []string{"gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview"} {
-		alias := ResolveModelAlias(id)
-		if !alias.Unlisted {
-			t.Fatalf("ResolveModelAlias(%q).Unlisted = false, want true", id)
-		}
-	}
 	listed := ListedModelAliases()
 	listedIDs := make([]string, 0, len(listed))
 	for _, alias := range listed {
@@ -48,9 +42,8 @@ func TestModelAliases(t *testing.T) {
 			t.Fatalf("ListedModelAliases included unlisted %q", alias.ID)
 		}
 	}
-	wantListed := want[:len(want)-2]
-	if !reflect.DeepEqual(listedIDs, wantListed) {
-		t.Fatalf("ListedModelAliases IDs = %#v, want %#v", listedIDs, wantListed)
+	if !reflect.DeepEqual(listedIDs, want) {
+		t.Fatalf("ListedModelAliases IDs = %#v, want %#v", listedIDs, want)
 	}
 
 	aliases[0].ID = "mutated"

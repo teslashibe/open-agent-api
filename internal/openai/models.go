@@ -111,8 +111,7 @@ func buildModelAliases() []ModelAlias {
 		alias("gpt-5.5-fast-verbose", LegacyGPT55, "low", "high"),
 	)
 
-	// Spark remains resolvable for quota-overflow fallback, but is unlisted:
-	// faithful Codex turns inject image_generation, which Spark rejects (400).
+	// Spark: ultra-fast overflow / Cursor alias (96 KiB hard context).
 	out = append(out,
 		ModelAlias{
 			ID:                  "gpt-5.3-codex-spark",
@@ -120,7 +119,6 @@ func buildModelAliases() []ModelAlias {
 			ReasoningEffort:     "low",
 			Verbosity:           "low",
 			ContextHardMaxBytes: 96 * 1024,
-			Unlisted:            true,
 		},
 		ModelAlias{
 			ID:                  "gpt-5.3-codex-spark-preview",
@@ -128,7 +126,6 @@ func buildModelAliases() []ModelAlias {
 			ReasoningEffort:     "low",
 			Verbosity:           "low",
 			ContextHardMaxBytes: 96 * 1024,
-			Unlisted:            true,
 		},
 	)
 	return out
