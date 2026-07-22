@@ -124,6 +124,19 @@ go vet ./...
 go build ./...
 ```
 
+Run the deterministic multi-credential load and failure harness directly with:
+
+```bash
+go test -count=1 -run '^TestMultiCredentialLoadAndFailureSoak$' -timeout 30s ./internal/codex
+go test -race -count=1 -run '^TestMultiCredentialLoadAndFailureSoak$' -timeout 60s ./internal/codex
+```
+
+The harness creates 32 synthetic credential files under the test temporary
+directory and talks only to a test-owned loopback WebSocket server. It never
+loads a user's Codex home, uses live credentials, or contacts an external
+upstream. Its bounded subtests cover affinity and distribution, quota and auth
+rotation, saturation and cancellation, disconnect cleanup, drain, and restart.
+
 If your Go build cache is outside a writable sandbox, set it inside the repo:
 
 ```bash
