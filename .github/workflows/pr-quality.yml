@@ -56,3 +56,24 @@ jobs:
 
       - name: Build image
         run: docker build .
+
+  prom-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check Prometheus alert rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            --volume "$PWD/examples/prometheus:/rules:ro" \
+            --workdir /rules \
+            prom/prometheus:v3.5.0 \
+            check rules codex-chat-api.rules.yml
+
+      - name: Test Prometheus alert rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            --volume "$PWD/examples/prometheus:/rules:ro" \
+            --workdir /rules \
+            prom/prometheus:v3.5.0 \
+            test rules codex-chat-api.rules.test.yml

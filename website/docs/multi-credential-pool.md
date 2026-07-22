@@ -37,17 +37,22 @@ tenant identifier as a label.
   tried once on another healthy client.
 - After a rotated request succeeds, the conversation is soft-pinned to that
   replacement. A failure after output starts never switches clients mid-stream.
-- Cooldowns, inflight leases, and soft pins are process-local. Soft pins expire
-  after 24 hours and use a bounded least-recently-used cache.
+- Cooldowns, auth health, inflight leases, and soft pins are process-local.
+  Soft pins expire after 24 hours and use a bounded least-recently-used cache.
 
 Use `CODEX_CLIENT_POOL_UNAVAILABLE=fail` for the narrow failure behavior.
 `fallback_first` additionally retries the first configured client for other
 startup failures from a non-primary client and should be enabled only for a
 known compatibility requirement.
 
-For multiple replicas, point `CODEX_AGENT_QUEUE_LOCK_DIR` at the same writable
-shared volume and keep `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`. This prevents the
-same conversation from streaming concurrently through separate processes.
+Run one replica in dev and production. A shared `CODEX_AGENT_QUEUE_LOCK_DIR`
+only prevents the same conversation from streaming concurrently through
+separate processes; it does not share cooldown, auth-health, inflight-lease, or
+soft-pin state. Multiple replicas can therefore disagree about selection and
+are outside the current production contract. Keep
+`CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`.
 
 Selection, rotation, cooldown, and saturation signals are visible through the
 [metrics and dev checks](./dev-validation.md) without exposing credentials.
+Use the [production-readiness runbook](./production-readiness.md) for canary,
+credential rotation, promotion, and rollback.

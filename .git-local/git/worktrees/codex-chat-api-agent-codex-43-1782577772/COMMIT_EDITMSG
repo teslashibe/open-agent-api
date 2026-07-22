@@ -1,4 +1,0 @@
-Align cursor fingerprint priority with documented tool-first behavior.
-
-Use the earliest tool-call ID before the first-user hash fallback, and
-document remote_ip plus fingerprint ordering in README.

@@ -6,16 +6,19 @@ sidebar_label: Tagged release
 # Tagged release and production promotion
 
 A release tag promotes the exact tagged commit to production. Do not create a
-tag merely to repair a failed dev rollout.
+tag merely to repair a failed dev rollout. Complete every gate in the
+[production-readiness runbook](./production-readiness.md#promotion-gates) first.
 
 ## Preconditions
 
 1. The candidate commit is on `main` and its required checks passed.
 2. The image pipeline published `sha-<short>` for that exact commit.
 3. The dev manifest reconciled to that immutable tag.
-4. Liveness, readiness, models, completion, drain, and metrics checks passed in
-   dev with redacted evidence.
-5. The chosen version is new and follows the repository's `vX.Y.Z` convention.
+4. Liveness, readiness, models, completion, streaming, Agent, drain, and metrics
+   checks passed in the single-replica dev canary with redacted evidence.
+5. The 30-minute dev soak passed with no unexplained production alert firing.
+6. A previously verified immutable `v*` rollback tag and digest are recorded.
+7. The chosen version is new and follows the repository's `vX.Y.Z` convention.
 
 Run the local release checks from the repository root:
 
@@ -52,6 +55,7 @@ tag. It must not update the dev pin as part of tag promotion.
    production access path.
 5. Record the release tag, commit, digest, and redacted results.
 
-For rollback, change production through the deployment repository's reviewed
-process to a previously verified immutable `v*` tag. Do not force-move a release
-tag or point production at `latest`.
+For rollback, follow the [runbook rollback procedure](./production-readiness.md#rollback)
+and change production through the deployment repository's reviewed process to a
+previously verified immutable `v*` tag. Do not force-move a release tag or point
+production at `latest`.

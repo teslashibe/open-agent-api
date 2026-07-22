@@ -15,9 +15,10 @@ curl -fsS "$API_URL/health/live" | jq .
 curl -fsS "$API_URL/health/ready" | jq .
 ```
 
-Both endpoints return `200` with `{"status":"ok"}` during normal service.
-Liveness never calls an upstream provider. Readiness reflects only the local
-drain flag.
+Both endpoints return `200` during normal service. Liveness never calls an
+upstream provider. Readiness reflects the local drain flag and locally known
+Codex credential health; it returns `503` when draining or when no configured
+Codex client is usable. It never probes the upstream provider.
 
 ## Models and a completion
 
@@ -84,3 +85,6 @@ deployment deliberately removes the route.
 Record the deployed image digest, `sha-<short>` pin, check timestamps, and
 pass/fail results. Redact hosts, headers, identifiers, and response content
 before attaching evidence to an issue.
+
+After these smoke checks, run the documented 30-minute soak and single-replica
+canary in the [production-readiness runbook](./production-readiness.md#dev-deploy-and-soak).

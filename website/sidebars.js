@@ -4,6 +4,7 @@ const sidebars = {
     'setup',
     'multi-credential-pool',
     'dev-validation',
+    'production-readiness',
     'pipeline-dag',
     'troubleshooting',
     'tagged-release',
