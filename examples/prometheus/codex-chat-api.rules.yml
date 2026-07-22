@@ -1,0 +1,107 @@
+groups:
+  - name: codex-chat-api
+    rules:
+      - alert: CodexChatAPICapacitySaturation
+        expr: |
+          sum without (failure_class) (
+            increase(codex_chat_api_rate_limit_responses_total{failure_class="rate_limit"}[5m])
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "codex-chat-api {{ $labels.provider }} capacity is saturated"
+          description: "Capacity-class 429 responses have continued for 5 minutes. Check queue-full/timeout results, active streams, and codex_client_pool_saturated logs before changing concurrency."
+          runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#capacity-saturation"
+
+      - alert: CodexChatAPINoUsableClients
+        expr: codex_chat_api_pool_usable_clients == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "codex-chat-api has no usable Codex credentials"
+          description: "Every configured Codex client is locally auth-unhealthy. Readiness is 503; rotate one credential at a time or roll back the credential revision."
+          runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#no-usable-clients-or-auth-failure"
+
+      - alert: CodexChatAPIAllClientsCoolingSuspected
+        expr: |
+          sum without (client_label, failure_class) (
+            increase(codex_chat_api_pool_cooldown_skips_total{failure_class=~"quota|rate_limit"}[10m])
+          ) >= codex_chat_api_pool_usable_clients
+          and
+          codex_chat_api_pool_usable_clients > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "all codex-chat-api clients may be cooling"
+          description: "Cooldown skips in the last 10 minutes equal or exceed the usable-client count. This is bounded evidence, not an exact current-state gauge; confirm cooldown and selection logs before acting."
+          runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#all-clients-cooling"
+
+      - alert: CodexChatAPIClientAuthFailure
+        expr: codex_chat_api_pool_client_usable == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Codex client {{ $labels.client_label }} is auth-unhealthy"
+          description: "The client was removed from selection after an upstream 401/403. Replace its mounted credential with a different valid revision and verify recovery without exposing the credential."
+          runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#no-usable-clients-or-auth-failure"
+
+      - alert: CodexChatAPIQueueTimeouts
+        expr: |
+          sum without (result) (
+            increase(codex_chat_api_queue_wait_seconds_count{result="timeout"}[10m])
+          ) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "codex-chat-api {{ $labels.provider }} queue requests are timing out"
+          description: "At least one Agent request timed out while waiting in the last 10 minutes. Check per-provider queue limits, active streams, and upstream latency."
+          runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#queue-timeout-or-high-wait"
+
+      - alert: CodexChatAPIQueueWaitHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum without (result) (
+              rate(codex_chat_api_queue_wait_seconds_bucket{result="acquired"}[10m])
+            )
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "codex-chat-api {{ $labels.provider }} queue p95 exceeds 30 seconds"
+          description: "Acquired Agent requests have waited more than 30 seconds at p95 for 10 minutes. Check active streams, upstream latency, and queue configuration before raising limits."
+          runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#queue-timeout-or-high-wait"
+
+      - alert: CodexChatAPIStreamFailures
+        expr: |
+          sum without (result) (
+            increase(codex_chat_api_requests_total{
+              phase=~"connect|first_event|mid_stream",
+              result="upstream_error"
+            }[10m])
+          ) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "codex-chat-api {{ $labels.provider }} stream failures at {{ $labels.phase }}"
+          description: "Streaming requests are failing before completion. Mid-stream failures are never rotated; inspect provider health and bounded failure logs, then canary rollback if failures correlate with a release."
+          runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#stream-failure"
+
+      # This portable rule expects a blackbox probe for GET /health/ready.
+      # Define the probe and its cluster-specific labels in k8s-control.
+      - alert: CodexChatAPIReadinessLost
+        expr: probe_success{job="codex-chat-api-readiness"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "codex-chat-api readiness probe is failing"
+          description: "The external GET /health/ready probe has failed for 2 minutes. Determine whether the process is intentionally draining or has no usable local credentials."
+          runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#readiness-loss"

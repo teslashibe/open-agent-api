@@ -1,0 +1,165 @@
+rule_files:
+  - codex-chat-api.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: bounded gateway signals fire actionable alerts
+    interval: 1m
+    input_series:
+      - series: 'codex_chat_api_rate_limit_responses_total{provider="codex",failure_class="rate_limit"}'
+        values: '0+1x30'
+      - series: 'codex_chat_api_pool_usable_clients'
+        values: '2x3 0x27'
+      - series: 'codex_chat_api_pool_client_usable{client_label="pool-a"}'
+        values: '1x3 0x27'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{client_label="pool-a",failure_class="quota"}'
+        values: '0+1x30'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{client_label="pool-b",failure_class="rate_limit"}'
+        values: '0+1x30'
+      - series: 'codex_chat_api_queue_wait_seconds_count{provider="codex",result="timeout"}'
+        values: '0+1x30'
+      - series: 'codex_chat_api_queue_wait_seconds_bucket{provider="codex",result="acquired",le="30"}'
+        values: '0+1x30'
+      - series: 'codex_chat_api_queue_wait_seconds_bucket{provider="codex",result="acquired",le="60"}'
+        values: '0+10x30'
+      - series: 'codex_chat_api_queue_wait_seconds_bucket{provider="codex",result="acquired",le="+Inf"}'
+        values: '0+10x30'
+      - series: 'codex_chat_api_requests_total{provider="codex",phase="mid_stream",result="upstream_error"}'
+        values: '0+1x30'
+      - series: 'probe_success{job="codex-chat-api-readiness"}'
+        values: '1x3 0x27'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CodexChatAPICapacitySaturation
+        exp_alerts:
+          - exp_labels:
+              provider: codex
+              severity: warning
+            exp_annotations:
+              summary: "codex-chat-api codex capacity is saturated"
+              description: "Capacity-class 429 responses have continued for 5 minutes. Check queue-full/timeout results, active streams, and codex_client_pool_saturated logs before changing concurrency."
+              runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#capacity-saturation"
+      - eval_time: 20m
+        alertname: CodexChatAPINoUsableClients
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "codex-chat-api has no usable Codex credentials"
+              description: "Every configured Codex client is locally auth-unhealthy. Readiness is 503; rotate one credential at a time or roll back the credential revision."
+              runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#no-usable-clients-or-auth-failure"
+      - eval_time: 20m
+        alertname: CodexChatAPIClientAuthFailure
+        exp_alerts:
+          - exp_labels:
+              client_label: pool-a
+              severity: critical
+            exp_annotations:
+              summary: "Codex client pool-a is auth-unhealthy"
+              description: "The client was removed from selection after an upstream 401/403. Replace its mounted credential with a different valid revision and verify recovery without exposing the credential."
+              runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#no-usable-clients-or-auth-failure"
+      - eval_time: 20m
+        alertname: CodexChatAPIQueueTimeouts
+        exp_alerts:
+          - exp_labels:
+              provider: codex
+              severity: warning
+            exp_annotations:
+              summary: "codex-chat-api codex queue requests are timing out"
+              description: "At least one Agent request timed out while waiting in the last 10 minutes. Check per-provider queue limits, active streams, and upstream latency."
+              runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#queue-timeout-or-high-wait"
+      - eval_time: 20m
+        alertname: CodexChatAPIQueueWaitHigh
+        exp_alerts:
+          - exp_labels:
+              provider: codex
+              severity: warning
+            exp_annotations:
+              summary: "codex-chat-api codex queue p95 exceeds 30 seconds"
+              description: "Acquired Agent requests have waited more than 30 seconds at p95 for 10 minutes. Check active streams, upstream latency, and queue configuration before raising limits."
+              runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#queue-timeout-or-high-wait"
+      - eval_time: 20m
+        alertname: CodexChatAPIStreamFailures
+        exp_alerts:
+          - exp_labels:
+              phase: mid_stream
+              provider: codex
+              severity: warning
+            exp_annotations:
+              summary: "codex-chat-api codex stream failures at mid_stream"
+              description: "Streaming requests are failing before completion. Mid-stream failures are never rotated; inspect provider health and bounded failure logs, then canary rollback if failures correlate with a release."
+              runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#stream-failure"
+      - eval_time: 20m
+        alertname: CodexChatAPIReadinessLost
+        exp_alerts:
+          - exp_labels:
+              job: codex-chat-api-readiness
+              severity: critical
+            exp_annotations:
+              summary: "codex-chat-api readiness probe is failing"
+              description: "The external GET /health/ready probe has failed for 2 minutes. Determine whether the process is intentionally draining or has no usable local credentials."
+              runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#readiness-loss"
+
+  - name: cooling suspicion requires usable clients and sustained skips
+    interval: 1m
+    input_series:
+      - series: 'codex_chat_api_pool_usable_clients'
+        values: '2x30'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{client_label="pool-a",failure_class="quota"}'
+        values: '0+1x30'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{client_label="pool-b",failure_class="rate_limit"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CodexChatAPIAllClientsCoolingSuspected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "all codex-chat-api clients may be cooling"
+              description: "Cooldown skips in the last 10 minutes equal or exceed the usable-client count. This is bounded evidence, not an exact current-state gauge; confirm cooldown and selection logs before acting."
+              runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#all-clients-cooling"
+
+  - name: healthy bounded signals stay quiet
+    interval: 1m
+    input_series:
+      - series: 'codex_chat_api_rate_limit_responses_total{provider="codex",failure_class="rate_limit"}'
+        values: '0x30'
+      - series: 'codex_chat_api_pool_usable_clients'
+        values: '2x30'
+      - series: 'codex_chat_api_pool_client_usable{client_label="pool-a"}'
+        values: '1x30'
+      - series: 'codex_chat_api_pool_client_usable{client_label="pool-b"}'
+        values: '1x30'
+      - series: 'codex_chat_api_queue_wait_seconds_count{provider="codex",result="timeout"}'
+        values: '0x30'
+      - series: 'codex_chat_api_requests_total{provider="codex",phase="complete",result="success"}'
+        values: '0+1x30'
+      - series: 'probe_success{job="codex-chat-api-readiness"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CodexChatAPICapacitySaturation
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CodexChatAPINoUsableClients
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CodexChatAPIAllClientsCoolingSuspected
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CodexChatAPIClientAuthFailure
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CodexChatAPIQueueTimeouts
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CodexChatAPIQueueWaitHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CodexChatAPIStreamFailures
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CodexChatAPIReadinessLost
+        exp_alerts: []

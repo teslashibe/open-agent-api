@@ -33,8 +33,9 @@ because switching accounts after partial content would corrupt the response.
 
 - `GET /health/live` should remain `200` while the process is running, even
   during an upstream outage.
-- `GET /health/ready` returns `503` only while the local drain flag is set. Run
-  `POST /drain/stop` from loopback if a maintenance drain was not cleared.
+- `GET /health/ready` returns `503` while the local drain flag is set or when no
+  Codex client is locally usable. Run `POST /drain/stop` from loopback for an
+  abandoned drain; rotate a rejected credential for an `unavailable` response.
 - A remote drain request returns `404` by design. Execute it inside the pod or
   host network namespace; `X-Forwarded-For` cannot bypass the restriction.
 
@@ -62,3 +63,6 @@ because switching accounts after partial content would corrupt the response.
 
 Before sharing logs, remove hostnames, bearer headers, OAuth material, account
 identifiers, request metadata, and prompt/response bodies.
+
+For alert-by-alert diagnosis, credential rotation, and rollback, use the
+[production-readiness runbook](./production-readiness.md#alert-response).

@@ -11,6 +11,10 @@ token stored by `codex login`. No `sk-` API key is needed.
 
 The deployment and operations guide is published at
 [teslashibe.github.io/codex-chat-api](https://teslashibe.github.io/codex-chat-api/).
+Before production promotion, follow the
+[production-readiness runbook](https://teslashibe.github.io/codex-chat-api/docs/production-readiness)
+for alerts, dev soak, the single-replica canary, credential rotation, and
+rollback.
 
 Run the guide locally with Node.js 20 or newer:
 
@@ -655,6 +659,10 @@ the same queue key is still recommended to reduce lock contention.
 The supplied Docker Compose file mounts this path on a named volume by default
 at `/var/lib/codex-chat-api/agent-locks`, so replicas started from that Compose
 project share locks without extra volume wiring.
+
+For production, run one replica. Cooldowns, auth health, inflight leases, and
+soft pins remain process-local even when queue locks use a shared volume;
+multiple replicas can disagree about credential eligibility and affinity.
 
 ### Prometheus metrics
 

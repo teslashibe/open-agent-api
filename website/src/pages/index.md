@@ -16,6 +16,7 @@ The delivery contract is deliberately small:
 - Pull requests build this site so broken operator instructions block merging.
 
 [Start with gateway setup](./docs/setup) or review the
+[production-readiness runbook](./docs/production-readiness) and the
 [pipeline and DAG contract](./docs/pipeline-dag).
 
 All examples use local addresses, safe aliases, and placeholders. Never copy an
