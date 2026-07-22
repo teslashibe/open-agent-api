@@ -11,7 +11,6 @@ import (
 
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/openai"
-	"github.com/teslashibe/codex-chat-api/internal/sse"
 )
 
 type deltaTextMode int
@@ -33,7 +32,7 @@ type streamProcessor struct {
 	model   *string
 
 	streamID string
-	outcome  *string
+	terminal *streamTerminal
 
 	deltas, toolDeltas, upstreamEvents *int
 	textBytes, toolArgChars            *int
@@ -89,7 +88,7 @@ func newStreamProcessor(
 	created int64,
 	model *string,
 	streamID string,
-	outcome *string,
+	terminal *streamTerminal,
 	deltas, toolDeltas, upstreamEvents *int,
 	textBytes, toolArgChars *int,
 	assistantText *strings.Builder,
@@ -106,7 +105,7 @@ func newStreamProcessor(
 		created:             created,
 		model:               model,
 		streamID:            streamID,
-		outcome:             outcome,
+		terminal:            terminal,
 		deltas:              deltas,
 		toolDeltas:          toolDeltas,
 		upstreamEvents:      upstreamEvents,
@@ -339,7 +338,7 @@ func (p *streamProcessor) writeToolCalls() bool {
 	}
 	if len(valid) == 0 && len(invalid) > 0 {
 		_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, *p.model, "invalid upstream tool call"))
-		*p.outcome = "upstream_error"
+		*p.terminal = upstreamErrorStreamTerminal(invalid[0], *p.upstreamEvents, p.emittedContent())
 		return false
 	}
 	for i, toolCall := range valid {
@@ -383,7 +382,7 @@ func (p *streamProcessor) writeToolCalls() bool {
 				{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{delta}}},
 			},
 		}) {
-			*p.outcome = "client_disconnect"
+			*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
 			return false
 		}
 	}
@@ -416,7 +415,7 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 			{Index: 0, Delta: delta},
 		},
 	}) {
-		*p.outcome = "client_disconnect"
+		*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
 		return false
 	}
 	return true
@@ -425,13 +424,12 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textMode deltaTextMode) (stop bool) {
 	*p.upstreamEvents++
 	if event.Err != nil {
+		terminal := upstreamErrorStreamTerminal(event.Err, *p.upstreamEvents, p.emittedContent())
 		if write {
-			failureClass := codex.ClassifyFailure(event.Err)
-			failurePhase := codex.ClassifyPhase(*p.upstreamEvents, p.emittedContent())
-			logLine(p.opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", p.streamID, defaultString(event.Model, *p.model), detailedError(event.Err), failureClass, failurePhase)
+			logLine(p.opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", p.streamID, defaultString(event.Model, *p.model), detailedError(event.Err), terminal.failureClass, terminal.phase)
 			_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, defaultString(event.Model, *p.model), publicErrorMessage(event.Err)))
 		}
-		*p.outcome = "upstream_error"
+		*p.terminal = terminal
 		return true
 	}
 	if event.Model != "" {
@@ -467,9 +465,9 @@ func (p *streamProcessor) writeFinish() bool {
 	if *p.toolCallEmitted {
 		finish = "tool_calls"
 		if !p.writeToolCalls() {
-			return *p.outcome == "upstream_error"
+			return p.terminal.outcome == streamOutcomeUpstreamError
 		}
-		if *p.outcome != "completed" {
+		if p.terminal.outcome != streamOutcomeCompleted {
 			return true
 		}
 	}
@@ -482,7 +480,7 @@ func (p *streamProcessor) writeFinish() bool {
 			{Index: 0, Delta: openai.ChatDelta{}, FinishReason: &finish},
 		},
 	}) {
-		*p.outcome = "client_disconnect"
+		*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
 		return false
 	}
 	return true
@@ -501,7 +499,7 @@ func (p *streamProcessor) resetAttemptStats() {
 	p.toolCallsByKey = map[string]*streamedToolCall{}
 	p.toolCallKeysByIndex = map[int]string{}
 	p.toolCallKeyByID = map[string]string{}
-	*p.outcome = "completed"
+	*p.terminal = pendingStreamTerminal()
 }
 
 func (p *streamProcessor) replay(events []codex.StreamEvent, textMode deltaTextMode) bool {
@@ -521,7 +519,7 @@ func (p *streamProcessor) streamEvents(events <-chan codex.StreamEvent, textMode
 		event, ok := recvStreamEvent(p.ctx, p.cancel, events)
 		if !ok {
 			if p.ctx.Err() != nil {
-				*p.outcome = "client_disconnect"
+				*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
 				return false
 			}
 			return true
@@ -561,12 +559,12 @@ func deliverToolStream(
 	model string,
 	streamID string,
 	upstreamStart time.Time,
-) (outcome string, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount int, assistantText string, start time.Time, firstDeltaLatency time.Duration) {
-	outcome = "completed"
+) (terminal streamTerminal, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount int, assistantText string, start time.Time, firstDeltaLatency time.Duration) {
+	terminal = pendingStreamTerminal()
 	firstDeltaLatency = -1
 	var assistant strings.Builder
 	proc := newStreamProcessor(
-		ctx, cancel, w, opts, id, created, &model, streamID, &outcome,
+		ctx, cancel, w, opts, id, created, &model, streamID, &terminal,
 		&deltas, &toolDeltas, &upstreamEvents, &textBytes, &toolArgChars, &assistant, new(bool),
 		upstreamStart, &firstDeltaLatency,
 	)
@@ -576,20 +574,32 @@ func deliverToolStream(
 	agentTurn := agentTurnExpectsToolCalls(req.Messages, toolsPresent)
 	retryEnabled := opts.contextConfig.DegenerateTurnRetryEnabled && toolsPresent
 
-	finishStream := func() (string, int, int, int, int, int, int, string, time.Time, time.Duration) {
+	streamResult := func() (streamTerminal, int, int, int, int, int, int, string, time.Time, time.Duration) {
+		return terminal, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+	}
+
+	finishStream := func() (streamTerminal, int, int, int, int, int, int, string, time.Time, time.Duration) {
 		if opts.logBodyShape {
 			logLine(opts, "stream_response_shape request_id=%s %s\n", streamID, proc.responseShape.logFields())
 		}
-		if outcome == "completed" {
+		if terminal.outcome == streamOutcomeCompleted {
 			if !proc.writeFinish() {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+				return streamResult()
 			}
 		}
-		if outcome != "client_disconnect" {
-			_, _ = w.Write(sse.Done())
-			_ = w.Flush()
+		switch terminal.outcome {
+		case streamOutcomeCompleted:
+			if writeSSEDone(ctx, cancel, w) {
+				terminal = successfulStreamTerminal()
+			} else {
+				terminal = canceledStreamTerminal(upstreamEvents, proc.emittedContent())
+			}
+		case streamOutcomeUpstreamError:
+			// Preserve the upstream-error result if downstream delivery also fails;
+			// the causal terminal error takes precedence over the secondary write.
+			_ = writeSSEDone(ctx, cancel, w)
 		}
-		return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+		return streamResult()
 	}
 
 	// Tool-result continuations and plain chat stream through immediately.
@@ -624,27 +634,27 @@ func deliverToolStream(
 		event, ok := recvStreamEvent(ctx, cancel, events)
 		if !ok {
 			if ctx.Err() != nil {
-				outcome = "client_disconnect"
+				terminal = canceledStreamTerminal(upstreamEvents, proc.emittedContent())
 			}
 			break
 		}
 		if event.Err != nil {
 			if proc.handleEvent(event, true, deltaTextDrop) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+				return streamResult()
 			}
 			break
 		}
 		if passthrough {
 			if proc.handleEvent(event, true, deltaTextReasoning) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+				return streamResult()
 			}
 		} else if streamEventHasToolCall(event) {
 			if bufferPreToolText && !flushPreToolText(deltaTextReasoning) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+				return streamResult()
 			}
 			passthrough = true
 			if proc.handleEvent(event, true, deltaTextReasoning) {
-				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+				return streamResult()
 			}
 		} else {
 			if event.Delta != "" {
@@ -658,16 +668,16 @@ func deliverToolStream(
 			switch {
 			case bufferPreToolText && event.ReasoningDelta != "":
 				if proc.handleEvent(event, true, deltaTextReasoning) {
-					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+					return streamResult()
 				}
 			case bufferPreToolText && event.Delta != "":
 				if proc.handleEvent(event, false, deltaTextDrop) {
-					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+					return streamResult()
 				}
 				preToolText.WriteString(event.Delta)
 			default:
 				if proc.handleEvent(event, true, textMode) {
-					return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+					return streamResult()
 				}
 			}
 		}
@@ -681,11 +691,11 @@ func deliverToolStream(
 	}
 
 	if bufferPreToolText && !flushPreToolText(deltaTextContent) {
-		return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+		return streamResult()
 	}
 
 	firstToolCallCount := *proc.nextToolCallIndex
-	if outcome == "completed" && firstTextBytes > 0 && retryEnabled && shouldRetryDegenerateTurn(true, toolsPresent, req.Messages, firstToolCallCount, firstAssistant.String(), firstTextBytes) {
+	if terminal.outcome == streamOutcomeCompleted && firstTextBytes > 0 && retryEnabled && shouldRetryDegenerateTurn(true, toolsPresent, req.Messages, firstToolCallCount, firstAssistant.String(), firstTextBytes) {
 		loopPhrase := detectLoopPhrase(firstAssistant.String())
 		logDegenerateTurn(opts, streamID, firstTextBytes, firstToolCallCount, loopPhrase, len(req.Messages))
 		logDegenerateTurnRetry(opts, streamID, 1, 0)

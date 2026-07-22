@@ -37,7 +37,7 @@ func TestMetricsEndpointRecordsRequestsAndQueueWait(t *testing.T) {
 
 	body := scrapeServerMetrics(t, app, nil)
 	for _, want := range []string{
-		`codex_chat_api_requests_total{provider="codex",result="success"} 1`,
+		`codex_chat_api_requests_total{phase="complete",provider="codex",result="success"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="codex",result="acquired"} 1`,
 	} {
 		if !strings.Contains(body, want) {
@@ -67,7 +67,7 @@ func TestMetricsEndpointRecordsQueueBypassForOrdinaryChat(t *testing.T) {
 
 	body := scrapeServerMetrics(t, app, nil)
 	for _, want := range []string{
-		`codex_chat_api_requests_total{provider="codex",result="success"} 1`,
+		`codex_chat_api_requests_total{phase="complete",provider="codex",result="success"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="codex",result="bypassed"} 1`,
 	} {
 		if !strings.Contains(body, want) {
@@ -139,7 +139,7 @@ func TestMetricsEndpointRecordsQuota429(t *testing.T) {
 
 	body := scrapeServerMetrics(t, app, nil)
 	for _, want := range []string{
-		`codex_chat_api_requests_total{provider="codex",result="rate_limited"} 1`,
+		`codex_chat_api_requests_total{phase="complete",provider="codex",result="rate_limited"} 1`,
 		`codex_chat_api_rate_limit_responses_total{failure_class="quota",provider="codex"} 1`,
 	} {
 		if !strings.Contains(body, want) {
@@ -171,8 +171,130 @@ func TestActiveStreamsGaugeReturnsToZero(t *testing.T) {
 	}
 
 	body := scrapeServerMetrics(t, app, nil)
-	if !strings.Contains(body, `codex_chat_api_active_streams{provider="codex"} 0`) {
-		t.Fatalf("active stream gauge did not return to zero:\n%s", body)
+	for _, want := range []string{
+		`codex_chat_api_active_streams{provider="codex"} 0`,
+		`codex_chat_api_requests_total{phase="complete",provider="codex",result="success"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestMetricsEndpointRecordsStreamingTerminalOutcomes(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []codex.StreamEvent
+		want   string
+	}{
+		{
+			name: "first event upstream error",
+			events: []codex.StreamEvent{{Err: codex.NewError(
+				codex.ErrorKindUpstream,
+				http.StatusBadGateway,
+				"upstream failed",
+				errors.New("first event failed"),
+			)}},
+			want: `codex_chat_api_requests_total{phase="first_event",provider="codex",result="upstream_error"} 1`,
+		},
+		{
+			name: "mid stream upstream error",
+			events: []codex.StreamEvent{
+				{Delta: "partial"},
+				{Err: codex.NewError(
+					codex.ErrorKindUpstream,
+					http.StatusBadGateway,
+					"upstream failed",
+					errors.New("mid stream failed"),
+				)},
+			},
+			want: `codex_chat_api_requests_total{phase="mid_stream",provider="codex",result="upstream_error"} 1`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metrics := metricspkg.New(true)
+			service := fakeCodexService{stream: func(context.Context, codex.Request) (<-chan codex.StreamEvent, error) {
+				events := make(chan codex.StreamEvent, len(tt.events))
+				for _, event := range tt.events {
+					events <- event
+				}
+				close(events)
+				return events, nil
+			}}
+			app := New(config.Defaults(), WithCodexService(service), WithMetrics(metrics), WithLogOutput(io.Discard), fixedServerOptions())
+
+			resp := doJSON(t, app, `{"model":"gpt-5.6-sol","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+			_, readErr := io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil && !errors.Is(readErr, context.Canceled) {
+				t.Fatalf("read stream: %v", readErr)
+			}
+
+			body := scrapeServerMetrics(t, app, nil)
+			if !strings.Contains(body, tt.want) {
+				t.Fatalf("metrics body missing %q:\n%s", tt.want, body)
+			}
+			if strings.Contains(body, `codex_chat_api_requests_total{phase="complete",provider="codex",result="success"}`) {
+				t.Fatalf("failed stream was also counted as success:\n%s", body)
+			}
+		})
+	}
+}
+
+func TestMetricsEndpointRecordsStreamingConnectFailure(t *testing.T) {
+	metrics := metricspkg.New(true)
+	service := fakeCodexService{stream: func(context.Context, codex.Request) (<-chan codex.StreamEvent, error) {
+		return nil, codex.NewError(codex.ErrorKindUpstream, http.StatusBadGateway, "connect failed", errors.New("offline"))
+	}}
+	app := New(config.Defaults(), WithCodexService(service), WithMetrics(metrics), WithLogOutput(io.Discard), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-5.6-sol","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+
+	body := scrapeServerMetrics(t, app, nil)
+	want := `codex_chat_api_requests_total{phase="connect",provider="codex",result="server_error"} 1`
+	if !strings.Contains(body, want) {
+		t.Fatalf("metrics body missing %q:\n%s", want, body)
+	}
+}
+
+func TestMetricsEndpointRecordsStreamingCancellation(t *testing.T) {
+	metrics := metricspkg.New(true)
+	service := fakeCodexService{stream: func(context.Context, codex.Request) (<-chan codex.StreamEvent, error) {
+		events := make(chan codex.StreamEvent, 1)
+		events <- codex.StreamEvent{Done: true}
+		close(events)
+		return events, nil
+	}}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	app := New(
+		config.Defaults(),
+		WithCodexService(service),
+		WithMetrics(metrics),
+		WithLogOutput(io.Discard),
+		fixedServerOptions(),
+		func(opts *options) {
+			opts.requestContext = func(*fiber.Ctx) context.Context { return canceled }
+		},
+	)
+
+	resp := doJSON(t, app, `{"model":"gpt-5.6-sol","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	body := scrapeServerMetrics(t, app, nil)
+	want := `codex_chat_api_requests_total{phase="connect",provider="codex",result="canceled"} 1`
+	if !strings.Contains(body, want) {
+		t.Fatalf("metrics body missing %q:\n%s", want, body)
+	}
+	if strings.Contains(body, `codex_chat_api_requests_total{phase="complete",provider="codex",result="success"}`) {
+		t.Fatalf("canceled stream was also counted as success:\n%s", body)
 	}
 }
 

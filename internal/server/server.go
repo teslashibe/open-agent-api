@@ -538,6 +538,17 @@ type streamTerminal struct {
 	failureClass string
 }
 
+// pendingStreamTerminal is internal-only state while a stream is still being
+// delivered. It is never observed: the body writer replaces it with success,
+// cancellation, or upstream error before recording telemetry.
+func pendingStreamTerminal() streamTerminal {
+	return streamTerminal{
+		outcome:      streamOutcomeCompleted,
+		phase:        codex.PhaseUnknown,
+		failureClass: failureClassNone,
+	}
+}
+
 func successfulStreamTerminal() streamTerminal {
 	return streamTerminal{
 		outcome:      streamOutcomeCompleted,
@@ -832,6 +843,24 @@ func writeSSE(ctx context.Context, cancel context.CancelFunc, w *bufio.Writer, v
 		return false
 	}
 	if _, err := w.Write(data); err != nil {
+		cancel()
+		return false
+	}
+	if err := w.Flush(); err != nil {
+		cancel()
+		return false
+	}
+	return true
+}
+
+func writeSSEDone(ctx context.Context, cancel context.CancelFunc, w *bufio.Writer) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	default:
+	}
+
+	if _, err := w.Write(sse.Done()); err != nil {
 		cancel()
 		return false
 	}

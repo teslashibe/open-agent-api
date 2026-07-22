@@ -2072,6 +2072,42 @@ func TestChatCompletionsUpstreamErrorIsSanitized(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsNonStreamingFailureTelemetry(t *testing.T) {
+	const privatePrompt = "tenant-private-prompt"
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			return codex.Completion{}, codex.NewError(
+				codex.ErrorKindClient,
+				http.StatusBadRequest,
+				"invalid upstream request",
+				errors.New("invalid request"),
+			)
+		},
+	}
+	var logs bytes.Buffer
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"messages":[{"role":"user","content":"`+privatePrompt+`"}]}`, map[string]string{
+		"X-Gateway-Tenant": "private-tenant@example.test",
+	})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+
+	logBody := logs.String()
+	for _, want := range []string{"complete_error", "failure_class=permanent", "failure_phase=complete"} {
+		if !strings.Contains(logBody, want) {
+			t.Fatalf("logs = %q, want %q", logBody, want)
+		}
+	}
+	for _, secret := range []string{privatePrompt, "private-tenant@example.test"} {
+		if strings.Contains(logBody, secret) {
+			t.Fatalf("telemetry leaked request data %q: %q", secret, logBody)
+		}
+	}
+}
+
 func TestChatCompletionsGeminiCapacityReturnsRateLimitError(t *testing.T) {
 	service := fakeCodexService{
 		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
