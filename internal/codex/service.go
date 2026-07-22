@@ -14,6 +14,24 @@ type Service interface {
 	Stream(context.Context, Request) (<-chan StreamEvent, error)
 }
 
+// HealthReporter exposes only bounded operational labels and aggregate client
+// counts. Implementations must not include credential paths or identities.
+type HealthReporter interface {
+	Health() PoolHealth
+}
+
+type PoolHealth struct {
+	TotalClients  int            `json:"total_clients"`
+	UsableClients int            `json:"usable_clients"`
+	Clients       []ClientHealth `json:"clients"`
+}
+
+type ClientHealth struct {
+	Label  string `json:"label"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
 type Request struct {
 	Model             string
 	Messages          []openai.ChatMessage

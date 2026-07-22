@@ -2,11 +2,13 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -45,6 +47,9 @@ type Client struct {
 	logOutput     io.Writer
 	logBodyShape  bool
 	logToolEvents bool
+
+	credentialMu       sync.Mutex
+	credentialRevision [sha256.Size]byte
 }
 
 type websocketConn interface {
@@ -59,6 +64,10 @@ type websocketConn interface {
 type websocketDialFunc func(context.Context, string, http.Header) (websocketConn, *http.Response, error)
 
 func NewClient(cfg ClientConfig) (*Client, error) {
+	_, credentialRevision, err := auth.LoadWithRevision(cfg.AuthPath)
+	if err != nil {
+		return nil, fmt.Errorf("credential validation failed: %w", err)
+	}
 	profile, err := LoadProfile(cfg.ProfilePath)
 	if err != nil {
 		return nil, err
@@ -90,6 +99,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		logOutput:     cfg.LogOutput,
 		logBodyShape:  cfg.LogBodyShape,
 		logToolEvents: cfg.LogToolEvents,
+		credentialRevision: credentialRevision,
 	}, nil
 }
 
@@ -202,10 +212,13 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 }
 
 func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, error) {
-	creds, err := auth.Load(c.authPath)
+	creds, revision, err := auth.LoadWithRevision(c.authPath)
 	if err != nil {
 		return nil, NewError(ErrorKindAuth, http.StatusUnauthorized, "load codex credentials", err)
 	}
+	c.credentialMu.Lock()
+	c.credentialRevision = revision
+	c.credentialMu.Unlock()
 
 	headers := c.headers(creds, faithful, sessionID, kind)
 	conn, resp, err := c.dial(ctx, c.websocketURL, headers)
@@ -229,6 +242,20 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 		connectErr = withRetryHint(connectErr, retryAfter, resetAt)
 	}
 	return nil, connectErr
+}
+
+// validateCredentialRevision is used by the pool to recover an auth-failed
+// client only after an operator has replaced its credential file with another
+// valid revision. The revision is never logged or exposed as a metric label.
+func (c *Client) validateCredentialRevision() ([sha256.Size]byte, error) {
+	_, revision, err := auth.LoadWithRevision(c.authPath)
+	return revision, err
+}
+
+func (c *Client) lastCredentialRevision() ([sha256.Size]byte, bool) {
+	c.credentialMu.Lock()
+	defer c.credentialMu.Unlock()
+	return c.credentialRevision, c.credentialRevision != [sha256.Size]byte{}
 }
 
 func (c *Client) headers(creds auth.Credentials, faithful bool, sessionID string, kind requestKind) http.Header {

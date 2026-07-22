@@ -26,11 +26,17 @@ const (
 	unpinReasonAuth                    = "auth"
 	unpinReasonCooldown                = "cooldown"
 	unpinReasonUnavailable             = "unavailable"
+	clientHealthReasonAuth             = "auth"
+	clientHealthReasonRecovered        = "recovered"
 )
 
 // ErrClientPoolSaturated marks requests rejected before an upstream call
 // because every Codex client is already at its per-account inflight cap.
 var ErrClientPoolSaturated = errors.New("codex client pool saturated")
+
+// ErrNoUsableClients marks a locally known empty credential pool. It is
+// distinct from saturation and upstream availability failures.
+var ErrNoUsableClients = errors.New("no usable codex clients")
 
 type PooledService struct {
 	clients           []pooledClient
@@ -43,6 +49,7 @@ type PooledService struct {
 
 	mu              sync.Mutex
 	cooldowns       []clientCooldown
+	health          []clientHealthState
 	inflight        map[string]int
 	softPins        map[string]*list.Element
 	softPinLRU      *list.List
@@ -54,6 +61,18 @@ type PooledService struct {
 type clientCooldown struct {
 	until time.Time
 	class FailureClass
+}
+
+type clientHealthState struct {
+	usable         bool
+	reason         string
+	failedRevision [sha256.Size]byte
+	hasRevision    bool
+}
+
+type credentialRevisionProvider interface {
+	validateCredentialRevision() ([sha256.Size]byte, error)
+	lastCredentialRevision() ([sha256.Size]byte, bool)
 }
 
 type softPin struct {
@@ -134,7 +153,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &PooledService{
+	pool := &PooledService{
 		clients:           clients,
 		maxInflight:       cfg.MaxInflight,
 		unavailablePolicy: cfg.UnavailablePolicy,
@@ -143,12 +162,44 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		now:               cfg.Now,
 		metrics:           cfg.Metrics,
 		cooldowns:         make([]clientCooldown, len(clients)),
+		health:            make([]clientHealthState, len(clients)),
 		inflight:          map[string]int{},
 		softPins:          map[string]*list.Element{},
 		softPinLRU:        list.New(),
 		softPinCapacity:   defaultSoftPinCapacity,
 		softPinTTL:        defaultSoftPinTTL,
-	}, nil
+	}
+	for index := range pool.health {
+		pool.health[index].usable = true
+		pool.metrics.SetPoolClientUsable(pool.clients[index].label, true)
+	}
+	pool.metrics.SetPoolUsableClients(len(pool.clients))
+	return pool, nil
+}
+
+// Health returns the local credential health snapshot. It may recover a client
+// only when its credential file has changed to a different, valid revision;
+// it never contacts the upstream service.
+func (p *PooledService) Health() PoolHealth {
+	for index := range p.clients {
+		p.tryRecoverClient(index)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	health := PoolHealth{
+		TotalClients: len(p.clients),
+		Clients:      make([]ClientHealth, 0, len(p.clients)),
+	}
+	for index, state := range p.health {
+		client := ClientHealth{Label: p.clients[index].label, Status: "unhealthy", Reason: state.reason}
+		if state.usable {
+			health.UsableClients++
+			client.Status = "usable"
+			client.Reason = ""
+		}
+		health.Clients = append(health.Clients, client)
+	}
+	return health
 }
 
 func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, error) {
@@ -204,6 +255,9 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 	events, err := p.clients[index].service.Stream(attemptCtx, req)
 	if err != nil {
 		cancel()
+		if ClassifyFailure(err) == FailureAuth {
+			p.markClientAuthUnhealthy(index)
+		}
 		if reason, unhealthy := p.unpinReason(err, PhaseConnect); unhealthy {
 			if reason == unpinReasonCooldown {
 				p.coolClient(index, err)
@@ -220,7 +274,7 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 		}
 		release()
 		if !retried && p.shouldFallback(index, err) {
-			if inflight, fbRelease, ok, _, _ := p.tryAcquireClient(req, 0, false); ok {
+			if inflight, fbRelease, ok, _, _, _ := p.tryAcquireClient(req, 0, false); ok {
 				p.logSelection(req, 0, true, false, false, inflight)
 				return p.streamAttempt(ctx, req, 0, true, fbRelease, unpin, refreshPin)
 			}
@@ -256,6 +310,9 @@ func (p *PooledService) forwardAttempt(
 		}
 		return
 	}
+	if first.Err != nil && ClassifyFailure(first.Err) == FailureAuth {
+		p.markClientAuthUnhealthy(index)
+	}
 	if reason, unhealthy := p.unpinReason(first.Err, PhaseFirstEvent); first.Err != nil && unhealthy {
 		if reason == unpinReasonCooldown {
 			p.coolClient(index, first.Err)
@@ -271,7 +328,7 @@ func (p *PooledService) forwardAttempt(
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
 				}
-				p.forwardRemaining(ctx, out, retryEvents, nil)
+				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
 				return
 			}
 		}
@@ -293,10 +350,14 @@ func (p *PooledService) forwardAttempt(
 	}
 	p.forwardRemaining(ctx, out, events, func() {
 		p.recordSuccessfulSelection(req, index, unpin, refreshPin)
+	}, func(err error) {
+		if ClassifyFailure(err) == FailureAuth {
+			p.markClientAuthUnhealthy(index)
+		}
 	})
 }
 
-func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func()) {
+func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func(), onError func(error)) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -310,6 +371,9 @@ func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamE
 				return
 			}
 			if event.Err != nil {
+				if onError != nil {
+					onError(event.Err)
+				}
 				p.sendPoolEvent(ctx, out, event)
 				return
 			}
@@ -359,6 +423,89 @@ func (p *PooledService) cooldownEligible(err error, phase FailurePhase) bool {
 		return false
 	}
 	return MayRotateAccount(class, phase)
+}
+
+func (p *PooledService) markClientAuthUnhealthy(index int) {
+	var revision [sha256.Size]byte
+	hasRevision := false
+	if provider, ok := p.clients[index].service.(credentialRevisionProvider); ok {
+		revision, hasRevision = provider.lastCredentialRevision()
+	}
+
+	p.mu.Lock()
+	if !p.health[index].usable {
+		p.mu.Unlock()
+		return
+	}
+	p.health[index] = clientHealthState{
+		reason:         clientHealthReasonAuth,
+		failedRevision: revision,
+		hasRevision:    hasRevision,
+	}
+	for key, element := range p.softPins {
+		if element.Value.(*softPin).index == index {
+			delete(p.softPins, key)
+			p.softPinLRU.Remove(element)
+		}
+	}
+	usable := p.usableClientsLocked()
+	p.mu.Unlock()
+
+	p.metrics.SetPoolClientUsable(p.clients[index].label, false)
+	p.metrics.SetPoolUsableClients(usable)
+	p.logClientHealth(index, false, clientHealthReasonAuth)
+}
+
+func (p *PooledService) tryRecoverClient(index int) bool {
+	p.mu.Lock()
+	state := p.health[index]
+	p.mu.Unlock()
+	if state.usable {
+		return true
+	}
+	provider, ok := p.clients[index].service.(credentialRevisionProvider)
+	if !ok {
+		return false
+	}
+	revision, err := provider.validateCredentialRevision()
+	if err != nil || state.hasRevision && revision == state.failedRevision {
+		return false
+	}
+
+	p.mu.Lock()
+	current := p.health[index]
+	if current.usable || current.hasRevision != state.hasRevision || current.failedRevision != state.failedRevision {
+		usable := current.usable
+		p.mu.Unlock()
+		return usable
+	}
+	p.health[index] = clientHealthState{usable: true}
+	usable := p.usableClientsLocked()
+	p.mu.Unlock()
+
+	p.metrics.SetPoolClientUsable(p.clients[index].label, true)
+	p.metrics.SetPoolUsableClients(usable)
+	p.logClientHealth(index, true, clientHealthReasonRecovered)
+	return true
+}
+
+func (p *PooledService) clientUsable(index int) bool {
+	if p.tryRecoverClient(index) {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.health[index].usable
+}
+
+func (p *PooledService) usableClientsLocked() int {
+	usable := 0
+	for _, state := range p.health {
+		if state.usable {
+			usable++
+		}
+	}
+	return usable
 }
 
 func (p *PooledService) unpinReason(err error, phase FailurePhase) (string, bool) {
@@ -665,6 +812,15 @@ func (p *PooledService) logCooldown(index int, until time.Time) {
 		"codex_client_cooldown label=%s until=%s\n",
 		p.clients[index].label,
 		until.UTC().Format(time.RFC3339),
+	)
+}
+
+func (p *PooledService) logClientHealth(index int, usable bool, reason string) {
+	p.logf(
+		"codex_client_health client_label=%s usable=%t reason=%s\n",
+		p.clients[index].label,
+		usable,
+		reason,
 	)
 }
 
