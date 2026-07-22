@@ -87,7 +87,7 @@ func TestDeliverToolStreamRecordsSuccessAfterDoneDelivery(t *testing.T) {
 	}
 }
 
-func TestDeliverToolStreamRejectsMissingUpstreamTerminalEvent(t *testing.T) {
+func TestDeliverToolStreamObservesMissingTerminalWithoutChangingWire(t *testing.T) {
 	tests := []struct {
 		name   string
 		events []codex.StreamEvent
@@ -139,10 +139,115 @@ func TestDeliverToolStreamRejectsMissingUpstreamTerminalEvent(t *testing.T) {
 			if terminal.failureClass != string(codex.FailureTransient) {
 				t.Fatalf("failure class = %q, want %q", terminal.failureClass, codex.FailureTransient)
 			}
-			if !bytes.Contains(sink.Bytes(), []byte("[error: upstream error]")) {
-				t.Fatalf("stream missing sanitized error chunk: %q", sink.String())
+			for _, want := range []string{`"finish_reason":"stop"`, "data: [DONE]\n\n"} {
+				if !bytes.Contains(sink.Bytes(), []byte(want)) {
+					t.Fatalf("stream missing legacy terminal wire %q: %q", want, sink.String())
+				}
+			}
+			if bytes.Contains(sink.Bytes(), []byte("[error: upstream error]")) {
+				t.Fatalf("missing terminal changed client wire to an error chunk: %q", sink.String())
 			}
 		})
+	}
+}
+
+func TestDeliverToolStreamRetryErrorPreservesDeliveredPhase(t *testing.T) {
+	events := make(chan codex.StreamEvent, 2)
+	events <- codex.StreamEvent{Delta: "I'll use a tool."}
+	events <- codex.StreamEvent{Done: true}
+	close(events)
+
+	retryErr := codex.NewError(
+		codex.ErrorKindUpstream,
+		http.StatusBadGateway,
+		"retry stream failed",
+		errors.New("retry failed"),
+	)
+	service := fakeCodexService{stream: func(context.Context, codex.Request) (<-chan codex.StreamEvent, error) {
+		retryEvents := make(chan codex.StreamEvent, 1)
+		retryEvents <- codex.StreamEvent{Err: retryErr}
+		close(retryEvents)
+		return retryEvents, nil
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var sink bytes.Buffer
+	terminal, _, _, _, _, _, _, _, _, _ := deliverToolStream(
+		ctx,
+		streamTerminalTestOptions(),
+		bufio.NewWriter(&sink),
+		cancel,
+		degenerateRetryRequest(),
+		service,
+		events,
+		"chatcmpl-test",
+		123,
+		"gpt-test",
+		"chatcmpl-test",
+		time.Now(),
+	)
+
+	if terminal.outcome != streamOutcomeUpstreamError || terminal.phase != codex.PhaseMidStream {
+		t.Fatalf("terminal = %#v, want mid-stream upstream error", terminal)
+	}
+	if !bytes.Contains(sink.Bytes(), []byte(`"content":"I'll use a tool."`)) {
+		t.Fatalf("first-attempt content was not delivered before retry: %q", sink.String())
+	}
+}
+
+func TestDeliverToolStreamRetryCancellationPreservesDeliveredPhase(t *testing.T) {
+	events := make(chan codex.StreamEvent, 2)
+	events <- codex.StreamEvent{Delta: "I'll use a tool."}
+	events <- codex.StreamEvent{Done: true}
+	close(events)
+
+	retryStarted := make(chan struct{})
+	retryEvents := make(chan codex.StreamEvent)
+	service := fakeCodexService{stream: func(context.Context, codex.Request) (<-chan codex.StreamEvent, error) {
+		close(retryStarted)
+		return retryEvents, nil
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		terminal streamTerminal
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		var sink bytes.Buffer
+		terminal, _, _, _, _, _, _, _, _, _ := deliverToolStream(
+			ctx,
+			streamTerminalTestOptions(),
+			bufio.NewWriter(&sink),
+			cancel,
+			degenerateRetryRequest(),
+			service,
+			events,
+			"chatcmpl-test",
+			123,
+			"gpt-test",
+			"chatcmpl-test",
+			time.Now(),
+		)
+		resultCh <- result{terminal: terminal}
+	}()
+
+	select {
+	case <-retryStarted:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("degenerate retry did not start")
+	}
+
+	select {
+	case got := <-resultCh:
+		if got.terminal.outcome != streamOutcomeCanceled || got.terminal.phase != codex.PhaseMidStream {
+			t.Fatalf("terminal = %#v, want mid-stream cancellation", got.terminal)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled retry did not return")
 	}
 }
 
@@ -264,5 +369,13 @@ func streamTerminalTestOptions() options {
 		now:           time.Now,
 		logOutput:     io.Discard,
 		contextConfig: cfg,
+	}
+}
+
+func degenerateRetryRequest() codex.Request {
+	return codex.Request{
+		Model:    "gpt-test",
+		Messages: []openai.ChatMessage{{Role: "user", Content: openai.TextContent("use lookup")}},
+		Tools:    json.RawMessage(`[{"type":"function"}]`),
 	}
 }

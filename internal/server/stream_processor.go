@@ -47,7 +47,9 @@ type streamProcessor struct {
 	toolCallKeyByID     map[string]string
 	upstreamStart       time.Time
 	firstDeltaLatency   *time.Duration
+	observedEvents      int
 	deliveredContent    bool
+	unexpectedEnd       bool
 	responseShape       streamResponseShape
 }
 
@@ -136,6 +138,13 @@ func (p *streamProcessor) markFirstDelta() {
 // forwarded to the client, which makes the stream unsafe to rotate mid-flight.
 func (p *streamProcessor) emittedContent() bool {
 	return p.deliveredContent
+}
+
+// phaseEvents is cumulative across degenerate retries. The public stream
+// counters are intentionally reset per attempt, but terminal phase telemetry
+// must describe the whole downstream request.
+func (p *streamProcessor) phaseEvents() int {
+	return p.observedEvents
 }
 
 func (p *streamProcessor) normalizeToolCallIndex(key string) int {
@@ -337,7 +346,7 @@ func (p *streamProcessor) writeToolCalls() bool {
 	}
 	if len(valid) == 0 && len(invalid) > 0 {
 		_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, *p.model, "invalid upstream tool call"))
-		*p.terminal = upstreamErrorStreamTerminal(invalid[0], *p.upstreamEvents, p.emittedContent())
+		*p.terminal = upstreamErrorStreamTerminal(invalid[0], p.phaseEvents(), p.emittedContent())
 		return false
 	}
 	for i, toolCall := range valid {
@@ -380,7 +389,7 @@ func (p *streamProcessor) writeToolCalls() bool {
 				{Index: 0, Delta: openai.ChatDelta{ToolCalls: []openai.ToolCallDelta{delta}}},
 			},
 		}) {
-			*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
+			*p.terminal = canceledStreamTerminal(p.phaseEvents(), p.emittedContent())
 			return false
 		}
 		p.markFirstDelta()
@@ -413,7 +422,7 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 			{Index: 0, Delta: delta},
 		},
 	}) {
-		*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
+		*p.terminal = canceledStreamTerminal(p.phaseEvents(), p.emittedContent())
 		return false
 	}
 	p.markFirstDelta()
@@ -424,8 +433,9 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 
 func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textMode deltaTextMode) (stop bool) {
 	*p.upstreamEvents++
+	p.observedEvents++
 	if event.Err != nil {
-		terminal := upstreamErrorStreamTerminal(event.Err, *p.upstreamEvents, p.emittedContent())
+		terminal := upstreamErrorStreamTerminal(event.Err, p.phaseEvents(), p.emittedContent())
 		if write {
 			logLine(p.opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", p.streamID, defaultString(event.Model, *p.model), detailedError(event.Err), terminal.failureClass, terminal.phase)
 			_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, defaultString(event.Model, *p.model), publicErrorMessage(event.Err)))
@@ -467,6 +477,7 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 // connected but never produced content is classified as first_event rather
 // than connect.
 func (p *streamProcessor) handleUnexpectedEnd(write bool) {
+	p.unexpectedEnd = true
 	err := codex.NewError(
 		codex.ErrorKindUpstream,
 		502,
@@ -496,7 +507,7 @@ func (p *streamProcessor) writeFinish() bool {
 			{Index: 0, Delta: openai.ChatDelta{}, FinishReason: &finish},
 		},
 	}) {
-		*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
+		*p.terminal = canceledStreamTerminal(p.phaseEvents(), p.emittedContent())
 		return false
 	}
 	return true
@@ -515,7 +526,6 @@ func (p *streamProcessor) resetAttemptStats() {
 	p.toolCallsByKey = map[string]*streamedToolCall{}
 	p.toolCallKeysByIndex = map[int]string{}
 	p.toolCallKeyByID = map[string]string{}
-	p.deliveredContent = false
 	*p.terminal = pendingStreamTerminal()
 }
 
@@ -536,10 +546,10 @@ func (p *streamProcessor) streamEvents(events <-chan codex.StreamEvent, textMode
 		event, ok := recvStreamEvent(p.ctx, p.cancel, events)
 		if !ok {
 			if p.ctx.Err() != nil {
-				*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
+				*p.terminal = canceledStreamTerminal(p.phaseEvents(), p.emittedContent())
 				return false
 			}
-			p.handleUnexpectedEnd(true)
+			p.handleUnexpectedEnd(false)
 			return false
 		}
 		if p.handleEvent(event, true, textMode) {
@@ -604,13 +614,24 @@ func deliverToolStream(
 			if !proc.writeFinish() {
 				return streamResult()
 			}
+		} else if proc.unexpectedEnd {
+			// Before terminal telemetry was corrected, an ordinary upstream EOF
+			// was presented to clients as a normal finish chunk plus [DONE]. Keep
+			// that wire contract while retaining the upstream-error observation.
+			cause := terminal
+			terminal = pendingStreamTerminal()
+			if !proc.writeFinish() {
+				terminal = cause
+				return streamResult()
+			}
+			terminal = cause
 		}
 		switch terminal.outcome {
 		case streamOutcomeCompleted:
 			if writeSSEDone(ctx, cancel, w) {
 				terminal = successfulStreamTerminal()
 			} else {
-				terminal = canceledStreamTerminal(upstreamEvents, proc.emittedContent())
+				terminal = canceledStreamTerminal(proc.phaseEvents(), proc.emittedContent())
 			}
 		case streamOutcomeUpstreamError:
 			// Preserve the upstream-error result if downstream delivery also fails;
@@ -652,10 +673,10 @@ func deliverToolStream(
 		event, ok := recvStreamEvent(ctx, cancel, events)
 		if !ok {
 			if ctx.Err() != nil {
-				terminal = canceledStreamTerminal(upstreamEvents, proc.emittedContent())
+				terminal = canceledStreamTerminal(proc.phaseEvents(), proc.emittedContent())
 				return streamResult()
 			}
-			proc.handleUnexpectedEnd(true)
+			proc.handleUnexpectedEnd(false)
 			return finishStream()
 		}
 		if event.Err != nil {
