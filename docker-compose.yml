@@ -1,9 +1,33 @@
 services:
+  codex-auth-init:
+    image: alpine:3.20
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        if [ "$$CODEX_AUTH_RESEED" = "true" ] || [ ! -s /runtime/auth.json ]; then
+          cp /seed/auth.json /runtime/.auth.json.seed
+          chmod 0600 /runtime/.auth.json.seed
+          mv -f /runtime/.auth.json.seed /runtime/auth.json
+        fi
+        chmod 0600 /runtime/auth.json
+    environment:
+      CODEX_AUTH_RESEED: "${CODEX_AUTH_RESEED:-false}"
+    volumes:
+      # The operator's live login is seed-only. OAuth rotation happens in the
+      # container-owned volume, so the gateway never replaces the host file.
+      - "${HOME}/.codex/auth.json:/seed/auth.json:ro"
+      - "codex-auth-runtime:/runtime"
+
   api:
     build:
       context: .
     image: teslashibe/codex-chat-api:local
     command: ["--host", "0.0.0.0", "--port", "8088"]
+    depends_on:
+      codex-auth-init:
+        condition: service_completed_successfully
     environment:
       CODEX_HOME: /home/codex/.codex
       CODEX_LOG_BODY_SHAPE: "${CODEX_LOG_BODY_SHAPE:-true}"
@@ -51,9 +75,9 @@ services:
       CLAUDE_CODE_OAUTH_REFRESH_TOKEN: "${CLAUDE_CODE_OAUTH_REFRESH_TOKEN:-}"
       ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-}"
     volumes:
-      # Codex OAuth refresh rotates tokens in auth.json. Use a dedicated
-      # writable copy here; do not share one login with another running client.
-      - "${HOME}/.codex:/home/codex/.codex"
+      # Codex OAuth refresh rotates only this container-owned copy. The host
+      # login above remains read-only and can safely be used by the host CLI.
+      - "codex-auth-runtime:/home/codex/.codex"
       - "${HOME}/.gemini:/home/codex/.gemini"
       - "${HOME}/.claude:/home/codex/.claude"
       # No ~/.claude.json bind: the host CLI replaces that file via atomic
@@ -64,7 +88,7 @@ services:
     ports:
       - "127.0.0.1:${CODEX_CHAT_API_PORT:-8088}:8088"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/ready"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -72,4 +96,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  codex-auth-runtime:
   agent-queue-locks:

@@ -49,6 +49,8 @@ type options struct {
 	healthReporter     codex.HealthReporter
 }
 
+const upstreamAuthCircuitRetryAfter = 5 * time.Minute
+
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
 // so heavy traffic to one upstream never starves the others.
 func (o options) agentQueueFor(provider string) *agentQueue {
@@ -303,6 +305,21 @@ func chatCompletions(opts options) fiber.Handler {
 			logLine(opts, "provider_disabled model=%s provider=%s\n", model, provider)
 			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "model not found")
 		}
+		// Once every Codex credential is locally auth-unhealthy, keep repeated
+		// Growth judge/draft/outbox calls out of admission queues and the service
+		// stack. The stable code and Retry-After are the caller circuit-break
+		// contract; other providers remain available.
+		if provider == codex.ProviderCodex && codexAuthCircuitOpen(opts.healthReporter) {
+			c.Locals(metricsFailureClassLocal, string(codex.FailureAuth))
+			c.Set(fiber.HeaderRetryAfter, strconv.FormatInt(int64(upstreamAuthCircuitRetryAfter/time.Second), 10))
+			return writeErrorCode(
+				c,
+				fiber.StatusServiceUnavailable,
+				"authentication_error",
+				publicServiceMessage(codex.ErrorKindAuth),
+				"upstream_authentication_failed",
+			)
+		}
 		toolsPresent := rawJSONPresent(req.Tools)
 		if !toolsPresent {
 			// Non-Agent requests intentionally bypass admission control. Record the
@@ -437,6 +454,10 @@ func chatCompletions(opts options) fiber.Handler {
 			Usage: completion.Usage,
 		})
 	}
+}
+
+func codexAuthCircuitOpen(reporter codex.HealthReporter) bool {
+	return reporter != nil && reporter.Health().UsableClients == 0
 }
 
 func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, provider string, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) (bool, error) {
@@ -812,6 +833,7 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 		case codex.ErrorKindAuth:
 			status = defaultStatus(status, fiber.StatusUnauthorized)
 			errorType = "authentication_error"
+			c.Set(fiber.HeaderRetryAfter, strconv.FormatInt(int64(upstreamAuthCircuitRetryAfter/time.Second), 10))
 		case codex.ErrorKindClient:
 			status = defaultStatus(status, fiber.StatusBadRequest)
 			errorType = "invalid_request_error"

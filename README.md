@@ -101,6 +101,18 @@ Run the API:
 docker compose up --build -d
 ```
 
+Compose mounts the host's `~/.codex/auth.json` read-only into a one-shot seed
+container and copies it into the project-owned `codex-auth-runtime` volume.
+The API rotates only that private copy, so it cannot replace the operator's
+live host credential or race a host Codex process over a rotating refresh
+token. After an operator login rotation, reseed safely while the API is stopped:
+
+```bash
+docker compose stop api
+CODEX_AUTH_RESEED=true docker compose run --rm codex-auth-init
+docker compose up -d api
+```
+
 Expose it for Cursor with ngrok (preferred over Cloudflare quick tunnels):
 
 ```bash
@@ -417,6 +429,11 @@ outages. All health endpoints are unauthenticated so k8s probes reach them.
   cannot trigger a drain.
 - **Probe mapping.** Point liveness at `/health/live` and readiness at `/ready`.
   `/health` and `/health/ready` remain compatibility aliases.
+  [`deploy/kubernetes/deployment.yaml`](deploy/kubernetes/deployment.yaml) is
+  the checked deployment contract: it seeds the Secret into a writable
+  `emptyDir`, uses `/ready`, and is validated by `go test ./...`. The release
+  workflow installs the matching runtime-hardening patch in the selected
+  `k8s-control` dev/prod overlay before committing its image pin.
 
 Request body options beyond the core OpenAI chat schema:
 
@@ -660,6 +677,11 @@ revision makes it eligible again; restarting the process also reloads all
 configured clients. If no client remains usable, `/ready` returns `503` while
 `/health` and `/health/live` remain `200`, and requests fail locally with
 `upstream_authentication_failed` instead of repeatedly dialing ChatGPT.
+While every Codex client remains auth-unhealthy, the HTTP layer also opens a
+local circuit before Agent queue admission and returns `503` plus
+`Retry-After: 300`. This keeps repeated Growth judge/draft/outbox attempts out
+of the queue and service stack; callers must use the stable error code and
+header to suspend retries for at least that interval.
 
 Pool logs are redacted:
 

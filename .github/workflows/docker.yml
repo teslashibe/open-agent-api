@@ -52,12 +52,16 @@ jobs:
     needs: [build-and-push]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout codex-chat-api deployment contract
+        uses: actions/checkout@v7
+
       - name: Checkout k8s-control
         uses: actions/checkout@v7
         with:
           repository: teslashibe/k8s-control
           token: ${{ secrets.GITOPS_TOKEN }}
           ref: main
+          path: k8s-control
 
       - name: Resolve target env + image tag
         id: target
@@ -65,14 +69,17 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             echo "env=prod" >> "$GITHUB_OUTPUT"
             echo "file=manifests/prod/kustomization.yaml" >> "$GITHUB_OUTPUT"
+            echo "patch=manifests/prod/codex-chat-api-runtime-hardening.yaml" >> "$GITHUB_OUTPUT"
             echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
             echo "env=dev" >> "$GITHUB_OUTPUT"
             echo "file=manifests/dev/kustomization.yaml" >> "$GITHUB_OUTPUT"
+            echo "patch=manifests/dev/codex-chat-api-runtime-hardening.yaml" >> "$GITHUB_OUTPUT"
             echo "tag=sha-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Bump codex-chat-api image pin
+        working-directory: k8s-control
         run: |
           set -euo pipefail
           FILE="${{ steps.target.outputs.file }}"
@@ -89,16 +96,37 @@ jobs:
           echo "---- diff ----"
           git --no-pager diff -- "$FILE" || true
 
-      - name: Commit & push to k8s-control
+      - name: Enforce Codex auth runtime and readiness
+        working-directory: k8s-control
         run: |
           set -euo pipefail
           FILE="${{ steps.target.outputs.file }}"
-          if git diff --quiet -- "$FILE"; then
-            echo "No image change for ${{ steps.target.outputs.env }}; nothing to commit."
+          PATCH="${{ steps.target.outputs.patch }}"
+          cp ../deploy/kubernetes/runtime-hardening-patch.yaml "$PATCH"
+          ruby -ryaml -e '
+            file, patch = ARGV
+            data = YAML.load_file(file)
+            entries = (data["patches"] ||= [])
+            entries << {"path" => File.basename(patch)} unless entries.any? { |entry| entry.is_a?(Hash) && entry["path"] == File.basename(patch) }
+            File.write(file, YAML.dump(data))
+          ' "$FILE" "$PATCH"
+          grep -q 'path: codex-chat-api-runtime-hardening.yaml' "$FILE"
+          grep -A8 'readinessProbe:' "$PATCH" | grep -q 'path: /ready'
+          echo "---- runtime hardening diff ----"
+          git --no-pager diff -- "$FILE" "$PATCH" || true
+
+      - name: Commit & push to k8s-control
+        working-directory: k8s-control
+        run: |
+          set -euo pipefail
+          FILE="${{ steps.target.outputs.file }}"
+          PATCH="${{ steps.target.outputs.patch }}"
+          if [ -z "$(git status --porcelain -- "$FILE" "$PATCH")" ]; then
+            echo "No deployment change for ${{ steps.target.outputs.env }}; nothing to commit."
             exit 0
           fi
           git config user.name "codex-chat-api-ci[bot]"
           git config user.email "codex-chat-api-ci@users.noreply.github.com"
-          git add "$FILE"
-          git commit -m "deploy(codex-chat-api): ${{ steps.target.outputs.env }} -> ${{ steps.target.outputs.tag }}"
+          git add "$FILE" "$PATCH"
+          git commit -m "deploy(codex-chat-api): ${{ steps.target.outputs.env }} -> ${{ steps.target.outputs.tag }} with auth readiness"
           git push origin main

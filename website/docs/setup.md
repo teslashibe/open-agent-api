@@ -43,6 +43,13 @@ Expected result:
 {"status":"ok"}
 ```
 
+The supplied Compose stack does not give the API write access to the host
+login. A one-shot container seeds the read-only host `auth.json` into the
+project-owned `codex-auth-runtime` named volume, and OAuth rotation is confined
+to that copy. After a new operator login, stop the API, run the init service
+once with `CODEX_AUTH_RESEED=true`, and restart the API; the replacement is
+atomic and never makes the host login writable.
+
 ## Deliver credentials in a deployment
 
 Mount each Codex login Secret read-only as an input, then use an init container
@@ -59,6 +66,11 @@ Keep credentials outside ConfigMaps, manifests, shell history, and image layers.
 Do not share the writable file with another pod or a concurrently running Codex
 CLI. Refresh tokens may rotate and require one writer. Keep one gateway replica,
 or provision an independent login and writable volume per replica.
+
+The repository's checked Kubernetes contract is
+[`deploy/kubernetes/deployment.yaml`](https://github.com/teslashibe/codex-chat-api/blob/main/deploy/kubernetes/deployment.yaml).
+It pairs `/health/live` liveness with `/ready` readiness and shares a writable
+`emptyDir` between the Secret-seeding init container and the API container.
 
 Set `GATEWAY_BEARER_SECRET` from the deployment platform's secret store. Do not
 put its value in an environment file committed to Git. When set, the same bearer

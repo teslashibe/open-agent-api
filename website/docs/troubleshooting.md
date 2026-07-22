@@ -11,7 +11,9 @@ sidebar_label: Troubleshooting
   the request did not provide the matching bearer. No upstream call occurred.
 - `upstream_authentication_failed` means Codex OAuth refresh or the ChatGPT
   WebSocket authentication failed. Pause judge/draft/outbox work with backoff;
-  do not retry every minute. Check `/ready` and the client health metrics.
+  do not retry every minute. The gateway returns `Retry-After: 300` and keeps
+  repeated Codex work out of its queue while the local auth circuit is open.
+  Check `/ready` and the client health metrics.
 - The gateway refreshes an expiring JWT before dialing and retries one 401/403
   handshake after a forced refresh. A persistent failure usually means the
   refresh token was revoked, `auth_path` is wrong, or the runtime file is not

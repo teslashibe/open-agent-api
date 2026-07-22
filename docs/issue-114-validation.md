@@ -13,9 +13,10 @@ the Growth caller circuit breaker lives in `teslashibe/smore`.
   `/ready` return `503` when no client remains usable.
 - **AC3:** Inbound bearer failures return `invalid_gateway_credentials`;
   upstream Codex failures return `upstream_authentication_failed`.
-- **AC4:** Once auth is unhealthy, repeated requests fail through the local pool
-  circuit without another Codex WebSocket call. Growth must use the public code
-  to pause judge/draft/outbox work with backoff.
+- **AC4:** Once auth is unhealthy, repeated requests fail through the HTTP
+  circuit before Agent queue admission or service invocation, with
+  `upstream_authentication_failed` and `Retry-After: 300`. Growth must use that
+  contract to pause judge/draft/outbox work with backoff.
 - **AC5:** The production runbook documents login, SOPS Secret update, rollout,
   readiness, Terra canary, and caller-resume verification.
 
@@ -36,9 +37,9 @@ The focused regressions are:
 | Criterion | Evidence |
 | --- | --- |
 | AC1 | `TestTokenSourceRefreshesExpiredTokenAndPersistsRotation`, `TestTokenSourceRefreshIsSingleFlight`, `TestOpenRefreshesExpiredAccessTokenBeforeDial`, `TestOpenRefreshesAndRedialsOnceAfterAuthHandshake` |
-| AC2 | `TestOpenRefreshFailureReturnsAuthErrorWithoutRedial`, `TestPooledServiceReadinessFailsClosedAndSuppressesRepeatedUpstreamCalls`, `TestReadyFailsForZeroUsableClientsWithoutLeakingIdentity` |
+| AC2 | `TestOpenRefreshFailureReturnsAuthErrorWithoutRedial`, `TestPooledServiceReadinessFailsClosedAndSuppressesRepeatedUpstreamCalls`, `TestReadyFailsForZeroUsableClientsWithoutLeakingIdentity`, `TestDeploymentUsesAuthAwareReadinessAndWritableSeed`, `TestReleaseWorkflowInstallsRuntimeHardeningPatch` |
 | AC3 | `TestBearerAuthRejectsWithoutUpstreamCall`, `TestChatCompletionsAuthErrorIsSanitized`, `TestChatCompletionsStreamingAuthErrorIncludesCircuitBreakCode` |
-| AC4 | `TestPooledServiceReadinessFailsClosedAndSuppressesRepeatedUpstreamCalls`; external Growth expiry drill in `teslashibe/smore` |
+| AC4 | `TestPooledServiceReadinessFailsClosedAndSuppressesRepeatedUpstreamCalls`, `TestOpenCodexAuthCircuitFastFailsRepeatedGrowthWork`, `TestCodexAuthFailureOpensHTTPCircuitForSubsequentGrowthWork`; external Growth expiry drill in `teslashibe/smore` |
 | AC5 | `website/docs/production-readiness.md` and successful docs build |
 
 ## Deployment Gate

@@ -2315,12 +2315,124 @@ func TestChatCompletionsAuthErrorIsSanitized(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
+	if got := resp.Header.Get("Retry-After"); got != "300" {
+		t.Fatalf("Retry-After = %q, want 300", got)
+	}
 	body := readString(t, resp.Body)
 	if !strings.Contains(body, `"message":"upstream authentication failed"`) || !strings.Contains(body, `"code":"upstream_authentication_failed"`) {
 		t.Fatalf("body = %q, want stable upstream auth taxonomy", body)
 	}
 	if strings.Contains(body, secret) {
 		t.Fatalf("response leaked secret: %q", body)
+	}
+}
+
+func TestOpenCodexAuthCircuitFastFailsRepeatedGrowthWork(t *testing.T) {
+	var serviceCalls int
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			serviceCalls++
+			return codex.Completion{Text: "unexpected"}, nil
+		},
+		stream: func(context.Context, codex.Request) (<-chan codex.StreamEvent, error) {
+			serviceCalls++
+			return nil, errors.New("unexpected stream call")
+		},
+	}
+	app := New(
+		config.Defaults(),
+		WithCodexService(service),
+		WithCodexHealth(staticHealthReporter{health: codex.PoolHealth{TotalClients: 1, UsableClients: 0}}),
+		WithLogOutput(io.Discard),
+		fixedServerOptions(),
+	)
+
+	for _, body := range []string{
+		`{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"judge"}]}`,
+		`{"model":"gpt-5.6-terra","stream":true,"messages":[{"role":"user","content":"draft"}],"tools":[{"type":"function","function":{"name":"outbox"}}]}`,
+		`{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"retry"}]}`,
+	} {
+		resp := doJSON(t, app, body)
+		var response openai.ErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			resp.Body.Close()
+			t.Fatalf("decode response: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable || response.Error.Code != "upstream_authentication_failed" {
+			t.Fatalf("auth circuit response = %d %#v", resp.StatusCode, response.Error)
+		}
+		if got := resp.Header.Get("Retry-After"); got != "300" {
+			t.Fatalf("Retry-After = %q, want 300", got)
+		}
+	}
+	if serviceCalls != 0 {
+		t.Fatalf("service calls = %d, want zero while auth circuit is open", serviceCalls)
+	}
+}
+
+func TestCodexAuthFailureOpensHTTPCircuitForSubsequentGrowthWork(t *testing.T) {
+	var upstreamCalls int
+	upstream := fakeCodexService{stream: func(context.Context, codex.Request) (<-chan codex.StreamEvent, error) {
+		upstreamCalls++
+		return nil, codex.NewError(codex.ErrorKindAuth, http.StatusUnauthorized, "expired access token", errors.New("refresh rejected"))
+	}}
+	pool, err := codex.NewPooledService(codex.PooledServiceConfig{
+		Clients:   []codex.PooledClientConfig{{Label: "growth", Service: upstream}},
+		LogOutput: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := New(
+		config.Defaults(),
+		WithCodexService(pool),
+		WithCodexHealth(pool),
+		WithLogOutput(io.Discard),
+		fixedServerOptions(),
+	)
+
+	first := doJSON(t, app, `{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"judge"}]}`)
+	first.Body.Close()
+	if first.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("first status = %d, want auth failure", first.StatusCode)
+	}
+
+	for range 3 {
+		resp := doJSON(t, app, `{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"retry draft/outbox"}]}`)
+		var response openai.ErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			resp.Body.Close()
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable || response.Error.Code != "upstream_authentication_failed" {
+			t.Fatalf("circuit response = %d %#v", resp.StatusCode, response.Error)
+		}
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want only the initial failed attempt", upstreamCalls)
+	}
+}
+
+func TestOpenCodexAuthCircuitDoesNotBlockOtherProviders(t *testing.T) {
+	var serviceCalls int
+	service := fakeCodexService{complete: func(context.Context, codex.Request) (codex.Completion, error) {
+		serviceCalls++
+		return codex.Completion{Text: "gemini ok", Model: "gemini-2.5-flash"}, nil
+	}}
+	app := New(
+		config.Defaults(),
+		WithCodexService(service),
+		WithCodexHealth(staticHealthReporter{health: codex.PoolHealth{TotalClients: 1, UsableClients: 0}}),
+		WithLogOutput(io.Discard),
+		fixedServerOptions(),
+	)
+
+	resp := doJSON(t, app, `{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"continue discovery"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || serviceCalls != 1 {
+		t.Fatalf("Gemini request = status %d calls %d, want 200 and one call", resp.StatusCode, serviceCalls)
 	}
 }
 
@@ -2449,6 +2561,14 @@ func TestChatCompletionsCancellation(t *testing.T) {
 type fakeCodexService struct {
 	complete func(context.Context, codex.Request) (codex.Completion, error)
 	stream   func(context.Context, codex.Request) (<-chan codex.StreamEvent, error)
+}
+
+type staticHealthReporter struct {
+	health codex.PoolHealth
+}
+
+func (r staticHealthReporter) Health() codex.PoolHealth {
+	return r.health
 }
 
 func (f fakeCodexService) Complete(ctx context.Context, req codex.Request) (codex.Completion, error) {

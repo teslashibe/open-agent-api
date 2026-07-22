@@ -43,6 +43,11 @@ labels. Verify in `k8s-control` that dev and production each request one replica
 use `/health/live` for liveness and `/ready` for readiness, seed every Codex
 Secret into a writable per-client `emptyDir`, and expose
 `/metrics` only to the approved scraper.
+The probe and volume contract is enforced in this repository by
+`deploy/kubernetes/deployment.yaml` and its Go test; the production overlay must
+preserve those fields. The image deployment workflow copies
+`runtime-hardening-patch.yaml` into the selected `k8s-control` overlay and adds
+it to that overlay's kustomization before pushing the image pin.
 
 ## Dev deploy and soak
 
@@ -177,6 +182,12 @@ only after `/ready` and a bounded canary completion succeed. Discovery may
 continue, but it must not enqueue or retry LLM-dependent work while the circuit
 is open. This caller policy lives in `teslashibe/smore`; verify its expiry drill
 before enabling the production schedule.
+
+As a final server-side bulkhead, an auth-unhealthy Codex pool returns `503`,
+`upstream_authentication_failed`, and `Retry-After: 300` before Agent queue
+admission or service invocation. Verify repeated judge, draft, and outbox-shaped
+requests do not increment pool selections or open WebSockets while this local
+circuit is active.
 
 ### All clients cooling
 

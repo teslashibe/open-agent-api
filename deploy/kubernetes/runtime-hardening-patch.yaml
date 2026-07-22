@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codex-chat-api
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: seed-codex-auth
+          image: alpine:3.20
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 077
+              printf '%s' "$CODEX_AUTH_JSON" > /var/run/codex-auth/auth.json
+          env:
+            - name: CODEX_AUTH_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: codex-chat-api-secrets
+                  key: CODEX_AUTH_JSON
+          volumeMounts:
+            - name: codex-auth-runtime
+              mountPath: /var/run/codex-auth
+      containers:
+        - name: codex-chat-api
+          env:
+            - name: CODEX_HOME
+              value: /var/run/codex-auth
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8088
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8088
+            periodSeconds: 10
+            timeoutSeconds: 6
+            failureThreshold: 1
+          volumeMounts:
+            - name: codex-auth-runtime
+              mountPath: /var/run/codex-auth
+      volumes:
+        - name: codex-auth-runtime
+          emptyDir: {}
