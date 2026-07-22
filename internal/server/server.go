@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -188,6 +189,9 @@ func drainControl(opts options, draining bool) fiber.Handler {
 			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "not found")
 		}
 		opts.drain.Store(draining)
+		if service, ok := opts.codexService.(codex.DrainAwareService); ok {
+			service.SetDraining(draining)
+		}
 		status := "ok"
 		if draining {
 			status = "draining"
@@ -673,8 +677,14 @@ func validateChatRequest(req openai.ChatCompletionRequest) error {
 
 func mapServiceError(c *fiber.Ctx, err error) error {
 	c.Locals(metricsFailureClassLocal, string(codex.ClassifyFailure(err)))
+	if serviceErr, ok := codex.ErrorAs(err); ok && serviceErr.Status == fiber.StatusTooManyRequests {
+		setRetryAfterHeader(c, serviceErr)
+	}
 	if errors.Is(err, context.Canceled) {
 		return writeError(c, 499, "request_canceled", "request canceled")
+	}
+	if errors.Is(err, codex.ErrClientPoolDraining) {
+		return writeError(c, fiber.StatusServiceUnavailable, "server_error", "server draining")
 	}
 	if errors.Is(err, codex.ErrContextWindowExceeded) {
 		return writeError(c, fiber.StatusBadRequest, "invalid_request_error", "conversation exceeds this model's context window - switch this chat to a larger model")
@@ -702,6 +712,18 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 		return writeError(c, status, errorType, publicServiceMessage(serviceErr.Kind))
 	}
 	return writeError(c, fiber.StatusInternalServerError, "api_error", "internal server error")
+}
+
+func setRetryAfterHeader(c *fiber.Ctx, serviceErr *codex.Error) {
+	retryAfter := serviceErr.RetryAfter
+	if untilReset := time.Until(serviceErr.ResetAt); untilReset > retryAfter {
+		retryAfter = untilReset
+	}
+	if retryAfter <= 0 {
+		return
+	}
+	seconds := int64((retryAfter-1)/time.Second) + 1
+	c.Set(fiber.HeaderRetryAfter, strconv.FormatInt(seconds, 10))
 }
 
 func mapAgentQueueError(c *fiber.Ctx, err error) error {

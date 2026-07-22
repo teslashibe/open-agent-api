@@ -32,12 +32,17 @@ const (
 // because every Codex client is already at its per-account inflight cap.
 var ErrClientPoolSaturated = errors.New("codex client pool saturated")
 
+// ErrClientPoolDraining marks a pending lease acquisition interrupted by a
+// server drain. Existing leases are deliberately left alone.
+var ErrClientPoolDraining = errors.New("codex client pool draining")
+
 type PooledService struct {
 	clients           []pooledClient
 	maxInflight       int
 	unavailablePolicy string
 	logOutput         io.Writer
 	cooldownDefault   time.Duration
+	waitTimeout       time.Duration
 	now               func() time.Time
 	metrics           *metricspkg.Metrics
 
@@ -48,6 +53,8 @@ type PooledService struct {
 	softPinLRU      *list.List
 	softPinCapacity int
 	softPinTTL      time.Duration
+	availability    chan struct{}
+	draining        bool
 	logMu           sync.Mutex
 }
 
@@ -79,6 +86,7 @@ type PooledServiceConfig struct {
 	UnavailablePolicy string
 	LogOutput         io.Writer
 	CooldownDefault   time.Duration
+	WaitTimeout       time.Duration
 	Now               func() time.Time
 	Metrics           *metricspkg.Metrics
 }
@@ -131,6 +139,9 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 	if cfg.CooldownDefault <= 0 {
 		cfg.CooldownDefault = DefaultClientCooldown
 	}
+	if cfg.WaitTimeout < 0 {
+		return nil, fmt.Errorf("codex client pool wait timeout must be non-negative")
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -140,6 +151,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		unavailablePolicy: cfg.UnavailablePolicy,
 		logOutput:         cfg.LogOutput,
 		cooldownDefault:   cfg.CooldownDefault,
+		waitTimeout:       cfg.WaitTimeout,
 		now:               cfg.Now,
 		metrics:           cfg.Metrics,
 		cooldowns:         make([]clientCooldown, len(clients)),
@@ -148,6 +160,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		softPinLRU:        list.New(),
 		softPinCapacity:   defaultSoftPinCapacity,
 		softPinTTL:        defaultSoftPinTTL,
+		availability:      make(chan struct{}),
 	}, nil
 }
 
@@ -187,7 +200,7 @@ func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, 
 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	selected, pinned := p.preferredIndex(req)
-	index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+	index, inflight, release, unpin, err := p.acquire(ctx, req, selected)
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +210,16 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 	}
 	p.logSelection(req, index, false, index != selected, pinned && index == selected, inflight)
 	return p.streamAttempt(ctx, req, index, false, release, unpin, refreshPin)
+}
+
+// SetDraining wakes pending acquisitions without canceling any lease or stream
+// that has already started. Calling it for either transition also wakes waiters
+// so they promptly observe the new lifecycle state.
+func (p *PooledService) SetDraining(draining bool) {
+	p.mu.Lock()
+	p.draining = draining
+	p.notifyAvailabilityLocked()
+	p.mu.Unlock()
 }
 
 func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin, refreshPin int) (<-chan StreamEvent, error) {
@@ -425,9 +448,55 @@ func (p *PooledService) shouldFallback(index int, err error) bool {
 	return false
 }
 
-// acquireAvailable leases the sticky client when it is healthy (not cooling and
-// under the inflight cap). Otherwise it walks other clients in shard order.
-// Prefer cooldown errors when every client is cooling; otherwise saturation.
+// acquire waits only before the first upstream attempt. Alternate acquisition
+// after a startup/first-event failure remains nonblocking, so no request queues
+// once streaming has begun.
+func (p *PooledService) acquire(ctx context.Context, req Request, selected int) (int, int, func(), *pendingUnpin, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, nil, nil, err
+	}
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	if p.waitTimeout > 0 {
+		timer = time.NewTimer(p.waitTimeout)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+
+	for {
+		// Capture the broadcast before scanning. A release between these two
+		// operations closes this channel, preventing a missed wake-up.
+		p.mu.Lock()
+		availability := p.availability
+		draining := p.draining
+		p.mu.Unlock()
+		if draining {
+			return 0, 0, nil, nil, poolDrainingError()
+		}
+
+		index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+		if !errors.Is(err, ErrClientPoolSaturated) {
+			return index, inflight, release, unpin, err
+		}
+		if p.waitTimeout == 0 {
+			return 0, 0, nil, nil, p.saturatedError(req)
+		}
+
+		select {
+		case <-availability:
+			continue
+		case <-timeout:
+			return 0, 0, nil, nil, p.saturatedError(req)
+		case <-ctx.Done():
+			return 0, 0, nil, nil, ctx.Err()
+		}
+	}
+}
+
+// acquireAvailable leases the sticky client when it is healthy (not cooling
+// and under the inflight cap). Otherwise it walks other clients in shard order.
+// Prefer cooldown errors when every client is cooling; otherwise return the
+// saturation sentinel for the bounded acquisition loop to handle.
 func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, func(), *pendingUnpin, error) {
 	sawEligible := false
 	selectedCooling := false
@@ -457,11 +526,11 @@ func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, f
 			if acquired {
 				return selected, inflight, release, nil, nil
 			}
-			return 0, 0, nil, nil, p.saturatedError(req)
+			return 0, 0, nil, nil, ErrClientPoolSaturated
 		}
 		return 0, 0, nil, nil, allClientsCoolingError(selectedCooldownClass)
 	}
-	return 0, 0, nil, nil, p.saturatedError(req)
+	return 0, 0, nil, nil, ErrClientPoolSaturated
 }
 
 func (p *PooledService) acquireAlternate(req Request, failed int) (int, int, func(), bool) {
@@ -482,6 +551,10 @@ func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bo
 	label := p.clients[index].label
 	now := p.now()
 	p.mu.Lock()
+	if p.draining {
+		p.mu.Unlock()
+		return 0, nil, false, "", false
+	}
 	cooldown := p.cooldowns[index]
 	if !cooldown.until.After(now) {
 		p.cooldowns[index] = clientCooldown{}
@@ -508,11 +581,17 @@ func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bo
 				p.inflight[label]--
 			}
 			remaining := p.inflight[label]
+			p.notifyAvailabilityLocked()
 			p.mu.Unlock()
 			p.logRelease(req, index, remaining)
 		})
 	}
 	return current, release, true, "", false
+}
+
+func (p *PooledService) notifyAvailabilityLocked() {
+	close(p.availability)
+	p.availability = make(chan struct{})
 }
 
 func (p *PooledService) saturatedError(req Request) error {
@@ -522,11 +601,25 @@ func (p *PooledService) saturatedError(req Request) error {
 		p.maxInflight,
 		len(p.clients),
 	)
-	return NewError(
+	err := NewError(
 		ErrorKindUpstream,
 		http.StatusTooManyRequests,
 		ErrClientPoolSaturated.Error(),
 		ErrClientPoolSaturated,
+	)
+	retryAfter := p.waitTimeout
+	if retryAfter <= 0 {
+		retryAfter = time.Second
+	}
+	return withRetryHint(err, retryAfter, time.Time{})
+}
+
+func poolDrainingError() error {
+	return NewError(
+		ErrorKindUpstream,
+		http.StatusServiceUnavailable,
+		"server draining",
+		ErrClientPoolDraining,
 	)
 }
 

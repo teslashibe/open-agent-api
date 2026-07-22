@@ -14,6 +14,12 @@ type Service interface {
 	Stream(context.Context, Request) (<-chan StreamEvent, error)
 }
 
+// DrainAwareService can interrupt work that has not yet opened an upstream
+// stream while allowing already-started streams to finish normally.
+type DrainAwareService interface {
+	SetDraining(bool)
+}
+
 type Request struct {
 	Model             string
 	Messages          []openai.ChatMessage
