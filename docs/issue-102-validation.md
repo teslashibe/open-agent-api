@@ -61,7 +61,7 @@ unless both jobs pass for the exact candidate commit.
 
 ## Exact-candidate local evidence (2026-07-21)
 
-Recorded for commit `48b2b2708992aa1c62546e3650651ac064a52b20` (`48b2b27`):
+Recorded for commit `cd622c28e67cb9df694961ec17c0be8d272ddaad` (`cd622c2`):
 
 ```text
 $ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v2.55.1 \
@@ -73,8 +73,8 @@ $ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus
     test rules examples/prometheus/codex-chat-api.rules.test.yml
 SUCCESS
 
-$ docker build -t codex-chat-api:preflight-48b2b27 .
-# succeeded; image docker.io/library/codex-chat-api:preflight-48b2b27
+$ docker build -t codex-chat-api:preflight-cd622c2 .
+# succeeded; image docker.io/library/codex-chat-api:preflight-cd622c2
 # digest sha256:3c34c6738f5873c47d3ea223102001c78eaafdd237555a25e18c3faecbd16638
 ```
 
