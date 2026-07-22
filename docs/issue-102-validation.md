@@ -58,20 +58,25 @@ checks in the official Prometheus container and runs `docker build .` on every
 pull request; its check results are the authoritative record. Do not promote
 unless both jobs pass for the exact candidate commit.
 
-
 ## Exact-candidate evidence
 
-Candidate tip:  ().
+The merge candidate must have green PR checks for `prom-rules` and
+`image-build` on its tip SHA. Those jobs are the authoritative AC4 record.
 
-Authoritative GitHub Actions on this exact commit:
+Local reproduction of the same checks:
 
-- : success — https://github.com/teslashibe/codex-chat-api/actions/runs/29897643048/job/88851097199
-- : success — https://github.com/teslashibe/codex-chat-api/actions/runs/29897643048/job/88851097166
--  /  /  / : success on the same workflow run
+```bash
+git rev-parse HEAD
+docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v2.55.1 \
+  check rules examples/prometheus/codex-chat-api.rules.yml
+docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v2.55.1 \
+  test rules examples/prometheus/codex-chat-api.rules.test.yml
+docker build -t codex-chat-api:preflight .
+```
 
-Local reproduction of the same checks (exit 0):
-
-
+Expected results: `SUCCESS: 8 rules found`, `SUCCESS` for rule tests, and
+`docker build` exit code 0. Confirm the tip SHA matches the commit that has
+green `prom-rules` and `image-build` checks in the PR.
 
 ## Live dev evidence
 
