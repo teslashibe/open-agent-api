@@ -40,7 +40,7 @@ The following regression tests map directly to the criteria:
 | AC1 | `TestAlertRulesUseBoundedMetricsAndActionableAnnotations`, `TestCoolingAlertPreservesScrapeTargetLabels`; `codex-chat-api.rules.test.yml` firing, realistic target-label, cross-target isolation, single-client false-positive, and healthy fixtures |
 | AC2 | `website/docs/production-readiness.md`; successful Docusaurus production build |
 | AC3 | Production runbook operating constraint and `website/docs/multi-credential-pool.md` |
-| AC4 | Full/race/vet/build/docs results above; `TestDevSoakExercisesHealthCompletionAndStreaming`; existing PR image-build job |
+| AC4 | Full/race/vet/build/docs results above; `TestDevSoakExercisesHealthCompletionAndStreaming`; exact-candidate `prom-rules` + `image-build` CI (see below) |
 
 ## Release-environment gates
 
@@ -59,23 +59,31 @@ pull request; its check results are the authoritative record. Do not promote
 unless both jobs pass for the exact candidate commit.
 
 
-## Exact-candidate local evidence (2026-07-21)
+## Exact-candidate evidence
 
-Recorded for commit `cd622c28e67cb9df694961ec17c0be8d272ddaad` (`cd622c2`):
+Run the following commands from a clean checkout of the pushed candidate. The
+commit SHA reported by `git rev-parse HEAD` must match the SHA shown by the
+required `prom-rules` and `image-build` checks; otherwise the evidence belongs
+to an older candidate and cannot satisfy this gate. Keep the command output in
+the candidate's build record rather than hard-coding its SHA here, because an
+evidence-only documentation commit would itself create a new, unvalidated
+candidate.
 
 ```text
-$ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v2.55.1 \
+$ git rev-parse HEAD
+<exact pushed candidate SHA>
+
+$ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v3.5.0 \
     check rules examples/prometheus/codex-chat-api.rules.yml
 Checking examples/prometheus/codex-chat-api.rules.yml
   SUCCESS: 8 rules found
 
-$ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v2.55.1 \
+$ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v3.5.0 \
     test rules examples/prometheus/codex-chat-api.rules.test.yml
 SUCCESS
 
-$ docker build -t codex-chat-api:preflight-7b14d38 .
-# succeeded; image docker.io/library/codex-chat-api:preflight-7b14d38
-# digest sha256:3c34c6738f5873c47d3ea223102001c78eaafdd237555a25e18c3faecbd16638
+$ docker build -t codex-chat-api:preflight .
+# exits 0 for the exact pushed candidate
 ```
 
 ## Live dev evidence
