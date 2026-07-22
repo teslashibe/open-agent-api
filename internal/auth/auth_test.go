@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,9 +25,16 @@ func TestParseValidAuth(t *testing.T) {
 }
 
 func TestLoadMissingFile(t *testing.T) {
-	_, err := Load(filepath.Join(t.TempDir(), "missing-auth.json"))
+	path := filepath.Join(t.TempDir(), "raw-user@example.test-secret-access-token-auth.json")
+	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil, want missing file error")
+	}
+	if !errors.Is(err, ErrCredentialUnreadable) {
+		t.Fatalf("Load() error = %v, want ErrCredentialUnreadable", err)
+	}
+	if strings.Contains(err.Error(), path) || strings.Contains(err.Error(), "raw-user@example.test") {
+		t.Fatalf("Load() error leaked credential path or identity: %v", err)
 	}
 	assertNoSecret(t, err)
 }
@@ -36,6 +44,9 @@ func TestParseMalformedAuth(t *testing.T) {
 	if err == nil {
 		t.Fatal("Parse() error = nil, want malformed JSON error")
 	}
+	if !errors.Is(err, ErrCredentialInvalidJSON) {
+		t.Fatalf("Parse() error = %v, want ErrCredentialInvalidJSON", err)
+	}
 	assertNoSecret(t, err)
 }
 
@@ -43,6 +54,9 @@ func TestParseMissingTokens(t *testing.T) {
 	_, err := Parse([]byte(`{"other":"value"}`))
 	if err == nil {
 		t.Fatal("Parse() error = nil, want missing tokens error")
+	}
+	if !errors.Is(err, ErrCredentialSchema) {
+		t.Fatalf("Parse() error = %v, want ErrCredentialSchema", err)
 	}
 	assertNoSecret(t, err)
 }

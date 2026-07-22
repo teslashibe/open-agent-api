@@ -449,10 +449,10 @@ func (p *PooledService) markClientAuthUnhealthy(index int) {
 		}
 	}
 	usable := p.usableClientsLocked()
-	p.mu.Unlock()
-
 	p.metrics.SetPoolClientUsable(p.clients[index].label, false)
 	p.metrics.SetPoolUsableClients(usable)
+	p.mu.Unlock()
+
 	p.logClientHealth(index, false, clientHealthReasonAuth)
 }
 
@@ -481,21 +481,12 @@ func (p *PooledService) tryRecoverClient(index int) bool {
 	}
 	p.health[index] = clientHealthState{usable: true}
 	usable := p.usableClientsLocked()
-	p.mu.Unlock()
-
 	p.metrics.SetPoolClientUsable(p.clients[index].label, true)
 	p.metrics.SetPoolUsableClients(usable)
+	p.mu.Unlock()
+
 	p.logClientHealth(index, true, clientHealthReasonRecovered)
 	return true
-}
-
-func (p *PooledService) clientUsable(index int) bool {
-	if p.tryRecoverClient(index) {
-		return true
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.health[index].usable
 }
 
 func (p *PooledService) usableClientsLocked() int {
@@ -576,12 +567,17 @@ func (p *PooledService) shouldFallback(index int, err error) bool {
 // under the inflight cap). Otherwise it walks other clients in shard order.
 // Prefer cooldown errors when every client is cooling; otherwise saturation.
 func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, func(), *pendingUnpin, error) {
+	sawUsable := false
 	sawEligible := false
 	selectedCooling := false
 	var selectedCooldownClass FailureClass
 	for offset := range len(p.clients) {
 		index := (selected + offset) % len(p.clients)
-		inflight, release, acquired, class, cooling := p.tryAcquireClient(req, index, false)
+		inflight, release, acquired, class, cooling, unhealthy := p.tryAcquireClient(req, index, false)
+		if unhealthy {
+			continue
+		}
+		sawUsable = true
 		if cooling {
 			if index == selected {
 				selectedCooldownClass = class
@@ -598,11 +594,20 @@ func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, f
 			return index, inflight, release, unpin, nil
 		}
 	}
+	if !sawUsable {
+		return 0, 0, nil, nil, noUsableClientsError()
+	}
 	if !sawEligible {
 		if req.AllowCooling {
-			inflight, release, acquired, _, _ := p.tryAcquireClient(req, selected, true)
-			if acquired {
-				return selected, inflight, release, nil, nil
+			for offset := range len(p.clients) {
+				index := (selected + offset) % len(p.clients)
+				inflight, release, acquired, _, _, unhealthy := p.tryAcquireClient(req, index, true)
+				if unhealthy {
+					continue
+				}
+				if acquired {
+					return index, inflight, release, nil, nil
+				}
 			}
 			return 0, 0, nil, nil, p.saturatedError(req)
 		}
@@ -614,7 +619,7 @@ func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, f
 func (p *PooledService) acquireAlternate(req Request, failed int) (int, int, func(), bool) {
 	for offset := 1; offset < len(p.clients); offset++ {
 		index := (failed + offset) % len(p.clients)
-		inflight, release, acquired, _, _ := p.tryAcquireClient(req, index, false)
+		inflight, release, acquired, _, _, _ := p.tryAcquireClient(req, index, false)
 		if acquired {
 			return index, inflight, release, true
 		}
@@ -625,23 +630,30 @@ func (p *PooledService) acquireAlternate(req Request, failed int) (int, int, fun
 // tryAcquireClient checks cooldown eligibility and increments the inflight
 // lease in one critical section. This prevents a concurrent failure from
 // cooling a client between selection and lease acquisition.
-func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bool) (int, func(), bool, FailureClass, bool) {
+func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bool) (int, func(), bool, FailureClass, bool, bool) {
+	if !p.tryRecoverClient(index) {
+		return 0, nil, false, "", false, true
+	}
 	label := p.clients[index].label
 	now := p.now()
 	p.mu.Lock()
+	if !p.health[index].usable {
+		p.mu.Unlock()
+		return 0, nil, false, "", false, true
+	}
 	cooldown := p.cooldowns[index]
 	if !cooldown.until.After(now) {
 		p.cooldowns[index] = clientCooldown{}
 	} else if !allowCooling {
 		p.mu.Unlock()
 		p.metrics.ObservePoolCooldownSkip(label, string(cooldown.class))
-		return 0, nil, false, cooldown.class, true
+		return 0, nil, false, cooldown.class, true, false
 	}
 	current := p.inflight[label]
 	if current >= p.maxInflight {
 		p.mu.Unlock()
 		p.logClientSaturated(req, index, current)
-		return current, nil, false, "", false
+		return current, nil, false, "", false, false
 	}
 	current++
 	p.inflight[label] = current
@@ -659,7 +671,7 @@ func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bo
 			p.logRelease(req, index, remaining)
 		})
 	}
-	return current, release, true, "", false
+	return current, release, true, "", false, false
 }
 
 func (p *PooledService) saturatedError(req Request) error {
@@ -891,5 +903,14 @@ func allClientsCoolingError(class FailureClass) error {
 		http.StatusTooManyRequests,
 		"rate limit reached",
 		errors.New("all codex clients are cooling"),
+	)
+}
+
+func noUsableClientsError() error {
+	return NewError(
+		ErrorKindUpstream,
+		http.StatusServiceUnavailable,
+		ErrNoUsableClients.Error(),
+		ErrNoUsableClients,
 	)
 }

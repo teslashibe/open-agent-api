@@ -1,8 +1,11 @@
 package codex
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -106,6 +109,55 @@ func TestPooledServiceRecordsCooldownRotationAndSkipMetrics(t *testing.T) {
 	} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("metrics leaked %q:\n%s", secret, text)
+		}
+	}
+}
+
+func TestPooledServiceHealthMetricsUseOnlySafeLabels(t *testing.T) {
+	metrics := metricspkg.New(true)
+	var logs bytes.Buffer
+	secret := "secret-access-token raw-user@example.test /run/secrets/private-auth.json full-prompt"
+	pool, err := NewPooledService(PooledServiceConfig{
+		Clients: []PooledClientConfig{{
+			Label: "work-a",
+			Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				return nil, NewError(ErrorKindAuth, http.StatusUnauthorized, "authentication failed", errors.New(secret))
+			}},
+		}},
+		LogOutput: &logs,
+		Metrics:   metrics,
+	})
+	if err != nil {
+		t.Fatalf("NewPooledService() error = %v", err)
+	}
+	if _, err := pool.Complete(context.Background(), Request{
+		AffinityKey:     secret,
+		AffinityKeyHash: "safe-affinity-hash",
+		AffinityKeyMode: "body:session_id",
+	}); err == nil {
+		t.Fatal("Complete() error = nil, want auth failure")
+	}
+
+	recorder := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/metrics", nil))
+	body, err := io.ReadAll(recorder.Result().Body)
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`codex_chat_api_pool_usable_clients 0`,
+		`codex_chat_api_pool_client_usable{client_label="work-a"} 0`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, text)
+		}
+	}
+	for _, output := range []string{text, logs.String()} {
+		for _, forbidden := range []string{secret, "secret-access-token", "raw-user@example.test", "/run/secrets/private-auth.json", "full-prompt"} {
+			if strings.Contains(output, forbidden) {
+				t.Fatalf("health telemetry leaked %q:\n%s", forbidden, output)
+			}
 		}
 	}
 }

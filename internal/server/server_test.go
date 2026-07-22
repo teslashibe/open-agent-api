@@ -109,6 +109,90 @@ func TestHealthLiveReady(t *testing.T) {
 	}
 }
 
+func TestReadyFailsForZeroUsableClientsWithoutLeakingIdentity(t *testing.T) {
+	secret := "secret-access-token raw-user@example.test /run/secrets/private-auth.json full-prompt raw-affinity"
+	pool, err := codex.NewPooledService(codex.PooledServiceConfig{
+		Clients: []codex.PooledClientConfig{{
+			Label: "work-a",
+			Service: fakeCodexService{stream: func(context.Context, codex.Request) (<-chan codex.StreamEvent, error) {
+				return nil, codex.NewError(codex.ErrorKindAuth, http.StatusUnauthorized, "authentication failed", errors.New(secret))
+			}},
+		}},
+		LogOutput: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("NewPooledService() error = %v", err)
+	}
+	if _, err := pool.Complete(context.Background(), codex.Request{
+		AffinityKey:     secret,
+		AffinityKeyHash: "safe-affinity-hash",
+		AffinityKeyMode: "body:session_id",
+	}); err == nil {
+		t.Fatal("Complete() error = nil, want auth failure")
+	}
+
+	app := New(
+		config.Defaults(),
+		WithCodexHealth(pool),
+		WithLogOutput(io.Discard),
+		withLocalCheck(func(*fiber.Ctx) bool { return true }),
+	)
+	readyReq, err := http.NewRequest(http.MethodGet, "/health/ready", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyResp, err := app.Test(readyReq)
+	if err != nil {
+		t.Fatalf("app.Test(/health/ready) error = %v", err)
+	}
+	readyBody := readString(t, readyResp.Body)
+	readyResp.Body.Close()
+	if readyResp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("/health/ready status = %d, want 503; body=%s", readyResp.StatusCode, readyBody)
+	}
+	for _, want := range []string{`"status":"unavailable"`, `"total_clients":1`, `"usable_clients":0`, `"label":"work-a"`, `"status":"unhealthy"`, `"reason":"auth"`} {
+		if !strings.Contains(readyBody, want) {
+			t.Fatalf("readiness body missing %q: %s", want, readyBody)
+		}
+	}
+	for _, forbidden := range []string{secret, "secret-access-token", "raw-user@example.test", "/run/secrets/private-auth.json", "full-prompt", "raw-affinity"} {
+		if strings.Contains(readyBody, forbidden) {
+			t.Fatalf("readiness body leaked %q: %s", forbidden, readyBody)
+		}
+	}
+
+	liveReq, err := http.NewRequest(http.MethodGet, "/health/live", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveResp, err := app.Test(liveReq)
+	if err != nil {
+		t.Fatalf("app.Test(/health/live) error = %v", err)
+	}
+	liveBody := readString(t, liveResp.Body)
+	liveResp.Body.Close()
+	if liveResp.StatusCode != http.StatusOK || liveBody != `{"status":"ok"}` {
+		t.Fatalf("/health/live = %d %s, want process-only 200", liveResp.StatusCode, liveBody)
+	}
+
+	if got := postStatus(t, app, "/drain/start"); got != http.StatusOK {
+		t.Fatalf("/drain/start status = %d, want 200", got)
+	}
+	drainingReq, err := http.NewRequest(http.MethodGet, "/health/ready", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainingResp, err := app.Test(drainingReq)
+	if err != nil {
+		t.Fatalf("app.Test(draining ready) error = %v", err)
+	}
+	drainingBody := readString(t, drainingResp.Body)
+	drainingResp.Body.Close()
+	if drainingResp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(drainingBody, `"status":"draining"`) || strings.Contains(drainingBody, `"codex"`) {
+		t.Fatalf("draining readiness did not take precedence: %d %s", drainingResp.StatusCode, drainingBody)
+	}
+}
+
 // TestDrainLocalhostFailsReadyAndBlocksChat covers AC2: after a localhost drain
 // start, ready is 503, live stays 200, and new chat completions are rejected
 // with 503 without any upstream call.

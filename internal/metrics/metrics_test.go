@@ -15,6 +15,8 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 	m.ObservePoolSelection("work-a", "rotated")
 	m.ObservePoolCooldown("work-a", "quota")
 	m.ObservePoolCooldownSkip("work-a", "quota")
+	m.SetPoolUsableClients(1)
+	m.SetPoolClientUsable("work-a", true)
 	m.ObserveQueueWait("codex", "acquired", 125*time.Millisecond)
 	m.ObserveQueueWait("gemini", "bypassed", 0)
 	m.IncActiveStreams("codex")
@@ -27,6 +29,8 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 		`codex_chat_api_pool_selections_total{client_label="work-a",result="rotated"} 1`,
 		`codex_chat_api_pool_cooldowns_total{client_label="work-a",failure_class="quota"} 1`,
 		`codex_chat_api_pool_cooldown_skips_total{client_label="work-a",failure_class="quota"} 1`,
+		`codex_chat_api_pool_usable_clients 1`,
+		`codex_chat_api_pool_client_usable{client_label="work-a"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="codex",result="acquired"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="gemini",result="bypassed"} 1`,
 		`codex_chat_api_active_streams{provider="codex"} 0`,
@@ -47,6 +51,7 @@ func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 	m.ObserveRequest(secrets[0], secrets[1])
 	m.ObserveRateLimit(secrets[0], secrets[2])
 	m.ObservePoolSelection(secrets[1], secrets[2])
+	m.SetPoolClientUsable(secrets[0], true)
 	m.ObserveQueueWait(secrets[0], secrets[2], time.Second)
 
 	body := scrape(t, m)

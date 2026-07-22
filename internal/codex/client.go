@@ -90,15 +90,15 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		authPath:      cfg.AuthPath,
-		codexHome:     cfg.CodexHome,
-		websocketURL:  cfg.WebsocketURL,
-		timeout:       cfg.Timeout,
-		dial:          defaultDial(websocket.DefaultDialer),
-		builder:       builder,
-		logOutput:     cfg.LogOutput,
-		logBodyShape:  cfg.LogBodyShape,
-		logToolEvents: cfg.LogToolEvents,
+		authPath:           cfg.AuthPath,
+		codexHome:          cfg.CodexHome,
+		websocketURL:       cfg.WebsocketURL,
+		timeout:            cfg.Timeout,
+		dial:               defaultDial(websocket.DefaultDialer),
+		builder:            builder,
+		logOutput:          cfg.LogOutput,
+		logBodyShape:       cfg.LogBodyShape,
+		logToolEvents:      cfg.LogToolEvents,
 		credentialRevision: credentialRevision,
 	}, nil
 }
@@ -214,6 +214,13 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, error) {
 	creds, revision, err := auth.LoadWithRevision(c.authPath)
 	if err != nil {
+		// The last successfully loaded revision did not cause this failure. Clear
+		// it so restoring readability can recover even when file bytes are the
+		// same; upstream 401/403 failures retain the loaded failed revision and
+		// require an operator-provided credential change.
+		c.credentialMu.Lock()
+		c.credentialRevision = [sha256.Size]byte{}
+		c.credentialMu.Unlock()
 		return nil, NewError(ErrorKindAuth, http.StatusUnauthorized, "load codex credentials", err)
 	}
 	c.credentialMu.Lock()
