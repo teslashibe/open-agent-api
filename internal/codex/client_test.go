@@ -255,6 +255,26 @@ func TestHeadersDoNotExposeTokenInErrors(t *testing.T) {
 	}
 }
 
+func TestOpenCapturesRetryAfterHeader(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = func(context.Context, string, http.Header) (websocketConn, *http.Response, error) {
+		return nil, &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Retry-After": []string{"75"}},
+		}, errors.New("rate limited")
+	}
+
+	_, err := client.open(context.Background(), false, "session-123", requestKindTurn)
+	if err == nil {
+		t.Fatal("open() error = nil")
+	}
+	codexErr, ok := ErrorAs(err)
+	if !ok || codexErr.Status != http.StatusTooManyRequests || codexErr.RetryAfter != 75*time.Second {
+		t.Fatalf("open() error = %#v", codexErr)
+	}
+}
+
 func TestParseStreamEventFailureIsSanitized(t *testing.T) {
 	_, terminal, err := parseStreamEvent([]byte(`{"type":"response.failed","status":500,"error":{"message":"secret-access-token"}}`))
 	if err == nil {

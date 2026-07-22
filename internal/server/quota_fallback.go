@@ -37,6 +37,10 @@ func buildQuotaFallbackRequest(req codex.Request, cfg config.Config) (codex.Requ
 	fallback.Messages = messages
 	fallback.ReasoningEffort = alias.ReasoningEffort
 	fallback.Verbosity = alias.Verbosity
+	// Account cooldowns are established before model fallback. If every
+	// account is cooling, the overflow model still gets the existing single
+	// attempt instead of being short-circuited by pool selection.
+	fallback.AllowCooling = true
 	return fallback, true
 }
 

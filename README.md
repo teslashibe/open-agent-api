@@ -121,7 +121,11 @@ GOCACHE=$PWD/.gocache go build ./...
 
 The server implements:
 
-- `GET /health`
+- `GET /health` (live alias)
+- `GET /health/live`
+- `GET /health/ready`
+- `POST /drain/start` (localhost-only)
+- `POST /drain/stop` (localhost-only)
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
@@ -288,7 +292,10 @@ Flags override environment values.
 | Codex websocket URL | `CODEX_WEBSOCKET_URL` | `--codex-websocket-url` | `wss://chatgpt.com/backend-api/codex/responses` |
 | Codex request timeout | `CODEX_TIMEOUT` | `--codex-timeout` | `120s` |
 | Codex client pool | `CODEX_CLIENTS` | `--codex-clients` | single client from `CODEX_HOME` / `CODEX_AUTH_PATH` |
+| Codex max inflight per client | `CODEX_CLIENT_MAX_INFLIGHT` | `--codex-client-max-inflight` | `2` |
 | Codex pool unavailable policy | `CODEX_CLIENT_POOL_UNAVAILABLE` | `--codex-client-pool-unavailable` | `fail` |
+| Codex client cooldown default | `CODEX_CLIENT_COOLDOWN_DEFAULT` | `--codex-client-cooldown-default` | `5m` |
+| Prometheus metrics enabled | `CODEX_METRICS_ENABLED` | `--metrics-enabled` | `true` |
 | Redacted body-shape logging | `CODEX_LOG_BODY_SHAPE` | `--log-body-shape` | `false` |
 | Redacted request identity logging | `CODEX_LOG_REQUEST_IDENTITY` | `--log-request-identity` | `false` |
 | Redacted Codex tool-event logging | `CODEX_LOG_CODEX_TOOL_EVENTS` | `--log-codex-tool-events` | `false` |
@@ -337,12 +344,42 @@ GATEWAY_PROVIDERS=codex,gemini          # drop claude from routing and /v1/model
   keys by that tenant id instead of the Cursor-session heuristics, so tenants
   share the upstream fairly. Callers behind smore should always set it.
 - **Concurrency stays small on purpose.** The defaults
-  (`CODEX_AGENT_MAX_ACTIVE=2`, `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`) protect the
-  shared ChatGPT/Gemini operator accounts; raise them deliberately, not as
-  part of enabling the gateway.
+  (`CODEX_AGENT_MAX_ACTIVE=2`, `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`, and
+  `CODEX_CLIENT_MAX_INFLIGHT=2`) protect shared operator accounts; raise them
+  deliberately, not as part of enabling the gateway.
 - Deliver the secret via a k8s Secret (env var or mounted file sourced into
   the env), not a committed compose/manifest file. The request logger only
   records `authorization_present=true/false`, never the header value.
+
+### Health, readiness, and drain
+
+Health is split so rollouts can drain a pod without killing it for upstream
+outages. All health endpoints are unauthenticated so k8s probes reach them.
+
+| Endpoint | Meaning |
+| --- | --- |
+| `GET /health` | Live alias — `200` whenever the process is up (unchanged body `{"status":"ok"}`). |
+| `GET /health/live` | Liveness — `200` whenever the process is up. |
+| `GET /health/ready` | Readiness — `200` when serving, `503 {"status":"draining"}` while draining. |
+| `POST /drain/start` | Localhost-only. Begin draining; readiness flips to `503`. |
+| `POST /drain/stop` | Localhost-only. Resume serving. |
+
+- **Live never depends on upstream ChatGPT.** If OpenAI blips, `/health/live`
+  (and `/health`) stay `200` so the pod is not restarted for an upstream
+  outage. Readiness likewise never pings chatgpt.com; it only reflects the
+  local drain flag.
+- **Draining rejects new work, drains in-flight.** While draining, new
+  `POST /v1/chat/completions` requests return `503` (`server draining`) *before*
+  any upstream call, while requests already past that check finish normally.
+- **Drain is localhost-only.** `/drain/start` and `/drain/stop` only act for a
+  loopback connection remote address (`127.0.0.1`/`::1`); any other caller gets
+  a `404` and the drain state is left untouched. The check uses the connection
+  remote IP and does **not** honor `X-Forwarded-For`, so a fronting proxy
+  cannot trigger a drain.
+- **Probe mapping (compat).** Existing k8s probes hit `/health`, which maps to
+  **live**, so no probe change is required for this release. Draining only
+  gates Service routing once a manifest adopts a `/health/ready` readiness
+  probe — that k8s-control manifest tweak is a follow-up and out of scope here.
 
 Request body options beyond the core OpenAI chat schema:
 
@@ -369,7 +406,8 @@ endpoints.
 
 | Feature | Status |
 | --- | --- |
-| `GET /health` | Supported |
+| `GET /health` | Supported (live alias) |
+| `GET /health/live`, `GET /health/ready` | Supported (liveness / readiness split for rollouts) |
 | `GET /v1/models` | Supported (returns GPT-5.6 / 5.5 / Spark / Claude / Gemini aliases) |
 | `POST /v1/chat/completions` (non-streaming) | Supported |
 | `POST /v1/chat/completions` (streaming SSE) | Supported |
@@ -516,7 +554,9 @@ CODEX_CLIENTS='[
   {"label":"work-a","codex_home":"/home/codex/.codex-a"},
   {"label":"work-b","auth_path":"/run/secrets/codex-b-auth.json"}
 ]'
+CODEX_CLIENT_MAX_INFLIGHT=2
 CODEX_CLIENT_POOL_UNAVAILABLE=fail
+CODEX_CLIENT_COOLDOWN_DEFAULT=5m
 ```
 
 For each request, the server resolves the same key used by the Agent queue and
@@ -524,16 +564,60 @@ selects a client with deterministic affinity. Repeated turns with the same
 queue key map to the same shard; different queue keys can use different shards.
 Random per-request load balancing is unsafe and is not used.
 
-When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, an unavailable selected client returns
-the upstream/auth error. `fallback_first` retries the first configured client
-when a non-primary shard fails before a stream starts, but it can break strict
-conversation affinity after a conversation has already used that shard. Use
-`fail` unless availability is more important than shard continuity.
+If the selected account returns a quota or rate-limit failure before its first
+stream event, the server cools that account until the upstream `Retry-After` or
+reset hint. Without a valid hint it uses `CODEX_CLIENT_COOLDOWN_DEFAULT`. The
+same request is retried once on another healthy account without changing its
+model; model-level quota fallback runs only after that account rotation is
+exhausted. If the sticky shard is cooling, unavailable, or returns an auth
+failure before output, the pool deterministically tries the next selectable
+shard. After that replacement stream succeeds, the conversation is soft-pinned
+to the replacement, so later turns do not snap back when the original shard's
+cooldown expires. A failure after a content, reasoning, or tool delta never
+switches accounts mid-stream.
+
+Cooldowns and soft pins are held in memory per process; replicas do not share
+them. Soft pins expire 24 hours after their last successful use and are bounded
+to 10,000 conversation keys with least-recently-used eviction. New keys always
+use normal deterministic hashing, so a recovered account remains eligible for
+new conversations. When every account is cooling, ordinary requests retain the
+existing OpenAI-compatible behavior: quota cooldowns may proceed to the
+configured overflow model, while capacity rate limits remain 429 responses.
+
+Each selected Codex client also has a process-local inflight lease capped by
+`CODEX_CLIENT_MAX_INFLIGHT`. The default is `2`, matching the default global
+Agent concurrency and preserving the usual single-client local Cursor workflow.
+Agent queue admission happens first; the account lease is a second bulkhead
+acquired immediately before the upstream call, so it is never held while a
+request waits in the Agent queue. The lease covers the entire completion or
+stream and is released on normal completion, startup or midstream failure,
+client cancellation, and context cancellation.
+
+If the sticky-selected client is cooling or at its inflight cap, the pool
+immediately checks the remaining clients in deterministic shard order. It opens
+no upstream on an ineligible client. If every non-cooling client is saturated,
+the request does not wait: it returns an OpenAI-shaped `429` with the stable
+message `codex client pool saturated`, so callers should retry with backoff.
+Saturation rotation is independent of upstream cooldown handling: because no
+upstream call is attempted on a capped client, it neither consumes nor creates a
+cooldown ticket. Cooling clients stay ineligible and rotation considers the
+other eligible clients.
+
+Unavailable and auth-failed shards rotate once to the next selectable client
+under either unavailable policy, then soft-pin only after the replacement
+succeeds. When `CODEX_CLIENT_POOL_UNAVAILABLE=fail`, other startup errors still
+return normally. `fallback_first` additionally retries the first configured
+client for other upstream startup errors from a non-primary shard. Use `fail`
+unless that broader legacy fallback is required.
 
 Pool logs are redacted:
 
 ```text
-codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b fallback=false
+codex_client_cooldown label=work-a until=2026-07-21T21:05:00Z
+codex_client_select request_id=... key_mode=cursor:metadata key_hash=... shard=1 client_label=work-b inflight=1 fallback=false rotated=true
+codex_client_unpin key_hash=... from=work-a to=work-b reason=cooldown
+codex_client_saturated request_id=... shard=1 client_label=work-b inflight=2 max_inflight=2
+codex_client_release request_id=... shard=1 client_label=work-b inflight=0
 ```
 
 Do not put credentials, account IDs, auth paths, hostnames with secrets, or user
@@ -546,6 +630,54 @@ the same queue key is still recommended to reduce lock contention.
 The supplied Docker Compose file mounts this path on a named volume by default
 at `/var/lib/codex-chat-api/agent-locks`, so replicas started from that Compose
 project share locks without extra volume wiring.
+
+### Prometheus metrics
+
+The process exposes a small Prometheus text endpoint at `GET /metrics` on the
+same bind address and port as the gateway. It is enabled by default and does not
+require a sidecar. When `GATEWAY_BEARER_SECRET` is set, `/metrics` requires the
+same `Authorization: Bearer <secret>` header as `/v1`; when the secret is empty,
+the endpoint is open on the configured bind address. Set
+`CODEX_METRICS_ENABLED=false` (or `--metrics-enabled=false`) to remove the route
+and restore the pre-metrics HTTP surface.
+
+The metric names and label keys are the stable operator contract:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `codex_chat_api_requests_total` | counter | `provider`, `result` | Chat completion requests by final HTTP result. |
+| `codex_chat_api_rate_limit_responses_total` | counter | `provider`, `failure_class` | Final HTTP 429 responses, including quota, capacity, pool, and queue paths. |
+| `codex_chat_api_pool_selections_total` | counter | `client_label`, `result` | Codex pool selections (`normal`, `rotated`, `fallback`, or `pinned`). |
+| `codex_chat_api_pool_cooldowns_total` | counter | `client_label`, `failure_class` | Cooldown tickets created or refreshed after a quota/rate-limit failure. |
+| `codex_chat_api_pool_cooldown_skips_total` | counter | `client_label`, `failure_class` | Selection attempts that skipped a currently cooling client. |
+| `codex_chat_api_queue_wait_seconds` | histogram | `provider`, `result` | Agent queue wait through acquisition, rejection, timeout, cancellation, or error; ordinary chats record a zero-second `bypassed` observation. |
+| `codex_chat_api_active_streams` | gauge | `provider` | Downstream streaming responses currently being written. |
+
+`provider`, `result`, and `failure_class` are fixed allowlists. `client_label`
+comes only from the validated, bounded labels in `CODEX_CLIENTS`; keep those
+labels non-sensitive operational aliases. Metrics never use raw tenant IDs,
+bearer tokens, request IDs, queue/auth hashes, model IDs, prompt text, or prompt
+hashes as labels.
+
+For an open local bind:
+
+```bash
+curl -fsS http://127.0.0.1:8088/metrics
+```
+
+For a bearer-protected ClusterIP scrape, configure Prometheus with the same
+gateway secret (prefer a mounted secret file over an inline value):
+
+```yaml
+scrape_configs:
+  - job_name: codex-chat-api
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/codex-chat-api-gateway
+    static_configs:
+      - targets: [codex-chat-api.default.svc.cluster.local:8088]
+```
 
 The queue classifies request shapes as `tool_generating`,
 `tool_result_continuation`, `final_prose_continuation`, or `simple_no_tool` and
@@ -689,7 +821,7 @@ When multiple Agent chats overlap, queue diagnostics show the lifecycle:
 agent_queue_wait request_id=... key_mode=cursor:conversation_fingerprint key_hash=... position=2
 agent_queue_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... wait_ms=1234 active_global=2 active_key=1
 agent_queue_lock_acquire request_id=... key_mode=cursor:conversation_fingerprint key_hash=... lock_wait_ms=1234
-codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default fallback=false
+codex_client_select request_id=... key_mode=cursor:conversation_fingerprint key_hash=... shard=0 client_label=default inflight=1 fallback=false rotated=false
 stream_start id=...
 stream_end id=... outcome=completed finish=tool_calls
 agent_queue_lock_release request_id=... key_mode=cursor:conversation_fingerprint key_hash=...
@@ -713,6 +845,30 @@ streams should still include valid `delta.tool_calls` frames and finish with
 Upstream Codex errors are logged server-side as `stream_error` or
 `complete_error` with the real payload. Clients still receive the sanitized
 `[error: upstream error]` message.
+
+#### Failure taxonomy (operators)
+
+Every `stream_error` and `complete_error` line also carries a redacted
+`failure_class` and `failure_phase` used by pool cooldown / rotation logic.
+These fields are derived only from the error type, status code, and body
+markers the server already knows — they never contain auth tokens, account
+emails, or raw upstream bodies.
+
+`failure_class` maps upstream failures deterministically:
+
+| `failure_class` | Meaning | Mapped from |
+| --- | --- | --- |
+| `quota` | Account-scoped usage limit | `usage_limit_reached` (`ErrUsageLimitReached`) |
+| `rate_limit` | Transient capacity throttle | non-usage-limit `429` upstream errors |
+| `auth` | Credential/authorization failure | `auth`-kind Codex errors |
+| `permanent` | Client-side, rotation cannot help | `context_length_exceeded`, other `client`-kind (`400`) errors |
+| `transient` | Retryable/unknown upstream or transport failure | `5xx`, unavailable clients, and any unmapped error |
+
+`failure_phase` records how far the request progressed when it failed:
+`connect` (before any upstream event), `first_event` (the failure is the first
+event, nothing sent to the client yet), or `mid_stream` (content already
+streamed). Rotation logic refuses to switch accounts `mid_stream`, since that
+would corrupt an in-flight Agent tool turn.
 
 ### Troubleshooting
 

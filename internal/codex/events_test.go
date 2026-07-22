@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseStreamEventToolCallLifecycle(t *testing.T) {
@@ -247,5 +248,21 @@ func TestParseStreamEventReasoningSummaryText(t *testing.T) {
 	}
 	if event.ReasoningDelta != "thinking" || event.Delta != "" {
 		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestParseStreamEventUsageLimitCarriesResetHint(t *testing.T) {
+	_, terminal, err := parseStreamEvent([]byte(`{
+		"type":"response.failed",
+		"status":429,
+		"error":{"code":"usage_limit_reached","retry_after":30,"resets_at":"2026-07-21T22:00:00Z"}
+	}`))
+	if err == nil || !terminal {
+		t.Fatalf("parseStreamEvent() = terminal:%t err:%v", terminal, err)
+	}
+	codexErr, ok := ErrorAs(err)
+	wantReset := time.Date(2026, 7, 21, 22, 0, 0, 0, time.UTC)
+	if !ok || codexErr.RetryAfter != 30*time.Second || !codexErr.ResetAt.Equal(wantReset) {
+		t.Fatalf("error hint = %#v", codexErr)
 	}
 }
