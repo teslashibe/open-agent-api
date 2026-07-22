@@ -10,11 +10,13 @@ import (
 
 func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 	m := New(true)
-	m.ObserveRequest("codex", "success")
+	m.ObserveRequest("codex", "complete", "success")
 	m.ObserveRateLimit("codex", "quota")
 	m.ObservePoolSelection("work-a", "rotated")
 	m.ObservePoolCooldown("work-a", "quota")
 	m.ObservePoolCooldownSkip("work-a", "quota")
+	m.SetPoolUsableClients(1)
+	m.SetPoolClientUsable("work-a", true)
 	m.ObserveQueueWait("codex", "acquired", 125*time.Millisecond)
 	m.ObserveQueueWait("gemini", "bypassed", 0)
 	m.IncActiveStreams("codex")
@@ -22,11 +24,13 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 
 	body := scrape(t, m)
 	for _, want := range []string{
-		`codex_chat_api_requests_total{provider="codex",result="success"} 1`,
+		`codex_chat_api_requests_total{phase="complete",provider="codex",result="success"} 1`,
 		`codex_chat_api_rate_limit_responses_total{failure_class="quota",provider="codex"} 1`,
 		`codex_chat_api_pool_selections_total{client_label="work-a",result="rotated"} 1`,
 		`codex_chat_api_pool_cooldowns_total{client_label="work-a",failure_class="quota"} 1`,
 		`codex_chat_api_pool_cooldown_skips_total{client_label="work-a",failure_class="quota"} 1`,
+		`codex_chat_api_pool_usable_clients 1`,
+		`codex_chat_api_pool_client_usable{client_label="work-a"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="codex",result="acquired"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="gemini",result="bypassed"} 1`,
 		`codex_chat_api_active_streams{provider="codex"} 0`,
@@ -44,9 +48,10 @@ func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 		"Bearer secret-access-token",
 		"full-model-prompt-hash-0123456789abcdef",
 	}
-	m.ObserveRequest(secrets[0], secrets[1])
+	m.ObserveRequest(secrets[0], secrets[1], secrets[2])
 	m.ObserveRateLimit(secrets[0], secrets[2])
 	m.ObservePoolSelection(secrets[1], secrets[2])
+	m.SetPoolClientUsable(secrets[0], true)
 	m.ObserveQueueWait(secrets[0], secrets[2], time.Second)
 
 	body := scrape(t, m)
@@ -55,7 +60,7 @@ func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 			t.Fatalf("metrics leaked untrusted label %q:\n%s", secret, body)
 		}
 	}
-	for _, want := range []string{`provider="unknown"`, `client_label="invalid"`} {
+	for _, want := range []string{`provider="unknown"`, `phase="unknown"`, `result="server_error"`, `client_label="invalid"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics body missing normalized label %q:\n%s", want, body)
 		}
@@ -64,7 +69,7 @@ func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 
 func TestDisabledMetricsAreNoopAndNotFound(t *testing.T) {
 	m := New(false)
-	m.ObserveRequest("codex", "success")
+	m.ObserveRequest("codex", "complete", "success")
 
 	recorder := httptest.NewRecorder()
 	m.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/metrics", nil))
