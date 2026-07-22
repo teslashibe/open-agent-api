@@ -27,6 +27,12 @@ type HealthReporter interface {
 	Health() PoolHealth
 }
 
+// ReadinessReporter may validate and proactively refresh local credentials.
+// It must not open an upstream model connection.
+type ReadinessReporter interface {
+	Ready(context.Context) PoolHealth
+}
+
 type PoolHealth struct {
 	TotalClients  int            `json:"total_clients"`
 	UsableClients int            `json:"usable_clients"`

@@ -98,7 +98,7 @@ tests:
               severity: critical
             exp_annotations:
               summary: "codex-chat-api readiness probe is failing"
-              description: "The external GET /health/ready probe has failed for 2 minutes. Determine whether the process is intentionally draining or has no usable local credentials."
+              description: "The external GET /ready probe has failed for 2 minutes. Determine whether the process is intentionally draining or has no usable local credentials."
               runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#readiness-loss"
 
   - name: cooling suspicion requires usable clients and sustained skips

@@ -7,12 +7,18 @@ sidebar_label: Troubleshooting
 
 ## Authentication failures
 
-- A Codex upstream `401` usually means the mounted login expired or the wrong
-  `auth_path` was selected. Run `codex login` through the approved operator
-  flow, refresh the mounted secret, and retry without printing the file.
-- A gateway `401` means `GATEWAY_BEARER_SECRET` is enabled and the request did
-  not provide the matching bearer header. Compare secret references and mounts,
-  never the values in a terminal transcript.
+- `invalid_gateway_credentials` means `GATEWAY_BEARER_SECRET` is enabled and
+  the request did not provide the matching bearer. No upstream call occurred.
+- `upstream_authentication_failed` means Codex OAuth refresh or the ChatGPT
+  WebSocket authentication failed. Pause judge/draft/outbox work with backoff;
+  do not retry every minute. The gateway returns `Retry-After: 300` and keeps
+  repeated Codex work out of its queue while the local auth circuit is open.
+  Check `/ready` and the client health metrics.
+- The gateway refreshes an expiring JWT before dialing and retries one 401/403
+  handshake after a forced refresh. A persistent failure usually means the
+  refresh token was revoked, `auth_path` is wrong, or the runtime file is not
+  writable. Run `codex login` through the approved operator flow, replace the
+  seeded Secret and writable runtime copy, and retry without printing either.
 - If one pool client fails authentication before output, the pool rotates once
   to another selectable client. Persistent rotation is a credential incident,
   not a reason to increase concurrency.
@@ -33,7 +39,8 @@ because switching accounts after partial content would corrupt the response.
 
 - `GET /health/live` should remain `200` while the process is running, even
   during an upstream outage.
-- `GET /health/ready` returns `503` while the local drain flag is set or when no
+- `GET /ready` (`/health/ready` compatibility alias) returns `503` while the
+  local drain flag is set or when no
   Codex client is locally usable. Run `POST /drain/stop` from loopback for an
   abandoned drain; rotate a rejected credential for an `unavailable` response.
 - A remote drain request returns `404` by design. Execute it inside the pod or

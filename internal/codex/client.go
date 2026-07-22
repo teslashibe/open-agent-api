@@ -42,6 +42,7 @@ type Client struct {
 	websocketURL  string
 	timeout       time.Duration
 	dial          websocketDialFunc
+	tokens        credentialSource
 	builder       requestBuilder
 	logOutput     io.Writer
 	logBodyShape  bool
@@ -58,6 +59,11 @@ type websocketConn interface {
 }
 
 type websocketDialFunc func(context.Context, string, http.Header) (websocketConn, *http.Response, error)
+
+type credentialSource interface {
+	Credentials(context.Context) (auth.Credentials, [sha256.Size]byte, error)
+	ForceRefresh(context.Context, [sha256.Size]byte) (auth.Credentials, [sha256.Size]byte, error)
+}
 
 func NewClient(cfg ClientConfig) (*Client, error) {
 	_, _, err := auth.LoadWithRevision(cfg.AuthPath)
@@ -91,6 +97,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		websocketURL:  cfg.WebsocketURL,
 		timeout:       cfg.Timeout,
 		dial:          defaultDial(websocket.DefaultDialer),
+		tokens:        auth.NewTokenSource(auth.TokenSourceConfig{Path: cfg.AuthPath}),
 		builder:       builder,
 		logOutput:     cfg.LogOutput,
 		logBodyShape:  cfg.LogBodyShape,
@@ -207,9 +214,15 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 }
 
 func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, [sha256.Size]byte, error) {
-	creds, revision, err := auth.LoadWithRevision(c.authPath)
+	creds, revision, err := c.tokens.Credentials(ctx)
 	if err != nil {
-		return nil, [sha256.Size]byte{}, NewError(ErrorKindAuth, http.StatusUnauthorized, "load codex credentials", err)
+		if ctx.Err() != nil {
+			return nil, revision, ctx.Err()
+		}
+		return nil, revision, withCredentialRevision(
+			NewError(ErrorKindAuth, http.StatusUnauthorized, "load or refresh codex credentials", err),
+			revision,
+		)
 	}
 
 	headers := c.headers(creds, faithful, sessionID, kind)
@@ -217,6 +230,28 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 	if err == nil {
 		return conn, revision, nil
 	}
+	if ctx.Err() == nil && isAuthHandshake(resp) {
+		closeResponse(resp)
+		creds, revision, refreshErr := c.tokens.ForceRefresh(ctx, revision)
+		if refreshErr != nil {
+			if ctx.Err() != nil {
+				return nil, revision, ctx.Err()
+			}
+			return nil, revision, withCredentialRevision(
+				NewError(ErrorKindAuth, http.StatusUnauthorized, "refresh codex credentials after websocket rejection", refreshErr),
+				revision,
+			)
+		}
+		conn, resp, err = c.dial(ctx, c.websocketURL, c.headers(creds, faithful, sessionID, kind))
+		if err == nil {
+			return conn, revision, nil
+		}
+	}
+	return nil, revision, dialError(ctx, resp, err, revision)
+}
+
+func dialError(ctx context.Context, resp *http.Response, err error, revision [sha256.Size]byte) error {
+	defer closeResponse(resp)
 	status := http.StatusBadGateway
 	kindErr := ErrorKindUpstream
 	if resp != nil {
@@ -226,7 +261,7 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 		}
 	}
 	if ctx.Err() != nil {
-		return nil, revision, ctx.Err()
+		return ctx.Err()
 	}
 	connectErr := NewError(kindErr, status, "connect to codex websocket", err)
 	if resp != nil {
@@ -236,7 +271,17 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 	if kindErr == ErrorKindAuth {
 		connectErr = withCredentialRevision(connectErr, revision)
 	}
-	return nil, revision, connectErr
+	return connectErr
+}
+
+func isAuthHandshake(resp *http.Response) bool {
+	return resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden)
+}
+
+func closeResponse(resp *http.Response) {
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 }
 
 // validateCredentialRevision is used by the pool to recover an auth-failed
@@ -245,6 +290,19 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 func (c *Client) validateCredentialRevision() ([sha256.Size]byte, error) {
 	_, revision, err := auth.LoadWithRevision(c.authPath)
 	return revision, err
+}
+
+// validateCredentials is used by readiness. It may perform the same bounded,
+// single-flight proactive refresh as a request, but never dials ChatGPT.
+func (c *Client) validateCredentials(ctx context.Context) ([sha256.Size]byte, error) {
+	_, revision, err := c.tokens.Credentials(ctx)
+	if err != nil {
+		return revision, withCredentialRevision(
+			NewError(ErrorKindAuth, http.StatusUnauthorized, "validate codex credentials", err),
+			revision,
+		)
+	}
+	return revision, nil
 }
 
 func (c *Client) headers(creds auth.Credentials, faithful bool, sessionID string, kind requestKind) http.Header {

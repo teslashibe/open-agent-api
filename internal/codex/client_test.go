@@ -3,8 +3,10 @@ package codex
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -276,6 +278,110 @@ func TestOpenCapturesRetryAfterHeader(t *testing.T) {
 	}
 }
 
+func TestOpenRefreshesExpiredAccessTokenBeforeDial(t *testing.T) {
+	now := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
+	authPath, codexHome := writeAuthFixture(t)
+	expired := codexTestJWT(now.Add(-time.Minute))
+	if err := os.WriteFile(authPath, []byte(fmt.Sprintf(`{"tokens":{"access_token":%q,"refresh_token":"refresh-secret","account_id":"acct_123"}}`, expired)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.tokens = auth.NewTokenSource(auth.TokenSourceConfig{
+		Path: authPath,
+		Now:  func() time.Time { return now },
+		HTTPClient: &http.Client{Transport: codexRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return codexJSONResponse(http.StatusOK, `{"access_token":"fresh-access","refresh_token":"rotated-refresh"}`), nil
+		})},
+	})
+	dialer := &recordingDialer{conns: []websocketConn{&fakeWebsocketConn{}}}
+	client.dial = dialer.dial
+
+	conn, _, err := client.open(context.Background(), false, "session", requestKindTurn)
+	if err != nil {
+		t.Fatalf("open() error = %v", err)
+	}
+	closeConn(conn)
+	if got := dialer.requests[0].headers.Get("Authorization"); got != "Bearer fresh-access" {
+		t.Fatalf("dial authorization = %q, want refreshed access token", got)
+	}
+	data, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"access_token":"fresh-access"`) || !strings.Contains(string(data), `"refresh_token":"rotated-refresh"`) {
+		t.Fatalf("persisted auth did not contain rotated credentials: %s", data)
+	}
+}
+
+func TestOpenRefreshesAndRedialsOnceAfterAuthHandshake(t *testing.T) {
+	now := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
+	authPath, codexHome := writeAuthFixture(t)
+	if err := os.WriteFile(authPath, []byte(`{"tokens":{"access_token":"rejected-access","refresh_token":"refresh-secret","account_id":"acct_123"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.tokens = auth.NewTokenSource(auth.TokenSourceConfig{
+		Path: authPath,
+		Now:  func() time.Time { return now },
+		HTTPClient: &http.Client{Transport: codexRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return codexJSONResponse(http.StatusOK, `{"access_token":"replacement-access"}`), nil
+		})},
+	})
+	var attempts int
+	client.dial = func(ctx context.Context, url string, headers http.Header) (websocketConn, *http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			if got := headers.Get("Authorization"); got != "Bearer rejected-access" {
+				t.Fatalf("first authorization = %q", got)
+			}
+			return nil, codexJSONResponse(http.StatusUnauthorized, `{}`), errors.New("bad handshake")
+		}
+		if got := headers.Get("Authorization"); got != "Bearer replacement-access" {
+			t.Fatalf("retry authorization = %q", got)
+		}
+		return &fakeWebsocketConn{}, nil, nil
+	}
+
+	conn, _, err := client.open(context.Background(), false, "session", requestKindTurn)
+	if err != nil {
+		t.Fatalf("open() error = %v", err)
+	}
+	closeConn(conn)
+	if attempts != 2 {
+		t.Fatalf("dial attempts = %d, want 2", attempts)
+	}
+}
+
+func TestOpenRefreshFailureReturnsAuthErrorWithoutRedial(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	if err := os.WriteFile(authPath, []byte(`{"tokens":{"access_token":"rejected-access","refresh_token":"refresh-secret-do-not-leak","account_id":"acct_123"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.tokens = auth.NewTokenSource(auth.TokenSourceConfig{
+		Path: authPath,
+		HTTPClient: &http.Client{Transport: codexRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return codexJSONResponse(http.StatusUnauthorized, `{}`), nil
+		})},
+	})
+	var attempts int
+	client.dial = func(context.Context, string, http.Header) (websocketConn, *http.Response, error) {
+		attempts++
+		return nil, codexJSONResponse(http.StatusUnauthorized, `{}`), errors.New("bad handshake")
+	}
+
+	_, _, err := client.open(context.Background(), false, "session", requestKindTurn)
+	if err == nil || ClassifyFailure(err) != FailureAuth {
+		t.Fatalf("open() error = %v, want auth failure", err)
+	}
+	if strings.Contains(err.Error(), "refresh-secret-do-not-leak") {
+		t.Fatalf("open() error leaked refresh token: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("dial attempts = %d, want no redial after refresh failure", attempts)
+	}
+}
+
 func TestStreamAuthFailureCarriesAttemptCredentialRevision(t *testing.T) {
 	authPath, codexHome := writeAuthFixture(t)
 	initial, err := os.ReadFile(authPath)
@@ -413,6 +519,26 @@ type recordingDialer struct {
 	mu       sync.Mutex
 	conns    []websocketConn
 	requests []recordedCodexRequest
+}
+
+type codexRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f codexRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func codexJSONResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func codexTestJWT(expiry time.Time) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiry.Unix())))
+	return header + "." + payload + ".signature"
 }
 
 func (d *recordingDialer) dial(ctx context.Context, url string, headers http.Header) (websocketConn, *http.Response, error) {

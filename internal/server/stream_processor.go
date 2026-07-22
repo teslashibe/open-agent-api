@@ -438,7 +438,7 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 		terminal := upstreamErrorStreamTerminal(event.Err, p.phaseEvents(), p.emittedContent())
 		if write {
 			logLine(p.opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", p.streamID, defaultString(event.Model, *p.model), detailedError(event.Err), terminal.failureClass, terminal.phase)
-			_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, defaultString(event.Model, *p.model), publicErrorMessage(event.Err)))
+			_ = writeSSE(p.ctx, p.cancel, p.w, errorChunk(p.id, p.created, defaultString(event.Model, *p.model), publicErrorMessage(event.Err), publicErrorCode(event.Err)))
 		}
 		*p.terminal = terminal
 		return true

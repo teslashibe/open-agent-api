@@ -96,7 +96,7 @@ groups:
           description: "Streaming requests are failing before completion. Mid-stream failures are never rotated; inspect provider health and bounded failure logs, then canary rollback if failures correlate with a release."
           runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#stream-failure"
 
-      # This portable rule expects a blackbox probe for GET /health/ready.
+      # This portable rule expects a blackbox probe for GET /ready.
       # Define the probe and its cluster-specific labels in k8s-control.
       - alert: CodexChatAPIReadinessLost
         expr: probe_success{job="codex-chat-api-readiness"} == 0
@@ -105,5 +105,5 @@ groups:
           severity: critical
         annotations:
           summary: "codex-chat-api readiness probe is failing"
-          description: "The external GET /health/ready probe has failed for 2 minutes. Determine whether the process is intentionally draining or has no usable local credentials."
+          description: "The external GET /ready probe has failed for 2 minutes. Determine whether the process is intentionally draining or has no usable local credentials."
           runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#readiness-loss"

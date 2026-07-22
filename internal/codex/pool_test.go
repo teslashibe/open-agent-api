@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/teslashibe/codex-chat-api/internal/auth"
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
 
@@ -202,6 +204,39 @@ func TestPooledServiceWebsocketAuthFrameMarksClientUnhealthy(t *testing.T) {
 	}
 	if len(dialer.requests) != 1 {
 		t.Fatalf("websocket attempts = %d, want auth-failed client excluded", len(dialer.requests))
+	}
+}
+
+func TestPooledServiceReadinessFailsClosedAndSuppressesRepeatedUpstreamCalls(t *testing.T) {
+	now := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
+	authPath, codexHome := writeAuthFixture(t)
+	expired := codexTestJWT(now.Add(-time.Minute))
+	if err := os.WriteFile(authPath, []byte(fmt.Sprintf(`{"tokens":{"access_token":%q,"account_id":"acct_123"}}`, expired)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.tokens = auth.NewTokenSource(auth.TokenSourceConfig{Path: authPath, Now: func() time.Time { return now }})
+	var dialCalls int
+	client.dial = func(context.Context, string, http.Header) (websocketConn, *http.Response, error) {
+		dialCalls++
+		return nil, nil, errors.New("must not dial with expired auth")
+	}
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "work-a", Service: client},
+	)
+
+	health := pool.Ready(context.Background())
+	if health.UsableClients != 0 || health.Clients[0].Reason != clientHealthReasonAuth {
+		t.Fatalf("Ready() = %#v, want auth-unhealthy", health)
+	}
+	for range 3 {
+		_, err := pool.Complete(context.Background(), Request{})
+		if !errors.Is(err, ErrNoUsableClients) || ClassifyFailure(err) != FailureAuth {
+			t.Fatalf("Complete() error = %v, want local auth circuit break", err)
+		}
+	}
+	if dialCalls != 0 {
+		t.Fatalf("websocket dial calls = %d, want 0 after readiness auth failure", dialCalls)
 	}
 }
 

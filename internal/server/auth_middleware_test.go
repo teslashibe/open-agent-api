@@ -74,6 +74,9 @@ func TestBearerAuthRejectsWithoutUpstreamCall(t *testing.T) {
 			if body.Error.Type != "authentication_error" {
 				t.Fatalf("error type = %q, want authentication_error", body.Error.Type)
 			}
+			if body.Error.Code != "invalid_gateway_credentials" || body.Error.Message != "invalid gateway credentials" {
+				t.Fatalf("gateway auth error = %#v", body.Error)
+			}
 			if calls := upstreamCalls.Load(); calls != 0 {
 				t.Fatalf("upstream calls = %d, want 0", calls)
 			}

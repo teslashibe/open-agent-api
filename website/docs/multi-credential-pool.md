@@ -7,17 +7,21 @@ sidebar_label: Multi-credential pool
 
 Without `CODEX_CLIENTS`, the gateway uses one client from `CODEX_HOME` and
 `CODEX_AUTH_PATH`. For multiple independent logins, pass a JSON array whose
-paths point to mounted secrets:
+paths point to writable runtime copies seeded from mounted Secrets:
 
 ```bash
 export CODEX_CLIENTS='[
-  {"label":"pool-a","codex_home":"/run/codex/pool-a","auth_path":"/run/secrets/codex-pool-a/auth.json"},
-  {"label":"pool-b","codex_home":"/run/codex/pool-b","auth_path":"/run/secrets/codex-pool-b/auth.json"}
+  {"label":"pool-a","codex_home":"/run/codex/pool-a","auth_path":"/var/run/codex-auth/pool-a/auth.json"},
+  {"label":"pool-b","codex_home":"/run/codex/pool-b","auth_path":"/var/run/codex-auth/pool-b/auth.json"}
 ]'
 export CODEX_CLIENT_MAX_INFLIGHT=2
 export CODEX_CLIENT_POOL_UNAVAILABLE=fail
 export CODEX_CLIENT_COOLDOWN_DEFAULT=5m
 ```
+
+Each path needs one writer because OAuth refresh can rotate both access and
+refresh tokens. Seed it with mode `0600` and never point the gateway directly
+at the immutable Secret mount.
 
 The labels are bounded metric and log dimensions, not account names. Use only
 non-sensitive aliases made from letters, digits, `_`, `.`, or `-` (at most 64

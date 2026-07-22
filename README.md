@@ -101,6 +101,18 @@ Run the API:
 docker compose up --build -d
 ```
 
+Compose mounts the host's `~/.codex/auth.json` read-only into a one-shot seed
+container and copies it into the project-owned `codex-auth-runtime` volume.
+The API rotates only that private copy, so it cannot replace the operator's
+live host credential or race a host Codex process over a rotating refresh
+token. After an operator login rotation, reseed safely while the API is stopped:
+
+```bash
+docker compose stop api
+CODEX_AUTH_RESEED=true docker compose run --rm codex-auth-init
+docker compose up -d api
+```
+
 Expose it for Cursor with ngrok (preferred over Cloudflare quick tunnels):
 
 ```bash
@@ -155,6 +167,7 @@ The server implements:
 
 - `GET /health` (live alias)
 - `GET /health/live`
+- `GET /ready`
 - `GET /health/ready`
 - `POST /drain/start` (localhost-only)
 - `POST /drain/stop` (localhost-only)
@@ -361,8 +374,11 @@ GATEWAY_PROVIDERS=codex,gemini          # drop claude from routing and /v1/model
 
 - **Bearer auth.** When `GATEWAY_BEARER_SECRET` is set, `/v1/models` and
   `/v1/chat/completions` require `Authorization: Bearer <secret>`; anything
-  else gets a `401` with an OpenAI-style `authentication_error` body and no
-  upstream call is made. `/health` stays unauthenticated for k8s probes. When
+  else gets a `401` with an OpenAI-style `authentication_error` body, code
+  `invalid_gateway_credentials`, and no upstream call is made. Upstream Codex
+  auth failures instead use `upstream_authentication_failed`, allowing callers
+  to open a circuit without treating the gateway bearer as invalid. `/health`
+  stays unauthenticated for k8s probes. When
   the secret is unset (the dev default), any Authorization value passes
   through, so the local Cursor workflow — including its BYOK model discovery
   against `/v1/models` — is unchanged.
@@ -392,14 +408,16 @@ outages. All health endpoints are unauthenticated so k8s probes reach them.
 | --- | --- |
 | `GET /health` | Live alias — `200` whenever the process is up (unchanged body `{"status":"ok"}`). |
 | `GET /health/live` | Liveness — `200` whenever the process is up. |
-| `GET /health/ready` | Readiness — `200` while at least one Codex client is usable; `503` while draining or when none are usable. |
+| `GET /ready` | Readiness — `200` while at least one Codex client is usable; `503` while draining or when none are usable. |
+| `GET /health/ready` | Compatibility alias for `/ready`. |
 | `POST /drain/start` | Localhost-only. Begin draining; readiness flips to `503`. |
 | `POST /drain/stop` | Localhost-only. Resume serving. |
 
 - **Live never depends on upstream ChatGPT.** If OpenAI blips, `/health/live`
   (and `/health`) stay `200` so the pod is not restarted for an upstream
-  outage. Readiness never pings chatgpt.com; it reflects the local drain flag
-  and the pool's locally known credential health. Its `codex` object contains
+  outage. Readiness never opens a model WebSocket, but it validates local
+  credentials and may make one single-flight OAuth refresh when a JWT is near
+  expiry. Its `codex` object contains
   only aggregate counts plus configured safe client labels and fixed statuses.
 - **Draining rejects new work, drains in-flight.** While draining, new
   `POST /v1/chat/completions` requests return `503` (`server draining`) *before*
@@ -409,10 +427,13 @@ outages. All health endpoints are unauthenticated so k8s probes reach them.
   a `404` and the drain state is left untouched. The check uses the connection
   remote IP and does **not** honor `X-Forwarded-For`, so a fronting proxy
   cannot trigger a drain.
-- **Probe mapping (compat).** Existing k8s probes hit `/health`, which maps to
-  **live**, so no probe change is required for this release. Draining only
-  gates Service routing once a manifest adopts a `/health/ready` readiness
-  probe — that k8s-control manifest tweak is a follow-up and out of scope here.
+- **Probe mapping.** Point liveness at `/health/live` and readiness at `/ready`.
+  `/health` and `/health/ready` remain compatibility aliases.
+  [`deploy/kubernetes/deployment.yaml`](deploy/kubernetes/deployment.yaml) is
+  the checked deployment contract: it seeds the Secret into a writable
+  `emptyDir`, uses `/ready`, and is validated by `go test ./...`. The release
+  workflow installs the matching runtime-hardening patch in the selected
+  `k8s-control` dev/prod overlay before committing its image pin.
 
 Request body options beyond the core OpenAI chat schema:
 
@@ -440,7 +461,7 @@ endpoints.
 | Feature | Status |
 | --- | --- |
 | `GET /health` | Supported (live alias) |
-| `GET /health/live`, `GET /health/ready` | Supported (liveness / readiness split for rollouts) |
+| `GET /health/live`, `GET /ready` | Supported (liveness / readiness split; `/health/ready` is an alias) |
 | `GET /v1/models` | Supported (returns GPT-5.6 / 5.5 / Spark / Claude / Gemini aliases) |
 | `POST /v1/chat/completions` (non-streaming) | Supported |
 | `POST /v1/chat/completions` (streaming SSE) | Supported |
@@ -585,7 +606,7 @@ JSON array. Each client needs a non-sensitive `label`; omit `auth_path` to use
 ```bash
 CODEX_CLIENTS='[
   {"label":"work-a","codex_home":"/home/codex/.codex-a"},
-  {"label":"work-b","auth_path":"/run/secrets/codex-b-auth.json"}
+  {"label":"work-b","auth_path":"/var/run/codex-auth/work-b/auth.json"}
 ]'
 CODEX_CLIENT_MAX_INFLIGHT=2
 CODEX_CLIENT_POOL_UNAVAILABLE=fail
@@ -646,11 +667,24 @@ unless that broader legacy fallback is required.
 Every configured auth, profile, and scaffold file is read and parsed before the
 server starts. Invalid files fail startup with the safe client label and a fixed
 file-role/category diagnostic; paths, file contents, tokens, and account IDs are
-omitted. A runtime 401/403 marks that client unhealthy and removes it from
-selection. Replacing its credential file with a different valid revision makes
-it eligible again; restarting the process also reloads all configured clients.
-If no client remains usable, `/health/ready` returns `503` while `/health` and
-`/health/live` remain `200`.
+omitted. Access-token JWTs are refreshed five minutes before expiry using the
+`refresh_token`; a WebSocket 401/403 forces one refresh and one redial. Rotated
+tokens are atomically persisted to `auth.json` with mode `0600`, so deployments
+must seed each login into a writable runtime volume rather than point directly
+at an immutable Secret mount. Refresh failure marks that shard unhealthy and
+removes it from selection. Replacing its credential file with a different valid
+revision makes it eligible again; restarting the process also reloads all
+configured clients. If no client remains usable, `/ready` returns `503` while
+`/health` and `/health/live` remain `200`, and requests fail locally with
+`upstream_authentication_failed` instead of repeatedly dialing ChatGPT.
+While every Codex client remains auth-unhealthy, the HTTP layer also opens a
+local circuit before Agent queue admission and returns `503` plus
+`Retry-After: 300`. This keeps repeated Growth judge/draft/outbox attempts out
+of the queue and service stack; callers must use the stable error code and
+header to suspend retries for at least that interval. The release workflow
+applies and tests [`deploy/smore/growth-auth-circuit.patch`](deploy/smore/growth-auth-circuit.patch)
+before deploying this gateway: smore's shared LLM client suppresses HTTP during
+that window, while its Growth and Outbox workers stop claiming LLM work.
 
 Pool logs are redacted:
 
@@ -1027,8 +1061,9 @@ For issue #45 latency/logging changes, record the live Cursor BYOK evidence in
   (`gpt-5.6-terra`, `gpt-5.6-luna`, effort suffixes, `codex-*`) resolve to the
   matching upstream tier with server-side reasoning effort and verbosity.
   Legacy `gpt-5.5*` aliases still map to `gpt-5.5`.
-- Token credentials are read fresh from `auth.json` on every request, so refreshes
-  by the Codex app are picked up. If you get 401s, run `codex login` again.
+- Token credentials are read fresh from `auth.json` on every request. Expiring
+  JWTs refresh automatically and rotated credentials are persisted atomically.
+  If refresh fails, use the credential-rotation runbook; do not loop requests.
 - In faithful mode the model is told it is the Codex coding agent and is offered
   Codex tools. For plain Q&A it usually answers normally, but it may emit a tool
   call that this API ignores. Use `faithful:false` for clean assistant-style chat,

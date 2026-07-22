@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codex-chat-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codex-chat-api
+  template:
+    metadata:
+      labels:
+        app: codex-chat-api
+    spec:
+      initContainers:
+        - name: seed-codex-auth
+          image: alpine:3.20
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 077
+              printf '%s' "$CODEX_AUTH_JSON" > /var/run/codex-auth/auth.json
+          env:
+            - name: CODEX_AUTH_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: codex-chat-api-secrets
+                  key: CODEX_AUTH_JSON
+          volumeMounts:
+            - name: codex-auth-runtime
+              mountPath: /var/run/codex-auth
+      containers:
+        - name: codex-chat-api
+          image: ghcr.io/teslashibe/codex-chat-api:REPLACE_WITH_IMMUTABLE_TAG
+          args: ["--host", "0.0.0.0", "--port", "8088"]
+          env:
+            - name: CODEX_HOME
+              value: /var/run/codex-auth
+            - name: GATEWAY_BEARER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: codex-chat-api-secrets
+                  key: GATEWAY_BEARER_SECRET
+          ports:
+            - name: http
+              containerPort: 8088
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 6
+            failureThreshold: 1
+          volumeMounts:
+            - name: codex-auth-runtime
+              mountPath: /var/run/codex-auth
+      volumes:
+        - name: codex-auth-runtime
+          emptyDir: {}

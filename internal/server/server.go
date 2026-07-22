@@ -49,6 +49,8 @@ type options struct {
 	healthReporter     codex.HealthReporter
 }
 
+const upstreamAuthCircuitRetryAfter = 5 * time.Minute
+
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
 // so heavy traffic to one upstream never starves the others.
 func (o options) agentQueueFor(provider string) *agentQueue {
@@ -159,8 +161,8 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	app.Get("/health", live)
 	app.Get("/health/live", live)
 	// ready fails while draining or when local credential state says no Codex
-	// client is usable. It deliberately never pings upstream ChatGPT.
-	app.Get("/health/ready", func(c *fiber.Ctx) error {
+	// client is usable. It may refresh OAuth but never opens a model WebSocket.
+	ready := func(c *fiber.Ctx) error {
 		if opts.drain.Load() {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 				"status": "draining",
@@ -170,6 +172,9 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			return c.JSON(fiber.Map{"status": "ok"})
 		}
 		health := opts.healthReporter.Health()
+		if reporter, ok := opts.healthReporter.(codex.ReadinessReporter); ok {
+			health = reporter.Ready(opts.requestContext(c))
+		}
 		status := fiber.StatusOK
 		bodyStatus := "ok"
 		if health.UsableClients == 0 {
@@ -180,7 +185,9 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			"status": bodyStatus,
 			"codex":  health,
 		})
-	})
+	}
+	app.Get("/ready", ready)
+	app.Get("/health/ready", ready)
 	// Drain controls are localhost-only: a new pod signals the old one to stop
 	// accepting work before SIGTERM. Non-loopback callers get a 404 so the
 	// endpoint is not discoverable and the drain state is left untouched.
@@ -297,6 +304,21 @@ func chatCompletions(opts options) fiber.Handler {
 		if !opts.contextConfig.ProviderEnabled(provider) {
 			logLine(opts, "provider_disabled model=%s provider=%s\n", model, provider)
 			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "model not found")
+		}
+		// Once every Codex credential is locally auth-unhealthy, keep repeated
+		// Growth judge/draft/outbox calls out of admission queues and the service
+		// stack. The stable code and Retry-After are the caller circuit-break
+		// contract; other providers remain available.
+		if provider == codex.ProviderCodex && codexAuthCircuitOpen(opts.healthReporter) {
+			c.Locals(metricsFailureClassLocal, string(codex.FailureAuth))
+			c.Set(fiber.HeaderRetryAfter, strconv.FormatInt(int64(upstreamAuthCircuitRetryAfter/time.Second), 10))
+			return writeErrorCode(
+				c,
+				fiber.StatusServiceUnavailable,
+				"authentication_error",
+				publicServiceMessage(codex.ErrorKindAuth),
+				"upstream_authentication_failed",
+			)
 		}
 		toolsPresent := rawJSONPresent(req.Tools)
 		if !toolsPresent {
@@ -432,6 +454,10 @@ func chatCompletions(opts options) fiber.Handler {
 			Usage: completion.Usage,
 		})
 	}
+}
+
+func codexAuthCircuitOpen(reporter codex.HealthReporter) bool {
+	return reporter != nil && reporter.Health().UsableClients == 0
 }
 
 func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, provider string, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) (bool, error) {
@@ -807,6 +833,7 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 		case codex.ErrorKindAuth:
 			status = defaultStatus(status, fiber.StatusUnauthorized)
 			errorType = "authentication_error"
+			c.Set(fiber.HeaderRetryAfter, strconv.FormatInt(int64(upstreamAuthCircuitRetryAfter/time.Second), 10))
 		case codex.ErrorKindClient:
 			status = defaultStatus(status, fiber.StatusBadRequest)
 			errorType = "invalid_request_error"
@@ -816,6 +843,9 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 		if status == fiber.StatusTooManyRequests {
 			errorType = "rate_limit_error"
 			return writeError(c, status, errorType, publicErrorMessage(err))
+		}
+		if serviceErr.Kind == codex.ErrorKindAuth {
+			return writeErrorCode(c, status, errorType, publicServiceMessage(serviceErr.Kind), "upstream_authentication_failed")
 		}
 		return writeError(c, status, errorType, publicServiceMessage(serviceErr.Kind))
 	}
@@ -849,10 +879,15 @@ func mapAgentQueueError(c *fiber.Ctx, err error) error {
 const metricsFailureClassLocal = "codex_chat_api.metrics_failure_class"
 
 func writeError(c *fiber.Ctx, status int, errorType string, message string) error {
+	return writeErrorCode(c, status, errorType, message, "")
+}
+
+func writeErrorCode(c *fiber.Ctx, status int, errorType string, message string, code string) error {
 	return c.Status(status).JSON(openai.ErrorResponse{
 		Error: openai.ErrorBody{
 			Message: message,
 			Type:    errorType,
+			Code:    code,
 		},
 	})
 }
@@ -913,8 +948,11 @@ func writeSSEDone(ctx context.Context, cancel context.CancelFunc, w *bufio.Write
 	return true
 }
 
-func errorChunk(id string, created int64, model string, message string) openai.ChatCompletionChunk {
+func errorChunk(id string, created int64, model string, message string, codes ...string) openai.ChatCompletionChunk {
 	finish := "stop"
+	if len(codes) > 0 && codes[0] != "" {
+		message += " (code: " + codes[0] + ")"
+	}
 	return openai.ChatCompletionChunk{
 		ID:      id,
 		Object:  "chat.completion.chunk",
@@ -960,6 +998,13 @@ func publicErrorMessage(err error) string {
 	return "upstream error"
 }
 
+func publicErrorCode(err error) string {
+	if serviceErr, ok := codex.ErrorAs(err); ok && serviceErr.Kind == codex.ErrorKindAuth {
+		return "upstream_authentication_failed"
+	}
+	return ""
+}
+
 func publicUsageLimitMessage(upstream string) string {
 	lower := strings.ToLower(strings.TrimSpace(upstream))
 	switch {
@@ -981,7 +1026,7 @@ func publicUsageLimitMessage(upstream string) string {
 func publicServiceMessage(kind codex.ErrorKind) string {
 	switch kind {
 	case codex.ErrorKindAuth:
-		return "authentication failed"
+		return "upstream authentication failed"
 	case codex.ErrorKindClient:
 		return "invalid request"
 	default:
