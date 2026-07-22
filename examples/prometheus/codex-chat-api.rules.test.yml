@@ -104,17 +104,21 @@ tests:
   - name: cooling suspicion requires usable clients and sustained skips
     interval: 1m
     input_series:
-      - series: 'codex_chat_api_pool_usable_clients'
+      - series: 'codex_chat_api_pool_usable_clients{job="codex-chat-api",instance="10.0.0.8:8088",namespace="dev",pod="codex-chat-api-abc"}'
         values: '2x30'
-      - series: 'codex_chat_api_pool_cooldown_skips_total{client_label="pool-a",failure_class="quota"}'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{job="codex-chat-api",instance="10.0.0.8:8088",namespace="dev",pod="codex-chat-api-abc",client_label="pool-a",failure_class="quota"}'
         values: '0+1x30'
-      - series: 'codex_chat_api_pool_cooldown_skips_total{client_label="pool-b",failure_class="rate_limit"}'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{job="codex-chat-api",instance="10.0.0.8:8088",namespace="dev",pod="codex-chat-api-abc",client_label="pool-b",failure_class="rate_limit"}'
         values: '0+1x30'
     alert_rule_test:
       - eval_time: 20m
         alertname: CodexChatAPIAllClientsCoolingSuspected
         exp_alerts:
           - exp_labels:
+              instance: "10.0.0.8:8088"
+              job: codex-chat-api
+              namespace: dev
+              pod: codex-chat-api-abc
               severity: warning
             exp_annotations:
               summary: "all codex-chat-api clients may be cooling"
@@ -124,10 +128,26 @@ tests:
   - name: repeated skips from one client do not imply all clients cooling
     interval: 1m
     input_series:
-      - series: 'codex_chat_api_pool_usable_clients'
+      - series: 'codex_chat_api_pool_usable_clients{job="codex-chat-api",instance="10.0.0.8:8088",namespace="dev",pod="codex-chat-api-abc"}'
         values: '2x30'
-      - series: 'codex_chat_api_pool_cooldown_skips_total{client_label="pool-a",failure_class="quota"}'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{job="codex-chat-api",instance="10.0.0.8:8088",namespace="dev",pod="codex-chat-api-abc",client_label="pool-a",failure_class="quota"}'
         values: '0+10x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CodexChatAPIAllClientsCoolingSuspected
+        exp_alerts: []
+
+  - name: cooling clients from separate targets are not combined
+    interval: 1m
+    input_series:
+      - series: 'codex_chat_api_pool_usable_clients{job="codex-chat-api",instance="10.0.0.8:8088",namespace="dev",pod="codex-chat-api-dev"}'
+        values: '2x30'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{job="codex-chat-api",instance="10.0.0.8:8088",namespace="dev",pod="codex-chat-api-dev",client_label="pool-a",failure_class="quota"}'
+        values: '0+1x30'
+      - series: 'codex_chat_api_pool_usable_clients{job="codex-chat-api",instance="10.0.1.8:8088",namespace="prod",pod="codex-chat-api-prod"}'
+        values: '2x30'
+      - series: 'codex_chat_api_pool_cooldown_skips_total{job="codex-chat-api",instance="10.0.1.8:8088",namespace="prod",pod="codex-chat-api-prod",client_label="pool-b",failure_class="rate_limit"}'
+        values: '0+1x30'
     alert_rule_test:
       - eval_time: 20m
         alertname: CodexChatAPIAllClientsCoolingSuspected

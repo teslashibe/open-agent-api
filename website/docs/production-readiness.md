@@ -136,13 +136,14 @@ revision first. Do not restart repeatedly with unchanged rejected credentials.
 
 ### All clients cooling
 
-`CodexChatAPIAllClientsCoolingSuspected` compares the number of distinct client
-labels with recent bounded cooldown skips against the usable-client count.
-Repeated skips from one client count once. Cooldown metrics are event counters,
-not a current cooldown gauge, so the alert is evidence rather than proof.
-Confirm cooldown and selection logs, honor upstream reset hints, reduce load,
-and wait for the cooldown. Readiness can remain `200` because cooling is not
-auth-unhealthy.
+`CodexChatAPIAllClientsCoolingSuspected` compares, per scrape target, the number
+of distinct client labels with recent bounded cooldown skips against that
+target's usable-client count. Repeated skips from one client count once, and
+clients from different instances or environments are not combined. Cooldown
+metrics are event counters, not a current cooldown gauge, so the alert is
+evidence rather than proof. Confirm cooldown and selection logs, honor upstream
+reset hints, reduce load, and wait for the cooldown. Readiness can remain `200`
+because cooling is not auth-unhealthy.
 
 ### Queue timeout or high wait
 

@@ -26,8 +26,8 @@ groups:
 
       - alert: CodexChatAPIAllClientsCoolingSuspected
         expr: |
-          count(
-            sum by (client_label) (
+          count without (client_label) (
+            sum without (failure_class) (
               increase(codex_chat_api_pool_cooldown_skips_total{failure_class=~"quota|rate_limit"}[10m])
             ) > 0
           ) >= codex_chat_api_pool_usable_clients

@@ -112,6 +112,34 @@ func TestPromtoolFixtureCoversEveryAlert(t *testing.T) {
 	}
 }
 
+func TestCoolingAlertPreservesScrapeTargetLabels(t *testing.T) {
+	raw := readFile(t, "codex-chat-api.rules.yml")
+	var rules alertRuleFile
+	if err := yaml.UnmarshalStrict(raw, &rules); err != nil {
+		t.Fatalf("parse alert rules: %v", err)
+	}
+
+	for _, group := range rules.Groups {
+		for _, rule := range group.Rules {
+			if rule.Alert != "CodexChatAPIAllClientsCoolingSuspected" {
+				continue
+			}
+			for _, want := range []string{"count without (client_label)", "sum without (failure_class)"} {
+				if !strings.Contains(rule.Expr, want) {
+					t.Fatalf("cooling alert expression missing %q:\n%s", want, rule.Expr)
+				}
+			}
+			for _, forbidden := range []string{"count(", "by (client_label)"} {
+				if strings.Contains(rule.Expr, forbidden) {
+					t.Fatalf("cooling alert expression contains label-dropping aggregation %q:\n%s", forbidden, rule.Expr)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("cooling alert is missing")
+}
+
 func readFile(t *testing.T, name string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(name)

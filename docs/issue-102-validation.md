@@ -37,7 +37,7 @@ The following regression tests map directly to the criteria:
 
 | Criterion | Evidence |
 | --- | --- |
-| AC1 | `TestAlertRulesUseBoundedMetricsAndActionableAnnotations`; `codex-chat-api.rules.test.yml` firing, single-client false-positive, and healthy fixtures |
+| AC1 | `TestAlertRulesUseBoundedMetricsAndActionableAnnotations`, `TestCoolingAlertPreservesScrapeTargetLabels`; `codex-chat-api.rules.test.yml` firing, realistic target-label, cross-target isolation, single-client false-positive, and healthy fixtures |
 | AC2 | `website/docs/production-readiness.md`; successful Docusaurus production build |
 | AC3 | Production runbook operating constraint and `website/docs/multi-credential-pool.md` |
 | AC4 | Full/race/vet/build/docs results above; `TestDevSoakExercisesHealthCompletionAndStreaming`; existing PR image-build job |
@@ -52,11 +52,11 @@ promtool test rules examples/prometheus/codex-chat-api.rules.test.yml
 docker build -t codex-chat-api:preflight .
 ```
 
-The managed worktree sandbox may not expose a Docker daemon or `promtool`.
-The PR quality workflow therefore runs both Prometheus rule checks in the
-official Prometheus container and runs `docker build .` on every pull request.
-Do not promote unless the `prom-rules` and `image-build` jobs pass for the exact
-candidate commit.
+The exact-candidate evidence is the successful `prom-rules` and `image-build`
+checks on the pushed commit. The PR quality workflow runs both Prometheus rule
+checks in the official Prometheus container and runs `docker build .` on every
+pull request; its check results are the authoritative record. Do not promote
+unless both jobs pass for the exact candidate commit.
 
 ## Live dev evidence
 
