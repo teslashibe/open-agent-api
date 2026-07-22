@@ -244,10 +244,15 @@ func models(cfg config.Config) fiber.Handler {
 func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		provider := "unknown"
+		metricPhase := codex.PhaseUnknown
+		metricOwnedByStream := false
 		defer func() {
+			if metricOwnedByStream {
+				return
+			}
 			status := c.Response().StatusCode()
 			result := requestMetricResult(status)
-			opts.metrics.ObserveRequest(provider, result)
+			opts.metrics.ObserveRequest(provider, string(metricPhase), result)
 			if status == fiber.StatusTooManyRequests {
 				failureClass, _ := c.Locals(metricsFailureClassLocal).(string)
 				if failureClass == "" {
@@ -372,8 +377,12 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 
 		if req.Stream {
-			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, provider, requestID, releaseQueue, requestStart, contextDuration, queueWait)
+			metricPhase = codex.PhaseConnect
+			streamOwned, err := streamChatCompletion(c, opts, ctx, cancel, serviceReq, provider, requestID, releaseQueue, requestStart, contextDuration, queueWait)
+			metricOwnedByStream = streamOwned
+			return err
 		}
+		metricPhase = codex.PhaseComplete
 		defer cancel()
 		defer releaseQueue()
 
@@ -387,7 +396,7 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 		upstreamDuration := opts.now().Sub(upstreamStart)
 		if err != nil {
-			logLine(opts, "complete_error model=%s err=%s failure_class=%s failure_phase=%s\n", model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
+			logLine(opts, "complete_error model=%s err=%s failure_class=%s failure_phase=%s\n", model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseComplete)
 			logRequestTiming(opts, requestID, contextDuration, queueWait, upstreamDuration, -1, opts.now().Sub(requestStart))
 			return mapServiceError(c, err)
 		}
@@ -421,7 +430,7 @@ func chatCompletions(opts options) fiber.Handler {
 	}
 }
 
-func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, provider string, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
+func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, provider string, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) (bool, error) {
 	upstreamStart := opts.now()
 	events, err := opts.codexService.Stream(ctx, req)
 	if err != nil && errors.Is(err, codex.ErrUsageLimitReached) {
@@ -443,7 +452,7 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		releaseQueue()
 		logLine(opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", requestID, req.Model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
 		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
-		return mapServiceError(c, err)
+		return false, mapServiceError(c, err)
 	}
 	events = withStreamIdleTimeout(ctx, events, opts.contextConfig.StreamIdleTimeout)
 
@@ -456,6 +465,10 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 	c.Set(fiber.HeaderCacheControl, "no-cache")
 	c.Set(fiber.HeaderConnection, "keep-alive")
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		terminal := canceledStreamTerminal(0, false)
+		defer func() {
+			opts.metrics.ObserveRequest(provider, string(terminal.phase), terminal.result())
+		}()
 		opts.metrics.IncActiveStreams(provider)
 		defer opts.metrics.DecActiveStreams(provider)
 		defer releaseQueue()
@@ -472,30 +485,31 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				{Index: 0, Delta: openai.ChatDelta{Role: "assistant"}},
 			},
 		}) {
+			terminal = canceledStreamTerminal(0, false)
 			logLine(opts,
-				"stream_end id=%s model=%s outcome=client_disconnect deltas=0 tool_deltas=0 upstream_events=0 finish=none ctx_err=%s duration_ms=0\n",
-				streamID, model, ctxErrString(ctx),
+				"stream_end id=%s model=%s outcome=%s phase=%s result=%s failure_class=%s deltas=0 tool_deltas=0 upstream_events=0 finish=none ctx_err=%s duration_ms=0\n",
+				streamID, model, terminal.outcome, terminal.phase, terminal.result(), terminal.failureClass, ctxErrString(ctx),
 			)
 			logRequestTiming(opts, streamID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
 			return
 		}
 
-		outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount, assistantText, start, firstDeltaLatency := deliverToolStream(
+		terminal, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount, assistantText, start, firstDeltaLatency := deliverToolStream(
 			ctx, opts, w, cancel, req, opts.codexService, events, id, created, model, streamID, upstreamStart,
 		)
 
-		finish := streamFinish(outcome, toolCallCount > 0)
+		finish := streamFinish(terminal.outcome, toolCallCount > 0)
 		if opts.logBodyShape {
 			logStreamOutput(opts, streamID, textBytes, toolCallCount, toolArgChars, detectLoopPhrase(assistantText))
 		}
 		logLine(opts,
-			"stream_end id=%s model=%s outcome=%s deltas=%d tool_deltas=%d upstream_events=%d finish=%s ctx_err=%s duration_ms=%d\n",
-			streamID, model, outcome, deltas, toolDeltas, upstreamEvents, finish,
+			"stream_end id=%s model=%s outcome=%s phase=%s result=%s failure_class=%s deltas=%d tool_deltas=%d upstream_events=%d finish=%s ctx_err=%s duration_ms=%d\n",
+			streamID, model, terminal.outcome, terminal.phase, terminal.result(), terminal.failureClass, deltas, toolDeltas, upstreamEvents, finish,
 			ctxErrString(ctx), opts.now().Sub(start).Milliseconds(),
 		)
 		logRequestTiming(opts, streamID, contextDuration, queueWait, opts.now().Sub(upstreamStart), firstDeltaLatency, opts.now().Sub(requestStart))
 	})
-	return nil
+	return true, nil
 }
 
 func logRequestTiming(opts options, requestID string, contextDuration, queueWait, upstreamDuration, firstDeltaLatency, totalDuration time.Duration) {
@@ -518,21 +532,95 @@ func durationMillis(duration time.Duration) int64 {
 	return duration.Milliseconds()
 }
 
-func requestMetricResult(status int) string {
-	switch {
-	case status == fiber.StatusTooManyRequests:
-		return "rate_limited"
-	case status >= fiber.StatusOK && status < fiber.StatusBadRequest:
-		return "success"
-	case status >= fiber.StatusBadRequest && status < fiber.StatusInternalServerError:
-		return "client_error"
-	default:
-		return "server_error"
+const (
+	requestResultSuccess       = "success"
+	requestResultClientError   = "client_error"
+	requestResultRateLimited   = "rate_limited"
+	requestResultServerError   = "server_error"
+	requestResultUpstreamError = "upstream_error"
+	requestResultCanceled      = "canceled"
+	failureClassNone           = "none"
+)
+
+type streamOutcome string
+
+const (
+	streamOutcomeCompleted     streamOutcome = "completed"
+	streamOutcomeUpstreamError streamOutcome = "upstream_error"
+	streamOutcomeCanceled      streamOutcome = "canceled"
+)
+
+// streamTerminal is the single bounded terminal state shared by stream logs
+// and request metrics. It intentionally carries no request-derived values.
+type streamTerminal struct {
+	outcome      streamOutcome
+	phase        codex.FailurePhase
+	failureClass string
+}
+
+// pendingStreamTerminal is internal-only state while a stream is still being
+// delivered. It is never observed: the body writer replaces it with success,
+// cancellation, or upstream error before recording telemetry.
+func pendingStreamTerminal() streamTerminal {
+	return streamTerminal{
+		outcome:      streamOutcomeCompleted,
+		phase:        codex.PhaseUnknown,
+		failureClass: failureClassNone,
 	}
 }
 
-func streamFinish(outcome string, toolCallEmitted bool) string {
-	if outcome != "completed" {
+func successfulStreamTerminal() streamTerminal {
+	return streamTerminal{
+		outcome:      streamOutcomeCompleted,
+		phase:        codex.PhaseComplete,
+		failureClass: failureClassNone,
+	}
+}
+
+func canceledStreamTerminal(upstreamEvents int, emittedContent bool) streamTerminal {
+	return streamTerminal{
+		outcome:      streamOutcomeCanceled,
+		phase:        codex.ClassifyPhase(upstreamEvents, emittedContent),
+		failureClass: failureClassNone,
+	}
+}
+
+func upstreamErrorStreamTerminal(err error, upstreamEvents int, emittedContent bool) streamTerminal {
+	return streamTerminal{
+		outcome:      streamOutcomeUpstreamError,
+		phase:        codex.ClassifyPhase(upstreamEvents, emittedContent),
+		failureClass: string(codex.ClassifyFailure(err)),
+	}
+}
+
+func (t streamTerminal) result() string {
+	switch t.outcome {
+	case streamOutcomeCompleted:
+		return requestResultSuccess
+	case streamOutcomeCanceled:
+		return requestResultCanceled
+	default:
+		return requestResultUpstreamError
+	}
+}
+
+func requestMetricResult(status int) string {
+	switch {
+	case status == 499:
+		return requestResultCanceled
+	case status == fiber.StatusTooManyRequests:
+		return requestResultRateLimited
+	case status >= fiber.StatusOK && status < fiber.StatusBadRequest:
+		return requestResultSuccess
+	case status >= fiber.StatusBadRequest && status < fiber.StatusInternalServerError:
+		return requestResultClientError
+	default:
+		return requestResultServerError
+	}
+}
+
+func streamFinish(outcome streamOutcome, toolCallEmitted bool) string {
+	if outcome != streamOutcomeCompleted {
 		return "none"
 	}
 	if toolCallEmitted {
@@ -775,6 +863,24 @@ func writeSSE(ctx context.Context, cancel context.CancelFunc, w *bufio.Writer, v
 		return false
 	}
 	if _, err := w.Write(data); err != nil {
+		cancel()
+		return false
+	}
+	if err := w.Flush(); err != nil {
+		cancel()
+		return false
+	}
+	return true
+}
+
+func writeSSEDone(ctx context.Context, cancel context.CancelFunc, w *bufio.Writer) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	default:
+	}
+
+	if _, err := w.Write(sse.Done()); err != nil {
 		cancel()
 		return false
 	}
