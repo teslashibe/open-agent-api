@@ -7,6 +7,21 @@ token stored by `codex login`. No `sk-` API key is needed.
 > Reverse-engineered from `codex_cli_rs` 0.144.1. Use responsibly and within
 > OpenAI's terms.
 
+## Operator Guide
+
+The deployment and operations guide is published at
+[teslashibe.github.io/codex-chat-api](https://teslashibe.github.io/codex-chat-api/).
+
+Run the guide locally with Node.js 20 or newer:
+
+```bash
+cd website
+npm ci
+npm start
+```
+
+Use `npm run build` from `website/` to run the same static-site check as CI.
+
 ## Requirements
 
 - Go 1.23 or newer.
