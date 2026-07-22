@@ -129,6 +129,14 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 		if detail == "" || detail == "null" {
 			detail = fmt.Sprintf("codex event type %s", event.Type)
 		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return StreamEvent{}, true, NewError(
+				ErrorKindAuth,
+				status,
+				"codex authentication failed",
+				fmt.Errorf("codex %s authorization rejected", event.Type),
+			)
+		}
 		if strings.Contains(detail, "usage_limit_reached") {
 			retryAfter, resetAt := retryHintFromJSON(raw)
 			err := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", fmt.Errorf("%w: codex %s: %s", ErrUsageLimitReached, event.Type, detail))

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
 
 func TestPooledServiceSameQueueKeyMapsToSameClient(t *testing.T) {
@@ -172,6 +174,37 @@ func TestPooledServiceAuthFailureRemovesClientFromSelection(t *testing.T) {
 	}
 }
 
+func TestPooledServiceWebsocketAuthFrameMarksClientUnhealthy(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	conn := &fakeWebsocketConn{readMessages: [][]byte{
+		[]byte(`{"type":"response.failed","status":403,"error":{"message":"secret-access-token raw-user@example.test"}}`),
+	}}
+	dialer := &recordingDialer{conns: []websocketConn{conn}}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = dialer.dial
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "work-a", Service: client},
+	)
+
+	if _, err := pool.Complete(context.Background(), Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+	}); err == nil || ClassifyFailure(err) != FailureAuth {
+		t.Fatalf("Complete() error = %v, want websocket auth failure", err)
+	}
+	if health := pool.Health(); health.UsableClients != 0 || health.Clients[0].Reason != clientHealthReasonAuth {
+		t.Fatalf("Health() = %#v, want auth-unhealthy client", health)
+	}
+	if _, err := pool.Complete(context.Background(), Request{}); !errors.Is(err, ErrNoUsableClients) {
+		t.Fatalf("second Complete() error = %v, want ErrNoUsableClients", err)
+	}
+	if len(dialer.requests) != 1 {
+		t.Fatalf("websocket attempts = %d, want auth-failed client excluded", len(dialer.requests))
+	}
+}
+
 func TestPooledServiceMidstreamAuthFailureMarksUnhealthyWithoutRotating(t *testing.T) {
 	authErr := NewError(ErrorKindAuth, http.StatusUnauthorized, "authentication failed", errors.New("secret-access-token raw-user@example.test"))
 	calls := map[string]int{}
@@ -237,6 +270,33 @@ func TestPooledServiceRecoversOnlyAfterCredentialRevisionChanges(t *testing.T) {
 		if strings.Contains(logs.String(), secret) {
 			t.Fatalf("health transition logs leaked %q: %s", secret, logs.String())
 		}
+	}
+}
+
+func TestPooledServiceTracksEveryConcurrentFailedCredentialRevision(t *testing.T) {
+	revisionA := sha256.Sum256([]byte("expired-a secret-access-token raw-a@example.test"))
+	revisionB := sha256.Sum256([]byte("expired-b secret-access-token raw-b@example.test"))
+	revisionC := sha256.Sum256([]byte("replacement secret-access-token raw-c@example.test"))
+	service := &revisionedPoolService{currentRevision: revisionB}
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "work-a", Service: service},
+	)
+
+	pool.markClientAuthUnhealthy(0, withCredentialRevision(
+		NewError(ErrorKindAuth, http.StatusUnauthorized, "authentication failed", nil),
+		revisionA,
+	))
+	pool.markClientAuthUnhealthy(0, withCredentialRevision(
+		NewError(ErrorKindAuth, http.StatusUnauthorized, "authentication failed", nil),
+		revisionB,
+	))
+	if health := pool.Health(); health.UsableClients != 0 {
+		t.Fatalf("Health() after concurrent failures = %#v, want revision B excluded", health)
+	}
+
+	service.reload(revisionC)
+	if health := pool.Health(); health.UsableClients != 1 {
+		t.Fatalf("Health() after replacement = %#v, want revision C recovered", health)
 	}
 }
 
@@ -1249,7 +1309,6 @@ type poolFakeService struct {
 type revisionedPoolService struct {
 	mu              sync.Mutex
 	currentRevision [sha256.Size]byte
-	lastRevision    [sha256.Size]byte
 	authErr         error
 	recovered       bool
 }
@@ -1269,9 +1328,8 @@ func (s *revisionedPoolService) Complete(ctx context.Context, req Request) (Comp
 func (s *revisionedPoolService) Stream(context.Context, Request) (<-chan StreamEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastRevision = s.currentRevision
 	if !s.recovered {
-		return nil, s.authErr
+		return nil, withCredentialRevision(s.authErr, s.currentRevision)
 	}
 	return poolEvents(StreamEvent{Delta: "recovered"}, StreamEvent{Done: true}), nil
 }
@@ -1280,12 +1338,6 @@ func (s *revisionedPoolService) validateCredentialRevision() ([sha256.Size]byte,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.currentRevision, nil
-}
-
-func (s *revisionedPoolService) lastCredentialRevision() ([sha256.Size]byte, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastRevision, s.lastRevision != [sha256.Size]byte{}
 }
 
 func (s *revisionedPoolService) reload(revision [sha256.Size]byte) {

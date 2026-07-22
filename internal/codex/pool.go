@@ -64,15 +64,13 @@ type clientCooldown struct {
 }
 
 type clientHealthState struct {
-	usable         bool
-	reason         string
-	failedRevision [sha256.Size]byte
-	hasRevision    bool
+	usable          bool
+	reason          string
+	failedRevisions map[[sha256.Size]byte]struct{}
 }
 
 type credentialRevisionProvider interface {
 	validateCredentialRevision() ([sha256.Size]byte, error)
-	lastCredentialRevision() ([sha256.Size]byte, bool)
 }
 
 type softPin struct {
@@ -256,7 +254,7 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 	if err != nil {
 		cancel()
 		if ClassifyFailure(err) == FailureAuth {
-			p.markClientAuthUnhealthy(index)
+			p.markClientAuthUnhealthy(index, err)
 		}
 		if reason, unhealthy := p.unpinReason(err, PhaseConnect); unhealthy {
 			if reason == unpinReasonCooldown {
@@ -311,7 +309,7 @@ func (p *PooledService) forwardAttempt(
 		return
 	}
 	if first.Err != nil && ClassifyFailure(first.Err) == FailureAuth {
-		p.markClientAuthUnhealthy(index)
+		p.markClientAuthUnhealthy(index, first.Err)
 	}
 	if reason, unhealthy := p.unpinReason(first.Err, PhaseFirstEvent); first.Err != nil && unhealthy {
 		if reason == unpinReasonCooldown {
@@ -352,7 +350,7 @@ func (p *PooledService) forwardAttempt(
 		p.recordSuccessfulSelection(req, index, unpin, refreshPin)
 	}, func(err error) {
 		if ClassifyFailure(err) == FailureAuth {
-			p.markClientAuthUnhealthy(index)
+			p.markClientAuthUnhealthy(index, err)
 		}
 	})
 }
@@ -425,22 +423,22 @@ func (p *PooledService) cooldownEligible(err error, phase FailurePhase) bool {
 	return MayRotateAccount(class, phase)
 }
 
-func (p *PooledService) markClientAuthUnhealthy(index int) {
-	var revision [sha256.Size]byte
-	hasRevision := false
-	if provider, ok := p.clients[index].service.(credentialRevisionProvider); ok {
-		revision, hasRevision = provider.lastCredentialRevision()
-	}
-
+func (p *PooledService) markClientAuthUnhealthy(index int, err error) {
+	revision, hasRevision := credentialRevisionFromError(err)
 	p.mu.Lock()
-	if !p.health[index].usable {
+	state := &p.health[index]
+	wasUsable := state.usable
+	state.usable = false
+	state.reason = clientHealthReasonAuth
+	if hasRevision {
+		if state.failedRevisions == nil {
+			state.failedRevisions = make(map[[sha256.Size]byte]struct{})
+		}
+		state.failedRevisions[revision] = struct{}{}
+	}
+	if !wasUsable {
 		p.mu.Unlock()
 		return
-	}
-	p.health[index] = clientHealthState{
-		reason:         clientHealthReasonAuth,
-		failedRevision: revision,
-		hasRevision:    hasRevision,
 	}
 	for key, element := range p.softPins {
 		if element.Value.(*softPin).index == index {
@@ -458,9 +456,9 @@ func (p *PooledService) markClientAuthUnhealthy(index int) {
 
 func (p *PooledService) tryRecoverClient(index int) bool {
 	p.mu.Lock()
-	state := p.health[index]
+	isUsable := p.health[index].usable
 	p.mu.Unlock()
-	if state.usable {
+	if isUsable {
 		return true
 	}
 	provider, ok := p.clients[index].service.(credentialRevisionProvider)
@@ -468,18 +466,21 @@ func (p *PooledService) tryRecoverClient(index int) bool {
 		return false
 	}
 	revision, err := provider.validateCredentialRevision()
-	if err != nil || state.hasRevision && revision == state.failedRevision {
+	if err != nil {
 		return false
 	}
 
 	p.mu.Lock()
-	current := p.health[index]
-	if current.usable || current.hasRevision != state.hasRevision || current.failedRevision != state.failedRevision {
-		usable := current.usable
+	state := &p.health[index]
+	if state.usable {
 		p.mu.Unlock()
-		return usable
+		return true
 	}
-	p.health[index] = clientHealthState{usable: true}
+	if _, failed := state.failedRevisions[revision]; failed {
+		p.mu.Unlock()
+		return false
+	}
+	*state = clientHealthState{usable: true}
 	usable := p.usableClientsLocked()
 	p.metrics.SetPoolClientUsable(p.clients[index].label, true)
 	p.metrics.SetPoolUsableClients(usable)
