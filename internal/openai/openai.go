@@ -35,6 +35,41 @@ type ToolCall struct {
 	Type     string           `json:"type"`
 	Function ToolCallFunction `json:"function"`
 	Custom   *ToolCallCustom  `json:"custom,omitempty"`
+	// ExtraContent carries provider-specific fields. Gemini OpenAI-compat uses
+	// extra_content.google.thought_signature for multi-turn tool calling.
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
+}
+
+// GoogleThoughtSignatureExtra builds the OpenAI-compat envelope Gemini expects
+// for thought signature round-trips.
+func GoogleThoughtSignatureExtra(sig string) json.RawMessage {
+	sig = strings.TrimSpace(sig)
+	if sig == "" {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]any{
+		"google": map[string]string{"thought_signature": sig},
+	})
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// ThoughtSignatureFromExtra reads extra_content.google.thought_signature.
+func ThoughtSignatureFromExtra(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var envelope struct {
+		Google struct {
+			ThoughtSignature string `json:"thought_signature"`
+		} `json:"google"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.Google.ThoughtSignature)
 }
 
 type ToolCallCustom struct {
@@ -84,11 +119,12 @@ type ChatDelta struct {
 }
 
 type ToolCallDelta struct {
-	Index    int                    `json:"index"`
-	ID       string                 `json:"id,omitempty"`
-	Type     string                 `json:"type,omitempty"`
-	Function *ToolCallFunctionDelta `json:"function,omitempty"`
-	Custom   *ToolCallCustom        `json:"custom,omitempty"`
+	Index        int                    `json:"index"`
+	ID           string                 `json:"id,omitempty"`
+	Type         string                 `json:"type,omitempty"`
+	Function     *ToolCallFunctionDelta `json:"function,omitempty"`
+	Custom       *ToolCallCustom        `json:"custom,omitempty"`
+	ExtraContent json.RawMessage        `json:"extra_content,omitempty"`
 }
 
 type ToolCallFunctionDelta struct {
