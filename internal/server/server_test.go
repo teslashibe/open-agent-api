@@ -20,6 +20,23 @@ import (
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
 
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
 func agentQueueTestConfig() config.Config {
 	cfg := config.Defaults()
 	cfg.DegenerateTurnRetryEnabled = false
@@ -49,6 +66,109 @@ func TestHealth(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Fatalf("status body = %q, want ok", body["status"])
+	}
+}
+
+func getStatus(t *testing.T, app *fiber.App, path string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() %s error = %v", path, err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func postStatus(t *testing.T, app *fiber.App, path string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() %s error = %v", path, err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+// TestHealthLiveReady covers AC1: live and ready are both 200 when not draining.
+func TestHealthLiveReady(t *testing.T) {
+	app := New(config.Defaults())
+
+	if got := getStatus(t, app, "/health/live"); got != http.StatusOK {
+		t.Fatalf("/health/live status = %d, want %d", got, http.StatusOK)
+	}
+	if got := getStatus(t, app, "/health/ready"); got != http.StatusOK {
+		t.Fatalf("/health/ready status = %d, want %d", got, http.StatusOK)
+	}
+}
+
+// TestDrainLocalhostFailsReadyAndBlocksChat covers AC2: after a localhost drain
+// start, ready is 503, live stays 200, and new chat completions are rejected
+// with 503 without any upstream call.
+func TestDrainLocalhostFailsReadyAndBlocksChat(t *testing.T) {
+	var upstreamCalls int
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			upstreamCalls++
+			return codex.Completion{Text: "hi"}, nil
+		},
+	}
+	app := New(
+		config.Defaults(),
+		WithCodexService(service),
+		WithLogOutput(io.Discard),
+		fixedServerOptions(),
+		withLocalCheck(func(*fiber.Ctx) bool { return true }),
+	)
+
+	if got := postStatus(t, app, "/drain/start"); got != http.StatusOK {
+		t.Fatalf("/drain/start status = %d, want %d", got, http.StatusOK)
+	}
+	if got := getStatus(t, app, "/health/ready"); got != http.StatusServiceUnavailable {
+		t.Fatalf("/health/ready status = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	if got := getStatus(t, app, "/health/live"); got != http.StatusOK {
+		t.Fatalf("/health/live status = %d, want %d", got, http.StatusOK)
+	}
+
+	resp := doJSON(t, app, mustJSON(t, openai.ChatCompletionRequest{
+		Model:    openai.DefaultModel,
+		Messages: []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hello")}},
+	}))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("chat completion status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream called %d times while draining, want 0", upstreamCalls)
+	}
+
+	// Stopping the drain restores readiness.
+	if got := postStatus(t, app, "/drain/stop"); got != http.StatusOK {
+		t.Fatalf("/drain/stop status = %d, want %d", got, http.StatusOK)
+	}
+	if got := getStatus(t, app, "/health/ready"); got != http.StatusOK {
+		t.Fatalf("/health/ready after stop = %d, want %d", got, http.StatusOK)
+	}
+}
+
+// TestDrainRejectedFromNonLoopback covers AC3: a drain call from a non-loopback
+// address returns 404 and the server does not enter draining.
+func TestDrainRejectedFromNonLoopback(t *testing.T) {
+	app := New(config.Defaults(), WithLogOutput(io.Discard))
+
+	if got := postStatus(t, app, "/drain/start"); got != http.StatusNotFound {
+		t.Fatalf("/drain/start from non-loopback status = %d, want %d", got, http.StatusNotFound)
+	}
+	if got := getStatus(t, app, "/health/ready"); got != http.StatusOK {
+		t.Fatalf("/health/ready status = %d, want %d (must not have drained)", got, http.StatusOK)
 	}
 }
 
@@ -1344,7 +1464,7 @@ func TestAgentQueueSerializesSameKey(t *testing.T) {
 			return codex.Completion{Text: "ok", Model: req.Model}, nil
 		},
 	}
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
 	firstDone := postJSONAsync(t, app, `{"session_id":"same-session","messages":[{"role":"user","content":"one"}],"tools":[{"type":"function"}]}`)
@@ -1585,7 +1705,7 @@ func TestAgentQueuePriorityOrdersDifferentKeysViaHandler(t *testing.T) {
 			return codex.Completion{Text: "ok", Model: req.Model}, nil
 		},
 	}
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
 	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"first"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-a"})
@@ -1979,6 +2099,30 @@ func TestChatCompletionsGeminiCapacityReturnsRateLimitError(t *testing.T) {
 	}
 	if strings.Contains(body, "upstream error") {
 		t.Fatalf("body = %q, still using generic upstream error", body)
+	}
+}
+
+func TestChatCompletionsClientPoolSaturatedReturnsRateLimitError(t *testing.T) {
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			return codex.Completion{}, codex.NewError(
+				codex.ErrorKindUpstream,
+				http.StatusTooManyRequests,
+				codex.ErrClientPoolSaturated.Error(),
+				codex.ErrClientPoolSaturated,
+			)
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+	body := readString(t, resp.Body)
+	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, `"message":"codex client pool saturated"`) {
+		t.Fatalf("body = %q, want stable OpenAI-shaped saturation error", body)
 	}
 }
 

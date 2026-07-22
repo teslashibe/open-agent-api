@@ -7,18 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/google/uuid"
 
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/config"
+	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 	"github.com/teslashibe/codex-chat-api/internal/sse"
 )
@@ -31,11 +36,15 @@ type options struct {
 	now                func() time.Time
 	newID              func() string
 	logOutput          io.Writer
+	logMu              *sync.Mutex
 	logBodyShape       bool
 	logRequestIdentity bool
 	agentQueueKeyMode  string
 	agentQueues        map[string]*agentQueue
 	contextConfig      config.Config
+	drain              *atomic.Bool
+	isLocal            func(*fiber.Ctx) bool
+	metrics            *metricspkg.Metrics
 }
 
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
@@ -59,6 +68,23 @@ func WithLogOutput(output io.Writer) Option {
 	}
 }
 
+// WithMetrics shares one process-local registry across the server, queues, and
+// Codex client pool.
+func WithMetrics(metrics *metricspkg.Metrics) Option {
+	return func(opts *options) {
+		opts.metrics = metrics
+	}
+}
+
+// withLocalCheck overrides the loopback detection used by the drain controls.
+// app.Test() connections are not loopback, so tests that need to exercise the
+// positive drain path inject their own predicate.
+func withLocalCheck(isLocal func(*fiber.Ctx) bool) Option {
+	return func(opts *options) {
+		opts.isLocal = isLocal
+	}
+}
+
 func New(cfg config.Config, setters ...Option) *fiber.App {
 	opts := options{
 		codexService: codex.UnavailableService{},
@@ -70,10 +96,16 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			return "chatcmpl-" + uuid.NewString()
 		},
 		logOutput:          os.Stdout,
+		logMu:              &sync.Mutex{},
 		logBodyShape:       cfg.LogBodyShape,
 		logRequestIdentity: cfg.LogRequestIdentity,
 		agentQueueKeyMode:  cfg.AgentQueueKeyMode,
 		contextConfig:      cfg,
+		drain:              &atomic.Bool{},
+		isLocal: func(c *fiber.Ctx) bool {
+			return net.ParseIP(c.IP()).IsLoopback()
+		},
+		metrics: metricspkg.New(cfg.MetricsEnabled),
 	}
 	for _, setter := range setters {
 		setter(&opts)
@@ -94,7 +126,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 				func(format string, args ...any) {
 					logLine(opts, "provider="+provider+" "+format, args...)
 				},
-			)
+			).withMetrics(provider, opts.metrics)
 		}
 	}
 
@@ -106,11 +138,36 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	app.Use(recover.New())
 	app.Use(requestLogger(opts))
 
-	app.Get("/health", func(c *fiber.Ctx) error {
+	// live reports that the process is up. It must never depend on upstream
+	// ChatGPT so an OpenAI outage does not get the pod killed.
+	live := func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status": "ok",
+		})
+	}
+	// /health is kept as a live alias so existing k8s probes need no change.
+	app.Get("/health", live)
+	app.Get("/health/live", live)
+	// ready fails while draining so Services stop routing new traffic during
+	// rollouts. It deliberately does not ping upstream ChatGPT.
+	app.Get("/health/ready", func(c *fiber.Ctx) error {
+		if opts.drain.Load() {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"status": "draining",
+			})
+		}
 		return c.JSON(fiber.Map{
 			"status": "ok",
 		})
 	})
+	// Drain controls are localhost-only: a new pod signals the old one to stop
+	// accepting work before SIGTERM. Non-loopback callers get a 404 so the
+	// endpoint is not discoverable and the drain state is left untouched.
+	app.Post("/drain/start", drainControl(opts, true))
+	app.Post("/drain/stop", drainControl(opts, false))
+	if opts.metrics.Enabled() {
+		app.Get("/metrics", bearerAuthMiddleware(cfg.GatewayBearerSecret), adaptor.HTTPHandler(opts.metrics.Handler()))
+	}
 	// Bearer auth guards every /v1 route but never /health, which k8s probes
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
@@ -121,6 +178,25 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	})
 
 	return app
+}
+
+// drainControl sets or clears the draining flag, but only for loopback callers.
+// Remote callers get a 404 and the state is left untouched (AC3).
+func drainControl(opts options, draining bool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if !opts.isLocal(c) {
+			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "not found")
+		}
+		opts.drain.Store(draining)
+		status := "ok"
+		if draining {
+			status = "draining"
+		}
+		return c.JSON(fiber.Map{
+			"status":   status,
+			"draining": draining,
+		})
+	}
 }
 
 func models(cfg config.Config) fiber.Handler {
@@ -147,6 +223,25 @@ func models(cfg config.Config) fiber.Handler {
 
 func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		provider := "unknown"
+		defer func() {
+			status := c.Response().StatusCode()
+			result := requestMetricResult(status)
+			opts.metrics.ObserveRequest(provider, result)
+			if status == fiber.StatusTooManyRequests {
+				failureClass, _ := c.Locals(metricsFailureClassLocal).(string)
+				if failureClass == "" {
+					failureClass = string(codex.FailureRateLimit)
+				}
+				opts.metrics.ObserveRateLimit(provider, failureClass)
+			}
+		}()
+		// Reject new work while draining so in-flight requests can finish before
+		// SIGTERM. Placed before any parsing or upstream call so no ChatGPT
+		// request is made (AC2).
+		if opts.drain.Load() {
+			return writeError(c, fiber.StatusServiceUnavailable, "server_error", "server draining")
+		}
 		requestStart := opts.now()
 		requestID := opts.newID()
 		if opts.logBodyShape {
@@ -169,12 +264,18 @@ func chatCompletions(opts options) fiber.Handler {
 			model = openai.DefaultModel
 		}
 		modelAlias := openai.ResolveModelAlias(model)
-		provider := codex.ProviderForModel(modelAlias.UpstreamModel)
+		provider = codex.ProviderForModel(modelAlias.UpstreamModel)
 		if !opts.contextConfig.ProviderEnabled(provider) {
 			logLine(opts, "provider_disabled model=%s provider=%s\n", model, provider)
 			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "model not found")
 		}
 		toolsPresent := rawJSONPresent(req.Tools)
+		if !toolsPresent {
+			// Non-Agent requests intentionally bypass admission control. Record the
+			// zero wait so ordinary chat traffic still advances the histogram and
+			// operators can distinguish bypasses from queued acquisitions.
+			opts.metrics.ObserveQueueWait(provider, "bypassed", 0)
+		}
 		turnClass := classifyTurn(req, toolsPresent)
 		logLine(opts, "chat_completion model=%s provider=%s stream=%t tools_present=%t turn_class=%s\n", model, provider, req.Stream, toolsPresent, turnClass)
 
@@ -251,7 +352,7 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 
 		if req.Stream {
-			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, requestID, releaseQueue, requestStart, contextDuration, queueWait)
+			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, provider, requestID, releaseQueue, requestStart, contextDuration, queueWait)
 		}
 		defer cancel()
 		defer releaseQueue()
@@ -266,7 +367,7 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 		upstreamDuration := opts.now().Sub(upstreamStart)
 		if err != nil {
-			logLine(opts, "complete_error model=%s err=%s\n", model, detailedError(err))
+			logLine(opts, "complete_error model=%s err=%s failure_class=%s failure_phase=%s\n", model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
 			logRequestTiming(opts, requestID, contextDuration, queueWait, upstreamDuration, -1, opts.now().Sub(requestStart))
 			return mapServiceError(c, err)
 		}
@@ -300,12 +401,27 @@ func chatCompletions(opts options) fiber.Handler {
 	}
 }
 
-func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
+func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, provider string, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
 	upstreamStart := opts.now()
 	events, err := opts.codexService.Stream(ctx, req)
+	if err != nil && errors.Is(err, codex.ErrUsageLimitReached) {
+		if fallbackReq, ok := buildQuotaFallbackRequest(req, opts.contextConfig); ok {
+			fallbackEvents, fallbackErr := opts.codexService.Stream(ctx, fallbackReq)
+			if fallbackErr != nil {
+				logLine(opts, "quota_fallback_error request_id=%s from=%s to=%s err=%s\n", requestID, req.Model, fallbackReq.Model, detailedError(fallbackErr))
+				err = fallbackErr
+			} else {
+				logLine(opts, "quota_fallback request_id=%s from=%s to=%s messages=%d\n", requestID, req.Model, fallbackReq.Model, len(fallbackReq.Messages))
+				req = fallbackReq
+				events = fallbackEvents
+				err = nil
+			}
+		}
+	}
 	if err != nil {
 		cancel()
 		releaseQueue()
+		logLine(opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", requestID, req.Model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
 		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
 		return mapServiceError(c, err)
 	}
@@ -320,6 +436,8 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 	c.Set(fiber.HeaderCacheControl, "no-cache")
 	c.Set(fiber.HeaderConnection, "keep-alive")
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		opts.metrics.IncActiveStreams(provider)
+		defer opts.metrics.DecActiveStreams(provider)
 		defer releaseQueue()
 		defer cancel()
 
@@ -378,6 +496,19 @@ func durationMillis(duration time.Duration) int64 {
 		return -1
 	}
 	return duration.Milliseconds()
+}
+
+func requestMetricResult(status int) string {
+	switch {
+	case status == fiber.StatusTooManyRequests:
+		return "rate_limited"
+	case status >= fiber.StatusOK && status < fiber.StatusBadRequest:
+		return "success"
+	case status >= fiber.StatusBadRequest && status < fiber.StatusInternalServerError:
+		return "client_error"
+	default:
+		return "server_error"
+	}
 }
 
 func streamFinish(outcome string, toolCallEmitted bool) string {
@@ -458,6 +589,10 @@ func logLine(opts options, format string, args ...any) {
 	if opts.logOutput == nil {
 		return
 	}
+	if opts.logMu != nil {
+		opts.logMu.Lock()
+		defer opts.logMu.Unlock()
+	}
 	_, _ = fmt.Fprintf(opts.logOutput, format, args...)
 }
 
@@ -537,6 +672,7 @@ func validateChatRequest(req openai.ChatCompletionRequest) error {
 }
 
 func mapServiceError(c *fiber.Ctx, err error) error {
+	c.Locals(metricsFailureClassLocal, string(codex.ClassifyFailure(err)))
 	if errors.Is(err, context.Canceled) {
 		return writeError(c, 499, "request_canceled", "request canceled")
 	}
@@ -569,6 +705,7 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 }
 
 func mapAgentQueueError(c *fiber.Ctx, err error) error {
+	c.Locals(metricsFailureClassLocal, string(codex.FailureRateLimit))
 	switch {
 	case errors.Is(err, errAgentQueueFull):
 		return writeError(c, fiber.StatusTooManyRequests, "rate_limit_error", "agent queue full")
@@ -578,6 +715,8 @@ func mapAgentQueueError(c *fiber.Ctx, err error) error {
 		return mapServiceError(c, err)
 	}
 }
+
+const metricsFailureClassLocal = "codex_chat_api.metrics_failure_class"
 
 func writeError(c *fiber.Ctx, status int, errorType string, message string) error {
 	return c.Status(status).JSON(openai.ErrorResponse{
@@ -644,6 +783,9 @@ func errorChunk(id string, created int64, model string, message string) openai.C
 }
 
 func publicErrorMessage(err error) string {
+	if errors.Is(err, codex.ErrClientPoolSaturated) {
+		return codex.ErrClientPoolSaturated.Error()
+	}
 	if errors.Is(err, codex.ErrContextWindowExceeded) {
 		return "conversation exceeds this model's context window - switch this chat to a larger model"
 	}

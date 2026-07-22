@@ -37,7 +37,10 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES")
 	unsetenv(t, "CODEX_DEGENERATE_TURN_RETRY")
 	unsetenv(t, "CODEX_CLIENTS")
+	unsetenv(t, "CODEX_CLIENT_MAX_INFLIGHT")
 	unsetenv(t, "CODEX_CLIENT_POOL_UNAVAILABLE")
+	unsetenv(t, "CODEX_CLIENT_COOLDOWN_DEFAULT")
+	unsetenv(t, "CODEX_METRICS_ENABLED")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -125,11 +128,50 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.CodexClientPoolUnavailable != DefaultCodexClientPoolUnavailable {
 		t.Fatalf("CodexClientPoolUnavailable = %q, want %q", cfg.CodexClientPoolUnavailable, DefaultCodexClientPoolUnavailable)
 	}
+	if cfg.CodexClientMaxInflight != DefaultCodexClientMaxInflight {
+		t.Fatalf("CodexClientMaxInflight = %d, want %d", cfg.CodexClientMaxInflight, DefaultCodexClientMaxInflight)
+	}
+	if cfg.CodexClientCooldownDefault != DefaultCodexClientCooldownDefault {
+		t.Fatalf("CodexClientCooldownDefault = %s, want %s", cfg.CodexClientCooldownDefault, DefaultCodexClientCooldownDefault)
+	}
+	if cfg.MetricsEnabled != DefaultMetricsEnabled {
+		t.Fatalf("MetricsEnabled = %t, want %t", cfg.MetricsEnabled, DefaultMetricsEnabled)
+	}
 	if len(cfg.CodexClients) != 1 {
 		t.Fatalf("CodexClients length = %d, want 1", len(cfg.CodexClients))
 	}
 	if cfg.CodexClients[0].Label != "default" || cfg.CodexClients[0].AuthPath != cfg.AuthPath || cfg.CodexClients[0].CodexHome != cfg.CodexHome {
 		t.Fatalf("default codex client = %#v", cfg.CodexClients[0])
+	}
+}
+
+func TestLoadMetricsEnvironmentAndFlag(t *testing.T) {
+	t.Setenv("CODEX_METRICS_ENABLED", "false")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.MetricsEnabled {
+		t.Fatal("MetricsEnabled = true, want false from environment")
+	}
+
+	cfg, err = Load([]string{"--metrics-enabled=true"})
+	if err != nil {
+		t.Fatalf("Load() with flag error = %v", err)
+	}
+	if !cfg.MetricsEnabled {
+		t.Fatal("MetricsEnabled = false, want true from flag")
+	}
+}
+
+func TestLoadInvalidMetricsEnabled(t *testing.T) {
+	t.Setenv("CODEX_METRICS_ENABLED", "sometimes")
+	chdir(t, t.TempDir())
+
+	if _, err := Load(nil); err == nil {
+		t.Fatal("Load() error = nil, want invalid metrics boolean error")
 	}
 }
 
@@ -159,7 +201,9 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_CONTEXT_RECENT_MESSAGES", "9")
 	t.Setenv("CODEX_CONTEXT_TOOL_OUTPUT_MAX_BYTES", "456")
 	t.Setenv("CODEX_CONTEXT_COMPACTED_TOOL_OUTPUT_MAX_BYTES", "78")
+	t.Setenv("CODEX_CLIENT_MAX_INFLIGHT", "4")
 	t.Setenv("CODEX_CLIENT_POOL_UNAVAILABLE", "fallback_first")
+	t.Setenv("CODEX_CLIENT_COOLDOWN_DEFAULT", "17s")
 	t.Setenv("CODEX_CLIENTS", `[
 		{"label":"primary","codex_home":"/tmp/codex-a","profile_path":"/tmp/profile-a.json","scaffold_path":"/tmp/scaffold-a.json"},
 		{"label":"secondary","auth_path":"/tmp/auth-b.json","profile_path":"/tmp/profile-b.json","scaffold_path":"/tmp/scaffold-b.json"}
@@ -219,6 +263,12 @@ func TestLoadEnvironment(t *testing.T) {
 	if cfg.CodexClientPoolUnavailable != "fallback_first" {
 		t.Fatalf("CodexClientPoolUnavailable = %q", cfg.CodexClientPoolUnavailable)
 	}
+	if cfg.CodexClientMaxInflight != 4 {
+		t.Fatalf("CodexClientMaxInflight = %d, want 4", cfg.CodexClientMaxInflight)
+	}
+	if cfg.CodexClientCooldownDefault != 17*time.Second {
+		t.Fatalf("CodexClientCooldownDefault = %s", cfg.CodexClientCooldownDefault)
+	}
 	if len(cfg.CodexClients) != 2 {
 		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
 	}
@@ -263,7 +313,9 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--context-recent-messages", "10",
 		"--context-tool-output-max-bytes", "567",
 		"--context-compacted-tool-output-max-bytes", "89",
+		"--codex-client-max-inflight", "5",
 		"--codex-client-pool-unavailable", "fallback_first",
+		"--codex-client-cooldown-default", "19s",
 		"--codex-clients", `[{"label":"flag-a","codex_home":"/tmp/flag-a"},{"label":"flag-b","auth_path":"/tmp/flag-b-auth.json"}]`,
 	})
 	if err != nil {
@@ -317,6 +369,12 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if cfg.CodexClientPoolUnavailable != "fallback_first" {
 		t.Fatalf("CodexClientPoolUnavailable = %q", cfg.CodexClientPoolUnavailable)
+	}
+	if cfg.CodexClientMaxInflight != 5 {
+		t.Fatalf("CodexClientMaxInflight = %d, want 5", cfg.CodexClientMaxInflight)
+	}
+	if cfg.CodexClientCooldownDefault != 19*time.Second {
+		t.Fatalf("CodexClientCooldownDefault = %s", cfg.CodexClientCooldownDefault)
 	}
 	if len(cfg.CodexClients) != 2 {
 		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
@@ -519,6 +577,33 @@ func TestLoadInvalidCodexClientPoolUnavailable(t *testing.T) {
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid codex client pool unavailable error")
+	}
+}
+
+func TestLoadInvalidCodexClientMaxInflight(t *testing.T) {
+	tests := []string{"not-a-number", "0", "-1"}
+	for _, value := range tests {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CODEX_CLIENT_MAX_INFLIGHT", value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid Codex client max inflight error")
+			}
+		})
+	}
+}
+
+func TestLoadInvalidCodexClientCooldownDefault(t *testing.T) {
+	for _, value := range []string{"0s", "-1s", "not-a-duration"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CODEX_CLIENT_COOLDOWN_DEFAULT", value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid cooldown error")
+			}
+		})
 	}
 }
 

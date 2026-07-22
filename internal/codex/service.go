@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
@@ -27,6 +28,10 @@ type Request struct {
 	AffinityKey       string
 	AffinityKeyHash   string
 	AffinityKeyMode   string
+	// AllowCooling is set only by the server's model-level quota fallback.
+	// It lets that fallback make one attempt when every pooled account is
+	// cooling; ordinary requests always exclude cooling accounts.
+	AllowCooling bool
 }
 
 type Completion struct {
@@ -94,10 +99,12 @@ var ErrContextWindowExceeded = errors.New("context window exceeded")
 var ErrUsageLimitReached = errors.New("usage limit reached")
 
 type Error struct {
-	Kind    ErrorKind
-	Status  int
-	Message string
-	Err     error
+	Kind       ErrorKind
+	Status     int
+	Message    string
+	Err        error
+	RetryAfter time.Duration
+	ResetAt    time.Time
 }
 
 func (e *Error) Error() string {
