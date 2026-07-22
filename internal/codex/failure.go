@@ -37,8 +37,11 @@ const (
 type FailurePhase string
 
 const (
+	// PhaseUnknown means the request ended before an upstream operation phase
+	// was selected (for example request validation or queue admission).
+	PhaseUnknown FailurePhase = "unknown"
 	// PhaseConnect means the failure happened before any upstream event was
-	// observed (Stream returned the error, or a non-streaming call failed).
+	// observed (Stream returned the error).
 	PhaseConnect FailurePhase = "connect"
 	// PhaseFirstEvent means the failure is the first upstream event and no
 	// content (text delta or tool call) has reached the client yet.
@@ -46,6 +49,11 @@ const (
 	// PhaseMidStream means content has already been emitted to the client, so
 	// rotating accounts would corrupt the turn.
 	PhaseMidStream FailurePhase = "mid_stream"
+	// PhaseComplete means a non-streaming completion call ended, or a streaming
+	// response reached its downstream terminal marker. The non-streaming API
+	// does not expose its internal event progress, so it must not be mislabeled
+	// as a connect-time failure.
+	PhaseComplete FailurePhase = "complete"
 )
 
 // ClassifyFailure maps a known error into a FailureClass. It is pure and

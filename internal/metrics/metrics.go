@@ -39,8 +39,8 @@ func New(enabled bool) *Metrics {
 	m.registry = prometheus.NewRegistry()
 	m.requests = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "codex_chat_api_requests_total",
-		Help: "Total chat completion requests by provider and final HTTP result.",
-	}, []string{"provider", "result"})
+		Help: "Total chat completion requests by provider, terminal phase, and bounded result.",
+	}, []string{"provider", "phase", "result"})
 	m.rateLimits = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "codex_chat_api_rate_limit_responses_total",
 		Help: "Total chat completion responses with HTTP 429 by provider and failure class.",
@@ -94,9 +94,9 @@ func (m *Metrics) Handler() http.Handler {
 	})
 }
 
-func (m *Metrics) ObserveRequest(provider, result string) {
+func (m *Metrics) ObserveRequest(provider, phase, result string) {
 	if m.Enabled() {
-		m.requests.WithLabelValues(normalizeProvider(provider), normalizeRequestResult(result)).Inc()
+		m.requests.WithLabelValues(normalizeProvider(provider), normalizeRequestPhase(phase), normalizeRequestResult(result)).Inc()
 	}
 }
 
@@ -151,7 +151,11 @@ func normalizeProvider(value string) string {
 }
 
 func normalizeRequestResult(value string) string {
-	return allow(value, "server_error", "success", "client_error", "rate_limited", "server_error")
+	return allow(value, "server_error", "success", "client_error", "rate_limited", "server_error", "upstream_error", "canceled")
+}
+
+func normalizeRequestPhase(value string) string {
+	return allow(value, "unknown", "unknown", "connect", "first_event", "mid_stream", "complete")
 }
 
 func normalizePoolResult(value string) string {

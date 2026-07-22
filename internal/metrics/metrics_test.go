@@ -10,7 +10,7 @@ import (
 
 func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 	m := New(true)
-	m.ObserveRequest("codex", "success")
+	m.ObserveRequest("codex", "complete", "success")
 	m.ObserveRateLimit("codex", "quota")
 	m.ObservePoolSelection("work-a", "rotated")
 	m.ObservePoolCooldown("work-a", "quota")
@@ -22,7 +22,7 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 
 	body := scrape(t, m)
 	for _, want := range []string{
-		`codex_chat_api_requests_total{provider="codex",result="success"} 1`,
+		`codex_chat_api_requests_total{phase="complete",provider="codex",result="success"} 1`,
 		`codex_chat_api_rate_limit_responses_total{failure_class="quota",provider="codex"} 1`,
 		`codex_chat_api_pool_selections_total{client_label="work-a",result="rotated"} 1`,
 		`codex_chat_api_pool_cooldowns_total{client_label="work-a",failure_class="quota"} 1`,
@@ -44,7 +44,7 @@ func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 		"Bearer secret-access-token",
 		"full-model-prompt-hash-0123456789abcdef",
 	}
-	m.ObserveRequest(secrets[0], secrets[1])
+	m.ObserveRequest(secrets[0], secrets[1], secrets[2])
 	m.ObserveRateLimit(secrets[0], secrets[2])
 	m.ObservePoolSelection(secrets[1], secrets[2])
 	m.ObserveQueueWait(secrets[0], secrets[2], time.Second)
@@ -55,7 +55,7 @@ func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 			t.Fatalf("metrics leaked untrusted label %q:\n%s", secret, body)
 		}
 	}
-	for _, want := range []string{`provider="unknown"`, `client_label="invalid"`} {
+	for _, want := range []string{`provider="unknown"`, `phase="unknown"`, `result="server_error"`, `client_label="invalid"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics body missing normalized label %q:\n%s", want, body)
 		}
@@ -64,7 +64,7 @@ func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 
 func TestDisabledMetricsAreNoopAndNotFound(t *testing.T) {
 	m := New(false)
-	m.ObserveRequest("codex", "success")
+	m.ObserveRequest("codex", "complete", "success")
 
 	recorder := httptest.NewRecorder()
 	m.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/metrics", nil))

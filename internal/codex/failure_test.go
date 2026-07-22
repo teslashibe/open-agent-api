@@ -129,6 +129,16 @@ func TestClassifyPhase(t *testing.T) {
 	}
 }
 
+func TestFailurePhasesAreStableAndBounded(t *testing.T) {
+	want := []FailurePhase{PhaseUnknown, PhaseConnect, PhaseFirstEvent, PhaseMidStream, PhaseComplete}
+	got := []FailurePhase{"unknown", "connect", "first_event", "mid_stream", "complete"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("phase %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestMayRotateAccount(t *testing.T) {
 	tests := []struct {
 		name  string
