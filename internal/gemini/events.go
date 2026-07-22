@@ -68,7 +68,7 @@ func parseStreamEvent(data []byte, customTools map[string]bool) ([]codex.StreamE
 				events = append(events, codex.StreamEvent{
 					Model:         resp.ModelVersion,
 					ID:            resp.ResponseID,
-					ToolCallDelta: geminiToolCallDelta(resp.ResponseID, i, p.FunctionCall, customTools),
+					ToolCallDelta: geminiToolCallDelta(resp.ResponseID, i, p.FunctionCall, p.ThoughtSignature, customTools),
 				})
 			}
 		}
@@ -88,7 +88,7 @@ func parseStreamEvent(data []byte, customTools map[string]bool) ([]codex.StreamE
 	return events, nil
 }
 
-func geminiToolCallDelta(responseID string, index int, call *functionCall, customTools map[string]bool) *codex.ToolCallDelta {
+func geminiToolCallDelta(responseID string, index int, call *functionCall, thoughtSignature string, customTools map[string]bool) *codex.ToolCallDelta {
 	args := "{}"
 	if len(call.Args) > 0 && json.Valid(call.Args) {
 		args = string(call.Args)
@@ -97,10 +97,12 @@ func geminiToolCallDelta(responseID string, index int, call *functionCall, custo
 	if id == "" {
 		id = fmt.Sprintf("call_%s_%d", stableResponseID(responseID), index)
 	}
+	rememberThoughtSignature(id, thoughtSignature)
 	delta := &codex.ToolCallDelta{
-		Index: index,
-		ID:    id,
-		Type:  "function",
+		Index:            index,
+		ID:               id,
+		Type:             "function",
+		ThoughtSignature: thoughtSignature,
 		Function: codex.ToolCallFunctionDelta{
 			Name:      call.Name,
 			Arguments: args,

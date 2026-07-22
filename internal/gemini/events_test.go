@@ -44,7 +44,7 @@ func TestParseStreamEventTextThoughtToolAndDone(t *testing.T) {
 }
 
 func TestParseStreamEventFunctionCallArgsObject(t *testing.T) {
-	events, err := parseStreamEvent([]byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]}}],"responseId":"abc"}}`), nil)
+	events, err := parseStreamEvent([]byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"sig-abc","functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]}}],"responseId":"abc"}}`), nil)
 	if err != nil {
 		t.Fatalf("parseStreamEvent: %v", err)
 	}
@@ -56,6 +56,9 @@ func TestParseStreamEventFunctionCallArgsObject(t *testing.T) {
 	}
 	if got := events[0].ToolCallDelta.Function.Name; got != "get_weather" {
 		t.Fatalf("name = %s", got)
+	}
+	if got := events[0].ToolCallDelta.ThoughtSignature; got != "sig-abc" {
+		t.Fatalf("thoughtSignature = %q, want sig-abc", got)
 	}
 }
 

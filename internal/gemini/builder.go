@@ -36,6 +36,9 @@ type content struct {
 type part struct {
 	Text             string            `json:"text,omitempty"`
 	Thought          bool              `json:"thought,omitempty"`
+	// ThoughtSignature is Gemini 3's opaque reasoning key. Required on
+	// functionCall parts when replaying tool-result continuations.
+	ThoughtSignature string            `json:"thoughtSignature,omitempty"`
 	FunctionCall     *functionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *functionResponse `json:"functionResponse,omitempty"`
 }
@@ -143,11 +146,14 @@ func convertMessages(messages []openai.ChatMessage) ([]content, *content) {
 				if name == "" {
 					continue
 				}
-				parts = append(parts, part{FunctionCall: &functionCall{
-					ID:   toolCall.ID,
-					Name: name,
-					Args: args,
-				}})
+				parts = append(parts, part{
+					ThoughtSignature: resolveThoughtSignature(toolCall),
+					FunctionCall: &functionCall{
+						ID:   toolCall.ID,
+						Name: name,
+						Args: args,
+					},
+				})
 			}
 			if len(parts) == 0 {
 				continue

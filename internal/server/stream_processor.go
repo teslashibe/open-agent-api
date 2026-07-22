@@ -51,12 +51,13 @@ type streamProcessor struct {
 }
 
 type streamedToolCall struct {
-	key       string
-	index     int
-	id        string
-	typ       string
-	name      string
-	arguments string
+	key              string
+	index            int
+	id               string
+	typ              string
+	name             string
+	arguments        string
+	thoughtSignature string
 }
 
 func agentTurnExpectsToolCalls(messages []openai.ChatMessage, toolsPresent bool) bool {
@@ -198,7 +199,7 @@ func (p *streamProcessor) toolCallForFullToolCall(upstreamIndex int, id string) 
 }
 
 func (p *streamProcessor) accumulateFullToolCall(upstreamIndex int, toolCall codex.ToolCall) {
-	if toolCall.ID == "" && toolCall.Type == "" && toolCall.Function.Name == "" && toolCall.Function.Arguments == "" {
+	if toolCall.ID == "" && toolCall.Type == "" && toolCall.Function.Name == "" && toolCall.Function.Arguments == "" && toolCall.ThoughtSignature == "" {
 		return
 	}
 	p.responseShape.ToolCalls = true
@@ -213,13 +214,16 @@ func (p *streamProcessor) accumulateFullToolCall(upstreamIndex int, toolCall cod
 	if toolCall.Function.Arguments != "" {
 		accumulated.arguments = toolCall.Function.Arguments
 	}
+	if toolCall.ThoughtSignature != "" {
+		accumulated.thoughtSignature = toolCall.ThoughtSignature
+	}
 	*p.toolCallEmitted = true
 	*p.toolDeltas++
 	*p.toolArgChars += len(toolCall.Function.Arguments)
 }
 
 func (p *streamProcessor) accumulateToolCallDelta(delta codex.ToolCallDelta) {
-	if delta.ID == "" && delta.Type == "" && delta.Function.Name == "" && delta.Function.Arguments == "" {
+	if delta.ID == "" && delta.Type == "" && delta.Function.Name == "" && delta.Function.Arguments == "" && delta.ThoughtSignature == "" {
 		return
 	}
 	p.responseShape.ToolCalls = true
@@ -230,6 +234,9 @@ func (p *streamProcessor) accumulateToolCallDelta(delta codex.ToolCallDelta) {
 	}
 	if delta.Type != "" {
 		accumulated.typ = delta.Type
+	}
+	if delta.ThoughtSignature != "" {
+		accumulated.thoughtSignature = delta.ThoughtSignature
 	}
 	if delta.Function.Name != "" {
 		accumulated.name = delta.Function.Name
@@ -332,9 +339,10 @@ func (p *streamProcessor) writeToolCalls() bool {
 				p.streamID, i, toolCall.typ, toolCall.name, len(toolCall.arguments), truncateForLog(toolCall.arguments, 160))
 		}
 		delta := openai.ToolCallDelta{
-			Index: i,
-			ID:    toolCall.id,
-			Type:  toolCall.typ,
+			Index:        i,
+			ID:           toolCall.id,
+			Type:         toolCall.typ,
+			ExtraContent: openai.GoogleThoughtSignatureExtra(toolCall.thoughtSignature),
 		}
 		if toolCall.typ == "custom" && p.opts.contextConfig.CustomToolWire == "function" {
 			// Cursor's BYOK chat-completions parser drops type:"custom" tool
