@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -9,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -145,23 +146,15 @@ func (t *TokenSource) refreshLocked(ctx context.Context, creds Credentials, revi
 		return t.recordFailure(revision, fmt.Errorf("%w: %w", ErrTokenRefreshFailed, ErrRefreshTokenMissing))
 	}
 
-	body, err := json.Marshal(struct {
-		ClientID     string `json:"client_id"`
-		GrantType    string `json:"grant_type"`
-		RefreshToken string `json:"refresh_token"`
-	}{
-		ClientID:     t.clientID,
-		GrantType:    "refresh_token",
-		RefreshToken: creds.RefreshToken,
-	})
-	if err != nil {
-		return t.recordFailure(revision, fmt.Errorf("%w: encode request", ErrTokenRefreshFailed))
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.tokenURL, bytes.NewReader(body))
+	form := url.Values{}
+	form.Set("client_id", t.clientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", creds.RefreshToken)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return t.recordFailure(revision, fmt.Errorf("%w: build request", ErrTokenRefreshFailed))
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

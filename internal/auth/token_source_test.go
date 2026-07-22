@@ -25,15 +25,14 @@ func TestTokenSourceRefreshesExpiredTokenAndPersistsRotation(t *testing.T) {
 	var calls atomic.Int64
 	httpClient := testHTTPClient(func(r *http.Request) (*http.Response, error) {
 		calls.Add(1)
-		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
+		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
 			t.Fatalf("refresh request = %s content-type=%q", r.Method, r.Header.Get("Content-Type"))
 		}
-		var body map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode refresh body: %v", err)
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse refresh form: %v", err)
 		}
-		if body["client_id"] != DefaultClientID || body["grant_type"] != "refresh_token" || body["refresh_token"] != "old-refresh-secret" {
-			t.Fatalf("refresh body = %#v", body)
+		if r.Form.Get("client_id") != DefaultClientID || r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "old-refresh-secret" {
+			t.Fatalf("refresh form = %#v", r.Form)
 		}
 		return jsonResponse(http.StatusOK, map[string]string{
 			"access_token": newAccess, "refresh_token": "new-refresh-secret", "id_token": "new-id-secret",
