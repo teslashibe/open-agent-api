@@ -57,7 +57,7 @@ to the GitOps repository.
 2. Confirm the image job published `sha-<short>` for that commit.
 3. Confirm the deploy job updated only the dev kustomization pin.
 4. Wait for the GitOps controller to reconcile dev.
-5. Run the [dev validation](./dev-validation) suite before considering a tag.
+5. Run the [dev validation](./dev-validation.md) suite before considering a tag.
 
 If the image succeeds but the manifest update fails, do not tag. Resolve the
 credential, target-file, or branch-protection failure and rerun the failed job.

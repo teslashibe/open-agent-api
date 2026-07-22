@@ -48,7 +48,7 @@ tag. It must not update the dev pin as part of tag promotion.
 2. Confirm the production manifest changed only the intended image pin.
 3. Wait for GitOps reconciliation and verify the running digest matches.
 4. Repeat the safe health, readiness, models, completion, drain, and metrics
-   checks from [dev validation](./dev-validation) against the approved
+   checks from [dev validation](./dev-validation.md) against the approved
    production access path.
 5. Record the release tag, commit, digest, and redacted results.
 

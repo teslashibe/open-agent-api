@@ -65,4 +65,4 @@ the intended internal Service or gateway and apply the normal network policy.
 Use a hostname under `example.invalid` in shared examples rather than recording
 a real cluster or tunnel hostname.
 
-Next, configure the [multi-credential pool](./multi-credential-pool).
+Next, configure the [multi-credential pool](./multi-credential-pool.md).

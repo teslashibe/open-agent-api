@@ -50,4 +50,4 @@ shared volume and keep `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`. This prevents the
 same conversation from streaming concurrently through separate processes.
 
 Selection, rotation, cooldown, and saturation signals are visible through the
-[metrics and dev checks](./dev-validation) without exposing credentials.
+[metrics and dev checks](./dev-validation.md) without exposing credentials.
