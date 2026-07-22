@@ -103,7 +103,8 @@ Rotate one pool credential at a time so another client remains selectable:
    probe is made by readiness. A restart also reloads all credentials.
 5. Send a canary completion and confirm the client returns to
    `codex_chat_api_pool_client_usable{client_label="..."} 1` with aggregate
-   `codex_chat_api_pool_usable_clients` unchanged.
+   `codex_chat_api_pool_usable_clients` increased by one and back at the
+   expected configured total.
 6. Observe a stable interval before rotating the next client. Revoke the old
    credential only after the replacement is verified.
 
@@ -135,11 +136,13 @@ revision first. Do not restart repeatedly with unchanged rejected credentials.
 
 ### All clients cooling
 
-`CodexChatAPIAllClientsCoolingSuspected` compares recent bounded cooldown skips
-with the usable-client count. Cooldown metrics are event counters, not a current
-cooldown gauge, so the alert is evidence rather than proof. Confirm cooldown
-and selection logs, honor upstream reset hints, reduce load, and wait for the
-cooldown. Readiness can remain `200` because cooling is not auth-unhealthy.
+`CodexChatAPIAllClientsCoolingSuspected` compares the number of distinct client
+labels with recent bounded cooldown skips against the usable-client count.
+Repeated skips from one client count once. Cooldown metrics are event counters,
+not a current cooldown gauge, so the alert is evidence rather than proof.
+Confirm cooldown and selection logs, honor upstream reset hints, reduce load,
+and wait for the cooldown. Readiness can remain `200` because cooling is not
+auth-unhealthy.
 
 ### Queue timeout or high wait
 

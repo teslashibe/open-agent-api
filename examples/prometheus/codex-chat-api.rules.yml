@@ -26,8 +26,10 @@ groups:
 
       - alert: CodexChatAPIAllClientsCoolingSuspected
         expr: |
-          sum without (client_label, failure_class) (
-            increase(codex_chat_api_pool_cooldown_skips_total{failure_class=~"quota|rate_limit"}[10m])
+          count(
+            sum by (client_label) (
+              increase(codex_chat_api_pool_cooldown_skips_total{failure_class=~"quota|rate_limit"}[10m])
+            ) > 0
           ) >= codex_chat_api_pool_usable_clients
           and
           codex_chat_api_pool_usable_clients > 0
@@ -36,7 +38,7 @@ groups:
           severity: warning
         annotations:
           summary: "all codex-chat-api clients may be cooling"
-          description: "Cooldown skips in the last 10 minutes equal or exceed the usable-client count. This is bounded evidence, not an exact current-state gauge; confirm cooldown and selection logs before acting."
+          description: "The number of distinct clients skipped for cooldown in the last 10 minutes equals or exceeds the usable-client count. This is bounded evidence, not an exact current-state gauge; confirm cooldown and selection logs before acting."
           runbook_url: "https://teslashibe.github.io/codex-chat-api/docs/production-readiness#all-clients-cooling"
 
       - alert: CodexChatAPIClientAuthFailure

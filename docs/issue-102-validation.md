@@ -37,7 +37,7 @@ The following regression tests map directly to the criteria:
 
 | Criterion | Evidence |
 | --- | --- |
-| AC1 | `TestAlertRulesUseBoundedMetricsAndActionableAnnotations`; `codex-chat-api.rules.test.yml` firing and healthy fixtures |
+| AC1 | `TestAlertRulesUseBoundedMetricsAndActionableAnnotations`; `codex-chat-api.rules.test.yml` firing, single-client false-positive, and healthy fixtures |
 | AC2 | `website/docs/production-readiness.md`; successful Docusaurus production build |
 | AC3 | Production runbook operating constraint and `website/docs/multi-credential-pool.md` |
 | AC4 | Full/race/vet/build/docs results above; `TestDevSoakExercisesHealthCompletionAndStreaming`; existing PR image-build job |
@@ -52,13 +52,11 @@ promtool test rules examples/prometheus/codex-chat-api.rules.test.yml
 docker build -t codex-chat-api:preflight .
 ```
 
-The 2026-07-21 managed worktree sandbox parsed both YAML files and passed the
-bounded-metric/annotation contract tests, but it did not provide `promtool`,
-blocked network installation, and denied both Docker daemon sockets. The Docker
-command was attempted and failed before reading the build context with
-`operation not permitted`; this is a runner capability limitation. The existing
-PR quality `image-build` job runs `docker build .`; do not promote until that job
-and both promtool commands pass in a release-capable environment.
+The managed worktree sandbox may not expose a Docker daemon or `promtool`.
+The PR quality workflow therefore runs both Prometheus rule checks in the
+official Prometheus container and runs `docker build .` on every pull request.
+Do not promote unless the `prom-rules` and `image-build` jobs pass for the exact
+candidate commit.
 
 ## Live dev evidence
 
