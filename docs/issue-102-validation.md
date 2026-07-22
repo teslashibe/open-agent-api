@@ -58,6 +58,26 @@ checks in the official Prometheus container and runs `docker build .` on every
 pull request; its check results are the authoritative record. Do not promote
 unless both jobs pass for the exact candidate commit.
 
+
+## Exact-candidate local evidence (2026-07-21)
+
+Recorded for commit `48b2b2708992aa1c62546e3650651ac064a52b20` (`48b2b27`):
+
+```text
+$ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v2.55.1 \
+    check rules examples/prometheus/codex-chat-api.rules.yml
+Checking examples/prometheus/codex-chat-api.rules.yml
+  SUCCESS: 8 rules found
+
+$ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v2.55.1 \
+    test rules examples/prometheus/codex-chat-api.rules.test.yml
+SUCCESS
+
+$ docker build -t codex-chat-api:preflight-48b2b27 .
+# succeeded; image docker.io/library/codex-chat-api:preflight-48b2b27
+# digest sha256:3c34c6738f5873c47d3ea223102001c78eaafdd237555a25e18c3faecbd16638
+```
+
 ## Live dev evidence
 
 After `main` deploys the candidate `sha-<short>` to the single dev replica, run:
