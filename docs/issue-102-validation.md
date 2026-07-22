@@ -73,8 +73,8 @@ $ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus
     test rules examples/prometheus/codex-chat-api.rules.test.yml
 SUCCESS
 
-$ docker build -t codex-chat-api:preflight-cd622c2 .
-# succeeded; image docker.io/library/codex-chat-api:preflight-cd622c2
+$ docker build -t codex-chat-api:preflight-7b14d38 .
+# succeeded; image docker.io/library/codex-chat-api:preflight-7b14d38
 # digest sha256:3c34c6738f5873c47d3ea223102001c78eaafdd237555a25e18c3faecbd16638
 ```
 
