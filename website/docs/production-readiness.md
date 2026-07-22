@@ -180,8 +180,11 @@ Growth judge, draft, and outbox workers must treat that code as a shared LLM
 circuit-break signal: stop new LLM work, use exponential backoff, and resume
 only after `/ready` and a bounded canary completion succeed. Discovery may
 continue, but it must not enqueue or retry LLM-dependent work while the circuit
-is open. This caller policy lives in `teslashibe/smore`; verify its expiry drill
-before enabling the production schedule.
+is open. The release workflow applies the reviewed
+`deploy/smore/growth-auth-circuit.patch` to `teslashibe/smore`, runs its focused
+tests, and blocks the gateway deployment if that sync fails. The shared smore
+LLM client suppresses HTTP for the gateway's `Retry-After` window; Growth
+cadence/manual runs and Outbox improve claims observe the same circuit.
 
 As a final server-side bulkhead, an auth-unhealthy Codex pool returns `503`,
 `upstream_authentication_failed`, and `Retry-After: 300` before Agent queue

@@ -48,8 +48,71 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
+  sync-smore-growth-auth-circuit:
     needs: [build-and-push]
+    runs-on: ubuntu-latest
+    concurrency: smore-growth-auth-circuit
+    steps:
+      - name: Checkout codex-chat-api caller contract
+        uses: actions/checkout@v7
+
+      - name: Checkout smore
+        uses: actions/checkout@v7
+        with:
+          repository: teslashibe/smore
+          token: ${{ secrets.GITOPS_TOKEN }}
+          ref: main
+          path: smore
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: smore/backend/go.mod
+          cache-dependency-path: smore/backend/go.sum
+
+      - name: Apply Growth upstream-auth circuit breaker
+        run: |
+          set -euo pipefail
+          PATCH="deploy/smore/growth-auth-circuit.patch"
+          if git -C smore apply --reverse --check "../$PATCH"; then
+            echo "Growth auth circuit patch is already present in smore."
+          else
+            git -C smore apply --check "../$PATCH"
+            git -C smore apply "../$PATCH"
+          fi
+
+      - name: Test Growth upstream-auth circuit breaker
+        working-directory: smore/backend
+        env:
+          GOPRIVATE: github.com/teslashibe/*
+          GONOSUMDB: github.com/teslashibe/*
+          GOPRIVATE_GITHUB_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global url."https://x-access-token:${GOPRIVATE_GITHUB_TOKEN}@github.com/teslashibe/".insteadOf "https://github.com/teslashibe/"
+          go test ./internal/draftingtool ./internal/growthleads ./internal/outbox ./cmd/server
+
+      - name: Commit and push caller circuit to smore
+        working-directory: smore
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No smore caller change; nothing to commit."
+            exit 0
+          fi
+          git config user.name "codex-chat-api-ci[bot]"
+          git config user.email "codex-chat-api-ci@users.noreply.github.com"
+          git add backend/cmd/server/mcpwiring.go \
+            backend/internal/draftingtool/openrouter.go \
+            backend/internal/draftingtool/openrouter_auth_circuit_test.go \
+            backend/internal/growthleads/worker.go \
+            backend/internal/growthleads/worker_auth_circuit_test.go \
+            backend/internal/outbox/worker.go \
+            backend/internal/outbox/worker_auth_circuit_test.go
+          git commit -m "fix(growth): pause LLM workers on upstream auth failure"
+          git push origin main
+
+  deploy:
+    needs: [build-and-push, sync-smore-growth-auth-circuit]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout codex-chat-api deployment contract

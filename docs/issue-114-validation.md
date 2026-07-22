@@ -2,7 +2,8 @@
 
 This page records the Codex OAuth expiry, readiness, and error-taxonomy evidence
 for issue 114. Cluster probe and Secret seeding live in `teslashibe/k8s-control`;
-the Growth caller circuit breaker lives in `teslashibe/smore`.
+the Growth caller circuit breaker is delivered to `teslashibe/smore` from the
+reviewed `deploy/smore/growth-auth-circuit.patch` contract.
 
 ## Acceptance Criteria
 
@@ -39,13 +40,14 @@ The focused regressions are:
 | AC1 | `TestTokenSourceRefreshesExpiredTokenAndPersistsRotation`, `TestTokenSourceRefreshIsSingleFlight`, `TestOpenRefreshesExpiredAccessTokenBeforeDial`, `TestOpenRefreshesAndRedialsOnceAfterAuthHandshake` |
 | AC2 | `TestOpenRefreshFailureReturnsAuthErrorWithoutRedial`, `TestPooledServiceReadinessFailsClosedAndSuppressesRepeatedUpstreamCalls`, `TestReadyFailsForZeroUsableClientsWithoutLeakingIdentity`, `TestDeploymentUsesAuthAwareReadinessAndWritableSeed`, `TestReleaseWorkflowInstallsRuntimeHardeningPatch` |
 | AC3 | `TestBearerAuthRejectsWithoutUpstreamCall`, `TestChatCompletionsAuthErrorIsSanitized`, `TestChatCompletionsStreamingAuthErrorIncludesCircuitBreakCode` |
-| AC4 | `TestPooledServiceReadinessFailsClosedAndSuppressesRepeatedUpstreamCalls`, `TestOpenCodexAuthCircuitFastFailsRepeatedGrowthWork`, `TestCodexAuthFailureOpensHTTPCircuitForSubsequentGrowthWork`; external Growth expiry drill in `teslashibe/smore` |
+| AC4 | Gateway bulkhead tests above plus the smore patch tests `TestChatCompletionUpstreamAuthCircuitSuppressesHTTPUntilRetry`, `TestGrowthCadenceStopsBeforeClaimWhileLLMAuthCircuitOpen`, and `TestOutboxImproveStopsBeforeClaimWhileLLMAuthCircuitOpen`; `deploy/smore/patch_test.go` verifies deployment is gated on applying and testing that caller patch |
 | AC5 | `website/docs/production-readiness.md` and successful docs build |
 
 ## Deployment Gate
 
 The Kubernetes deployment must use `/health/live` for liveness and `/ready` for
 readiness. Its init container must seed `CODEX_AUTH_JSON` from the read-only
-Secret into a writable `emptyDir` with mode `0600`. Do not promote until a
-Terra completion succeeds after an expiry simulation and the Growth circuit
-breaker is verified in the caller repository.
+Secret into a writable `emptyDir` with mode `0600`. The release workflow first
+applies and tests the reviewed Growth circuit patch against smore `main`; only
+then may it update the gateway deployment. Do not promote until a Terra
+completion succeeds after an expiry simulation.

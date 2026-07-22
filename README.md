@@ -681,7 +681,10 @@ While every Codex client remains auth-unhealthy, the HTTP layer also opens a
 local circuit before Agent queue admission and returns `503` plus
 `Retry-After: 300`. This keeps repeated Growth judge/draft/outbox attempts out
 of the queue and service stack; callers must use the stable error code and
-header to suspend retries for at least that interval.
+header to suspend retries for at least that interval. The release workflow
+applies and tests [`deploy/smore/growth-auth-circuit.patch`](deploy/smore/growth-auth-circuit.patch)
+before deploying this gateway: smore's shared LLM client suppresses HTTP during
+that window, while its Growth and Outbox workers stop claiming LLM work.
 
 Pool logs are redacted:
 
