@@ -113,6 +113,9 @@ func TestApplyQuotaFallbackSwitchesStreamOnQuotaError(t *testing.T) {
 	if len(service.streamed) != 1 {
 		t.Fatalf("fallback stream calls = %d", len(service.streamed))
 	}
+	if !service.streamed[0].DisablePoolWait {
+		t.Fatal("post-SSE fallback must disable pool waiting")
+	}
 }
 
 func TestApplyQuotaFallbackPassesThroughNormalEvents(t *testing.T) {

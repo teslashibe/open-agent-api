@@ -936,6 +936,53 @@ func TestChatCompletionsStreamingMapsAgentTextToReasoningContent(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsStreamingDegenerateRetryDisablesPoolWait(t *testing.T) {
+	calls := 0
+	service := fakeCodexService{
+		stream: func(_ context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			calls++
+			if calls == 1 {
+				if req.DisablePoolWait {
+					t.Fatal("initial stream unexpectedly disabled pool waiting")
+				}
+				return streamEvents(
+					codex.StreamEvent{Delta: "I'll inspect the repo now."},
+					codex.StreamEvent{Done: true},
+				), nil
+			}
+			if !req.DisablePoolWait {
+				t.Fatal("post-SSE degenerate retry must disable pool waiting")
+			}
+			return streamEvents(
+				codex.StreamEvent{ToolCallDelta: &codex.ToolCallDelta{
+					Index: 0,
+					ID:    "call_retry",
+					Type:  "function",
+					Function: codex.ToolCallFunctionDelta{
+						Name:      "lookup",
+						Arguments: `{"q":"codex"}`,
+					},
+				}},
+				codex.StreamEvent{Done: true},
+			), nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(io.Discard), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"inspect"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body := readString(t, resp.Body)
+	if calls != 2 {
+		t.Fatalf("stream calls = %d, want initial attempt plus retry", calls)
+	}
+	if !strings.Contains(body, `"tool_calls"`) || !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("stream = %q, want retried tool call", body)
+	}
+}
+
 func TestChatCompletionsStreamingSkipsCompletedToolCallAfterDeltas(t *testing.T) {
 	service := fakeCodexService{
 		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {

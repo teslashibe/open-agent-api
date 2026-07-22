@@ -77,6 +77,9 @@ func applyQuotaFallback(
 	if !ok {
 		return prependEvent(ctx, first, events), req
 	}
+	// The SSE response has already started before applyQuotaFallback runs.
+	// A secondary attempt may use free capacity, but must not queue.
+	fallbackReq.DisablePoolWait = true
 	fallbackEvents, err := service.Stream(ctx, fallbackReq)
 	if err != nil {
 		logLine(opts, "quota_fallback_error request_id=%s from=%s to=%s err=%s\n", streamID, req.Model, fallbackReq.Model, detailedError(err))

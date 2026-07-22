@@ -38,6 +38,10 @@ type Request struct {
 	// It lets that fallback make one attempt when every pooled account is
 	// cooling; ordinary requests always exclude cooling accounts.
 	AllowCooling bool
+	// DisablePoolWait is set for secondary streaming attempts made after the
+	// HTTP response has started. Those attempts may still acquire an immediately
+	// available client, but must never queue behind a saturated pool.
+	DisablePoolWait bool
 }
 
 type Completion struct {

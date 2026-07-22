@@ -452,18 +452,25 @@ func (p *PooledService) shouldFallback(index int, err error) bool {
 // after a startup/first-event failure remains nonblocking, so no request queues
 // once streaming has begun.
 func (p *PooledService) acquire(ctx context.Context, req Request, selected int) (int, int, func(), *pendingUnpin, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, 0, nil, nil, err
+	waitTimeout := p.waitTimeout
+	if req.DisablePoolWait {
+		waitTimeout = 0
 	}
 	var timer *time.Timer
 	var timeout <-chan time.Time
-	if p.waitTimeout > 0 {
-		timer = time.NewTimer(p.waitTimeout)
+	if waitTimeout > 0 {
+		timer = time.NewTimer(waitTimeout)
 		defer timer.Stop()
 		timeout = timer.C
 	}
 
 	for {
+		// Cancellation is checked on every pass. In particular, a release and
+		// cancellation can make both select cases ready; if the release wins,
+		// the next scan must not lease a client for canceled work.
+		if err := ctx.Err(); err != nil {
+			return 0, 0, nil, nil, err
+		}
 		// Capture the broadcast before scanning. A release between these two
 		// operations closes this channel, preventing a missed wake-up.
 		p.mu.Lock()
@@ -476,9 +483,21 @@ func (p *PooledService) acquire(ctx context.Context, req Request, selected int) 
 
 		index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
 		if !errors.Is(err, ErrClientPoolSaturated) {
+			if err == nil {
+				// Cancellation can also race with the successful scan itself. Return
+				// the lease before reporting cancellation so no capacity or upstream
+				// attempt leaks from the losing acquisition.
+				if contextErr := ctx.Err(); contextErr != nil {
+					release()
+					return 0, 0, nil, nil, contextErr
+				}
+			}
 			return index, inflight, release, unpin, err
 		}
-		if p.waitTimeout == 0 {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return 0, 0, nil, nil, contextErr
+		}
+		if waitTimeout == 0 {
 			return 0, 0, nil, nil, p.saturatedError(req)
 		}
 

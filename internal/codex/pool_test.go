@@ -982,6 +982,59 @@ func TestPooledServiceCancellationInterruptsSaturationWait(t *testing.T) {
 	waitPoolInflight(t, pool, "client-a", 0)
 }
 
+func TestPooledServiceCancellationDuringSuccessfulScanReleasesLease(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	pool := newWaitingLeaseTestPool(t, 1, time.Second, nil, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls++
+			return poolEvents(StreamEvent{Done: true}), nil
+		}},
+	})
+	// A single-client preferredIndex does not consult now, so this cancellation
+	// occurs inside tryAcquireClient after acquire's loop check but before the
+	// successful lease is returned.
+	pool.now = func() time.Time {
+		cancel()
+		return time.Now()
+	}
+
+	_, err := pool.Stream(ctx, Request{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Stream() error = %v, want context.Canceled", err)
+	}
+	if calls != 0 {
+		t.Fatalf("upstream calls = %d, want zero", calls)
+	}
+	waitPoolInflight(t, pool, "client-a", 0)
+}
+
+func TestPooledServiceDisablePoolWaitFailsImmediately(t *testing.T) {
+	upstream := make(chan StreamEvent)
+	pool := newWaitingLeaseTestPool(t, 1, time.Second, nil, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return upstream, nil
+		}},
+	})
+	first, err := pool.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("first Stream() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err = pool.Stream(ctx, Request{DisablePoolWait: true})
+	if !errors.Is(err, ErrClientPoolSaturated) {
+		t.Fatalf("secondary Stream() error = %v, want saturation", err)
+	}
+
+	close(upstream)
+	drainEvents(first)
+	waitPoolInflight(t, pool, "client-a", 0)
+}
+
 func TestPooledServiceDrainInterruptsWaitWithoutCancelingActiveLease(t *testing.T) {
 	upstream := make(chan StreamEvent)
 	pool := newWaitingLeaseTestPool(t, 1, time.Second, nil, PooledClientConfig{
