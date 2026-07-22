@@ -50,9 +50,10 @@ type StreamEvent struct {
 }
 
 type ToolCall struct {
-	ID       string           `json:"id"`
-	Type     string           `json:"type"`
-	Function ToolCallFunction `json:"function"`
+	ID               string           `json:"id"`
+	Type             string           `json:"type"`
+	Function         ToolCallFunction `json:"function"`
+	ThoughtSignature string           `json:"-"`
 }
 
 type ToolCallFunction struct {
@@ -61,11 +62,12 @@ type ToolCallFunction struct {
 }
 
 type ToolCallDelta struct {
-	Index    int                   `json:"index"`
-	ID       string                `json:"id,omitempty"`
-	Type     string                `json:"type,omitempty"`
-	Function ToolCallFunctionDelta `json:"function,omitempty"`
-	Final    bool                  `json:"-"`
+	Index            int                   `json:"index"`
+	ID               string                `json:"id,omitempty"`
+	Type             string                `json:"type,omitempty"`
+	Function         ToolCallFunctionDelta `json:"function,omitempty"`
+	ThoughtSignature string                `json:"-"`
+	Final            bool                  `json:"-"`
 }
 
 type ToolCallFunctionDelta struct {

@@ -401,8 +401,9 @@ func openAIToolCalls(toolCalls []codex.ToolCall, customWire string) []openai.Too
 	out := make([]openai.ToolCall, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
 		mapped := openai.ToolCall{
-			ID:   toolCall.ID,
-			Type: defaultString(toolCall.Type, "function"),
+			ID:           toolCall.ID,
+			Type:         defaultString(toolCall.Type, "function"),
+			ExtraContent: openai.GoogleThoughtSignatureExtra(toolCall.ThoughtSignature),
 		}
 		if mapped.Type == "custom" && customWire == "function" {
 			mapped.Type = "function"

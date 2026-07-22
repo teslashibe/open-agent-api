@@ -370,6 +370,9 @@ func applyToolCallDelta(toolCalls *[]ToolCall, delta ToolCallDelta) {
 	if delta.Type != "" {
 		toolCall.Type = delta.Type
 	}
+	if delta.ThoughtSignature != "" {
+		toolCall.ThoughtSignature = delta.ThoughtSignature
+	}
 	if delta.Function.Name != "" {
 		toolCall.Function.Name = delta.Function.Name
 	}

@@ -3,6 +3,7 @@ package gemini
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/openai"
@@ -37,6 +38,73 @@ func TestBuildGenerateContentRequest(t *testing.T) {
 	}
 	if json.Valid(req.Request.Tools[0].FunctionDeclarations[0].Parameters) == false {
 		t.Fatalf("parameters invalid json")
+	}
+}
+
+func TestConvertMessagesRestoresThoughtSignatureFromExtraAndCache(t *testing.T) {
+	store := newThoughtSignatureStore(time.Minute)
+	prev := thoughtSignatures
+	thoughtSignatures = store
+	t.Cleanup(func() { thoughtSignatures = prev })
+
+	store.Remember("call_cached", "sig-from-cache")
+
+	contents, _ := convertMessages([]openai.ChatMessage{
+		{Role: "user", Content: openai.TextContent("hi")},
+		{
+			Role: "assistant",
+			ToolCalls: []openai.ToolCall{
+				{
+					ID:           "call_extra",
+					Type:         "function",
+					Function:     openai.ToolCallFunction{Name: "lookup", Arguments: `{"q":"x"}`},
+					ExtraContent: openai.GoogleThoughtSignatureExtra("sig-from-extra"),
+				},
+				{
+					ID:       "call_cached",
+					Type:     "function",
+					Function: openai.ToolCallFunction{Name: "lookup", Arguments: `{}`},
+				},
+				{
+					ID:       "call_missing",
+					Type:     "function",
+					Function: openai.ToolCallFunction{Name: "lookup", Arguments: `{}`},
+				},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_extra", Content: openai.TextContent(`{"ok":true}`)},
+	})
+
+	if len(contents) < 2 {
+		t.Fatalf("contents len = %d, want >= 2", len(contents))
+	}
+	parts := contents[1].Parts
+	if len(parts) != 3 {
+		t.Fatalf("assistant parts = %d, want 3", len(parts))
+	}
+	if parts[0].ThoughtSignature != "sig-from-extra" {
+		t.Fatalf("extra signature = %q", parts[0].ThoughtSignature)
+	}
+	if parts[1].ThoughtSignature != "sig-from-cache" {
+		t.Fatalf("cache signature = %q", parts[1].ThoughtSignature)
+	}
+	if parts[2].ThoughtSignature != skipThoughtSignatureValidator {
+		t.Fatalf("fallback signature = %q, want skip validator", parts[2].ThoughtSignature)
+	}
+}
+
+func TestGeminiToolCallDeltaRemembersThoughtSignature(t *testing.T) {
+	store := newThoughtSignatureStore(time.Minute)
+	prev := thoughtSignatures
+	thoughtSignatures = store
+	t.Cleanup(func() { thoughtSignatures = prev })
+
+	delta := geminiToolCallDelta("resp1", 0, &functionCall{ID: "call_1", Name: "lookup", Args: json.RawMessage(`{}`)}, "opaque-sig", nil)
+	if delta.ThoughtSignature != "opaque-sig" {
+		t.Fatalf("delta signature = %q", delta.ThoughtSignature)
+	}
+	if got := store.Lookup("call_1"); got != "opaque-sig" {
+		t.Fatalf("cache = %q, want opaque-sig", got)
 	}
 }
 

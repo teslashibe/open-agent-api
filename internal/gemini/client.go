@@ -162,10 +162,11 @@ func (c *Client) Complete(ctx context.Context, req codex.Request) (codex.Complet
 				completion.Text += p.Text
 			}
 			if p.FunctionCall != nil {
-				delta := geminiToolCallDelta(frame.Response.ResponseID, i, p.FunctionCall, customTools)
+				delta := geminiToolCallDelta(frame.Response.ResponseID, i, p.FunctionCall, p.ThoughtSignature, customTools)
 				completion.ToolCalls = append(completion.ToolCalls, codex.ToolCall{
-					ID:   delta.ID,
-					Type: delta.Type,
+					ID:               delta.ID,
+					Type:             delta.Type,
+					ThoughtSignature: delta.ThoughtSignature,
 					Function: codex.ToolCallFunction{
 						Name:      delta.Function.Name,
 						Arguments: delta.Function.Arguments,
