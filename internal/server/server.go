@@ -45,6 +45,7 @@ type options struct {
 	drain              *atomic.Bool
 	isLocal            func(*fiber.Ctx) bool
 	metrics            *metricspkg.Metrics
+	healthReporter     codex.HealthReporter
 }
 
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
@@ -73,6 +74,14 @@ func WithLogOutput(output io.Writer) Option {
 func WithMetrics(metrics *metricspkg.Metrics) Option {
 	return func(opts *options) {
 		opts.metrics = metrics
+	}
+}
+
+// WithCodexHealth exposes the pool's bounded local credential-health snapshot
+// to readiness without coupling liveness or request routing to health checks.
+func WithCodexHealth(reporter codex.HealthReporter) Option {
+	return func(opts *options) {
+		opts.healthReporter = reporter
 	}
 }
 
@@ -148,16 +157,27 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	// /health is kept as a live alias so existing k8s probes need no change.
 	app.Get("/health", live)
 	app.Get("/health/live", live)
-	// ready fails while draining so Services stop routing new traffic during
-	// rollouts. It deliberately does not ping upstream ChatGPT.
+	// ready fails while draining or when local credential state says no Codex
+	// client is usable. It deliberately never pings upstream ChatGPT.
 	app.Get("/health/ready", func(c *fiber.Ctx) error {
 		if opts.drain.Load() {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 				"status": "draining",
 			})
 		}
-		return c.JSON(fiber.Map{
-			"status": "ok",
+		if opts.healthReporter == nil {
+			return c.JSON(fiber.Map{"status": "ok"})
+		}
+		health := opts.healthReporter.Health()
+		status := fiber.StatusOK
+		bodyStatus := "ok"
+		if health.UsableClients == 0 {
+			status = fiber.StatusServiceUnavailable
+			bodyStatus = "unavailable"
+		}
+		return c.Status(status).JSON(fiber.Map{
+			"status": bodyStatus,
+			"codex":  health,
 		})
 	})
 	// Drain controls are localhost-only: a new pod signals the old one to stop

@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"time"
@@ -12,6 +13,24 @@ import (
 type Service interface {
 	Complete(context.Context, Request) (Completion, error)
 	Stream(context.Context, Request) (<-chan StreamEvent, error)
+}
+
+// HealthReporter exposes only bounded operational labels and aggregate client
+// counts. Implementations must not include credential paths or identities.
+type HealthReporter interface {
+	Health() PoolHealth
+}
+
+type PoolHealth struct {
+	TotalClients  int            `json:"total_clients"`
+	UsableClients int            `json:"usable_clients"`
+	Clients       []ClientHealth `json:"clients"`
+}
+
+type ClientHealth struct {
+	Label  string `json:"label"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 
 type Request struct {
@@ -105,6 +124,9 @@ type Error struct {
 	Err        error
 	RetryAfter time.Duration
 	ResetAt    time.Time
+
+	credentialRevision    [sha256.Size]byte
+	hasCredentialRevision bool
 }
 
 func (e *Error) Error() string {
@@ -133,6 +155,25 @@ func ErrorAs(err error) (*Error, bool) {
 		return target, true
 	}
 	return nil, false
+}
+
+// withCredentialRevision associates an upstream failure with the exact
+// credential bytes used by that request attempt. The revision is intentionally
+// private: it is used only for local recovery decisions and must never be
+// rendered in errors, logs, health responses, or metric labels.
+func withCredentialRevision(err error, revision [sha256.Size]byte) error {
+	if codexErr, ok := ErrorAs(err); ok {
+		codexErr.credentialRevision = revision
+		codexErr.hasCredentialRevision = true
+	}
+	return err
+}
+
+func credentialRevisionFromError(err error) ([sha256.Size]byte, bool) {
+	if codexErr, ok := ErrorAs(err); ok && codexErr.hasCredentialRevision {
+		return codexErr.credentialRevision, true
+	}
+	return [sha256.Size]byte{}, false
 }
 
 type UnavailableService struct{}

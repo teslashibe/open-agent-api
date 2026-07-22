@@ -25,6 +25,8 @@ type Metrics struct {
 	poolSelections    *prometheus.CounterVec
 	poolCooldowns     *prometheus.CounterVec
 	poolCooldownSkips *prometheus.CounterVec
+	poolUsableClients prometheus.Gauge
+	poolClientUsable  *prometheus.GaugeVec
 	queueWait         *prometheus.HistogramVec
 	activeStreams     *prometheus.GaugeVec
 }
@@ -57,6 +59,14 @@ func New(enabled bool) *Metrics {
 		Name: "codex_chat_api_pool_cooldown_skips_total",
 		Help: "Total pool selection skips caused by an active cooldown.",
 	}, []string{"client_label", "failure_class"})
+	m.poolUsableClients = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "codex_chat_api_pool_usable_clients",
+		Help: "Current number of usable configured Codex clients.",
+	})
+	m.poolClientUsable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "codex_chat_api_pool_client_usable",
+		Help: "Whether a configured Codex client is usable, by safe client label.",
+	}, []string{"client_label"})
 	m.queueWait = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "codex_chat_api_queue_wait_seconds",
 		Help:    "Agent queue wait time by provider and terminal admission result.",
@@ -73,6 +83,8 @@ func New(enabled bool) *Metrics {
 		m.poolSelections,
 		m.poolCooldowns,
 		m.poolCooldownSkips,
+		m.poolUsableClients,
+		m.poolClientUsable,
 		m.queueWait,
 		m.activeStreams,
 	)
@@ -122,6 +134,26 @@ func (m *Metrics) ObservePoolCooldownSkip(clientLabel, failureClass string) {
 	if m.Enabled() {
 		m.poolCooldownSkips.WithLabelValues(normalizeClientLabel(clientLabel), normalizeFailureClass(failureClass)).Inc()
 	}
+}
+
+func (m *Metrics) SetPoolUsableClients(count int) {
+	if m.Enabled() {
+		if count < 0 {
+			count = 0
+		}
+		m.poolUsableClients.Set(float64(count))
+	}
+}
+
+func (m *Metrics) SetPoolClientUsable(clientLabel string, usable bool) {
+	if !m.Enabled() {
+		return
+	}
+	value := 0.0
+	if usable {
+		value = 1
+	}
+	m.poolClientUsable.WithLabelValues(normalizeClientLabel(clientLabel)).Set(value)
 }
 
 func (m *Metrics) ObserveQueueWait(provider, result string, wait time.Duration) {

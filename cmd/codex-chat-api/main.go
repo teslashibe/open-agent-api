@@ -52,7 +52,12 @@ func run(args []string) error {
 	}
 	service := codex.Router{Codex: codexService, Gemini: geminiService, Claude: claudeService}
 
-	app := server.New(cfg, server.WithCodexService(service), server.WithMetrics(metrics))
+	app := server.New(
+		cfg,
+		server.WithCodexService(service),
+		server.WithCodexHealth(codexService),
+		server.WithMetrics(metrics),
+	)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -76,7 +81,7 @@ func run(args []string) error {
 	}
 }
 
-func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (codex.Service, error) {
+func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (*codex.PooledService, error) {
 	clients := make([]codex.PooledClientConfig, 0, len(cfg.CodexClients))
 	for _, clientCfg := range cfg.CodexClients {
 		client, err := codex.NewClient(codex.ClientConfig{

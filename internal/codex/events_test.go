@@ -2,6 +2,8 @@ package codex
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -264,5 +266,30 @@ func TestParseStreamEventUsageLimitCarriesResetHint(t *testing.T) {
 	wantReset := time.Date(2026, 7, 21, 22, 0, 0, 0, time.UTC)
 	if !ok || codexErr.RetryAfter != 30*time.Second || !codexErr.ResetAt.Equal(wantReset) {
 		t.Fatalf("error hint = %#v", codexErr)
+	}
+}
+
+func TestParseStreamEventAuthorizationFailuresAreAuth(t *testing.T) {
+	for _, eventType := range []string{"response.failed", "error"} {
+		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+			t.Run(fmt.Sprintf("%s_%d", eventType, status), func(t *testing.T) {
+				secret := "secret-access-token raw-user@example.test"
+				raw := fmt.Sprintf(`{"type":%q,"status":%d,"error":{"message":%q}}`, eventType, status, secret)
+				_, terminal, err := parseStreamEvent([]byte(raw))
+				if err == nil || !terminal {
+					t.Fatalf("parseStreamEvent() = terminal:%t err:%v", terminal, err)
+				}
+				codexErr, ok := ErrorAs(err)
+				if !ok || codexErr.Kind != ErrorKindAuth || codexErr.Status != status {
+					t.Fatalf("parseStreamEvent() error = %#v, want auth status %d", codexErr, status)
+				}
+				if ClassifyFailure(err) != FailureAuth {
+					t.Fatalf("ClassifyFailure() = %q, want %q", ClassifyFailure(err), FailureAuth)
+				}
+				if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "raw-user@example.test") {
+					t.Fatalf("auth event error leaked identity: %v", err)
+				}
+			})
+		}
 	}
 }

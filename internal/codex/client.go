@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,6 +60,10 @@ type websocketConn interface {
 type websocketDialFunc func(context.Context, string, http.Header) (websocketConn, *http.Response, error)
 
 func NewClient(cfg ClientConfig) (*Client, error) {
+	_, _, err := auth.LoadWithRevision(cfg.AuthPath)
+	if err != nil {
+		return nil, fmt.Errorf("credential validation failed: %w", err)
+	}
 	profile, err := LoadProfile(cfg.ProfilePath)
 	if err != nil {
 		return nil, err
@@ -167,7 +172,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		}
 	}
 
-	conn, err := c.open(ctx, req.Faithful, sessionID, kind)
+	conn, credentialRevision, err := c.open(ctx, req.Faithful, sessionID, kind)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -179,7 +184,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 	}
 
 	events := make(chan StreamEvent, 2)
-	go c.readLoop(ctx, cancel, conn, events)
+	go c.readLoop(ctx, cancel, conn, credentialRevision, events)
 	return events, nil
 }
 
@@ -188,7 +193,7 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 	defer cancel()
 
 	payload := c.builder.buildFaithful(nil, req.Model, sessionID, requestKindPrewarm, req.ReasoningEffort, req.Verbosity)
-	conn, err := c.open(ctx, true, sessionID, requestKindPrewarm)
+	conn, _, err := c.open(ctx, true, sessionID, requestKindPrewarm)
 	if err != nil {
 		return
 	}
@@ -201,16 +206,16 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 	_, _, _ = conn.ReadMessage()
 }
 
-func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, error) {
-	creds, err := auth.Load(c.authPath)
+func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, [sha256.Size]byte, error) {
+	creds, revision, err := auth.LoadWithRevision(c.authPath)
 	if err != nil {
-		return nil, NewError(ErrorKindAuth, http.StatusUnauthorized, "load codex credentials", err)
+		return nil, [sha256.Size]byte{}, NewError(ErrorKindAuth, http.StatusUnauthorized, "load codex credentials", err)
 	}
 
 	headers := c.headers(creds, faithful, sessionID, kind)
 	conn, resp, err := c.dial(ctx, c.websocketURL, headers)
 	if err == nil {
-		return conn, nil
+		return conn, revision, nil
 	}
 	status := http.StatusBadGateway
 	kindErr := ErrorKindUpstream
@@ -221,14 +226,25 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 		}
 	}
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return nil, revision, ctx.Err()
 	}
 	connectErr := NewError(kindErr, status, "connect to codex websocket", err)
 	if resp != nil {
 		retryAfter, resetAt := retryHintFromHeader(resp.Header.Get("Retry-After"), time.Now())
 		connectErr = withRetryHint(connectErr, retryAfter, resetAt)
 	}
-	return nil, connectErr
+	if kindErr == ErrorKindAuth {
+		connectErr = withCredentialRevision(connectErr, revision)
+	}
+	return nil, revision, connectErr
+}
+
+// validateCredentialRevision is used by the pool to recover an auth-failed
+// client only after an operator has replaced its credential file with another
+// valid revision. The revision is never logged or exposed as a metric label.
+func (c *Client) validateCredentialRevision() ([sha256.Size]byte, error) {
+	_, revision, err := auth.LoadWithRevision(c.authPath)
+	return revision, err
 }
 
 func (c *Client) headers(creds auth.Credentials, faithful bool, sessionID string, kind requestKind) http.Header {
@@ -259,7 +275,7 @@ func (c *Client) headers(creds auth.Credentials, faithful bool, sessionID string
 	return header
 }
 
-func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn websocketConn, events chan<- StreamEvent) {
+func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn websocketConn, credentialRevision [sha256.Size]byte, events chan<- StreamEvent) {
 	defer cancel()
 	defer close(events)
 	defer closeConn(conn)
@@ -289,6 +305,9 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		c.logCodexToolEvent(raw)
 		event, terminal, err := parseStreamEvent(raw)
 		if err != nil {
+			if ClassifyFailure(err) == FailureAuth {
+				err = withCredentialRevision(err, credentialRevision)
+			}
 			sendStreamEvent(ctx, events, StreamEvent{Err: err})
 			return
 		}

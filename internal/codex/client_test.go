@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -265,13 +266,61 @@ func TestOpenCapturesRetryAfterHeader(t *testing.T) {
 		}, errors.New("rate limited")
 	}
 
-	_, err := client.open(context.Background(), false, "session-123", requestKindTurn)
+	_, _, err := client.open(context.Background(), false, "session-123", requestKindTurn)
 	if err == nil {
 		t.Fatal("open() error = nil")
 	}
 	codexErr, ok := ErrorAs(err)
 	if !ok || codexErr.Status != http.StatusTooManyRequests || codexErr.RetryAfter != 75*time.Second {
 		t.Fatalf("open() error = %#v", codexErr)
+	}
+}
+
+func TestStreamAuthFailureCarriesAttemptCredentialRevision(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	initial, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialRevision := sha256.Sum256(initial)
+	ready := make(chan struct{})
+	conn := &gatedReadConn{
+		fakeWebsocketConn: fakeWebsocketConn{readMessages: [][]byte{
+			[]byte(`{"type":"response.failed","status":401,"error":{"message":"secret-access-token raw-user@example.test"}}`),
+		}},
+		ready: ready,
+	}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = (&recordingDialer{conns: []websocketConn{conn}}).dial
+
+	events, err := client.Stream(context.Background(), Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	replacement := []byte(`{"tokens":{"access_token":"replacement-secret","account_id":"replacement-account"}}`)
+	if err := os.WriteFile(authPath, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	close(ready)
+
+	event, ok := <-events
+	if !ok || event.Err == nil || ClassifyFailure(event.Err) != FailureAuth {
+		t.Fatalf("stream event = %#v, want auth failure", event)
+	}
+	revision, ok := credentialRevisionFromError(event.Err)
+	if !ok || revision != initialRevision {
+		t.Fatalf("failure revision = %x, %t; want attempt revision %x", revision, ok, initialRevision)
+	}
+	if revision == sha256.Sum256(replacement) {
+		t.Fatal("auth failure was associated with the replacement credential revision")
+	}
+	if _, ok := <-events; ok {
+		t.Fatal("stream emitted more than one terminal auth event")
 	}
 }
 
@@ -383,6 +432,16 @@ type fakeWebsocketConn struct {
 	readMessages [][]byte
 	writes       [][]byte
 	closed       bool
+}
+
+type gatedReadConn struct {
+	fakeWebsocketConn
+	ready <-chan struct{}
+}
+
+func (c *gatedReadConn) ReadMessage() (int, []byte, error) {
+	<-c.ready
+	return c.fakeWebsocketConn.ReadMessage()
 }
 
 func (c *fakeWebsocketConn) SetReadDeadline(time.Time) error  { return nil }

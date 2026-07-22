@@ -3,6 +3,7 @@ package codex
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/teslashibe/codex-chat-api/internal/openai"
 )
 
 func TestPooledServiceSameQueueKeyMapsToSameClient(t *testing.T) {
@@ -137,6 +140,163 @@ func TestPooledServiceAuthErrorUnpinsToHealthyAlternate(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "codex_client_unpin key_hash=hash-auth from=client-1 to=client-0 reason=auth") {
 		t.Fatalf("logs = %q, want redacted auth unpin", logs.String())
+	}
+}
+
+func TestPooledServiceAuthFailureRemovesClientFromSelection(t *testing.T) {
+	var logs bytes.Buffer
+	secret := "secret-access-token raw-user@example.test /run/secrets/private-auth.json"
+	authErr := NewError(ErrorKindAuth, http.StatusUnauthorized, "authentication failed", errors.New(secret))
+	calls := 0
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &logs, nil,
+		PooledClientConfig{Label: "work-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls++
+			return nil, authErr
+		}}},
+	)
+	req := Request{AffinityKey: secret, AffinityKeyHash: "safe-hash", AffinityKeyMode: "body:session_id"}
+
+	if _, err := pool.Complete(context.Background(), req); !errors.Is(err, authErr) {
+		t.Fatalf("first Complete() error = %v, want auth error", err)
+	}
+	if _, err := pool.Complete(context.Background(), req); !errors.Is(err, ErrNoUsableClients) {
+		t.Fatalf("second Complete() error = %v, want ErrNoUsableClients", err)
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want auth-failed client called once", calls)
+	}
+	health := pool.Health()
+	if health.TotalClients != 1 || health.UsableClients != 0 || health.Clients[0].Status != "unhealthy" || health.Clients[0].Reason != "auth" {
+		t.Fatalf("Health() = %#v, want one auth-unhealthy client", health)
+	}
+	if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), "raw-user@example.test") || strings.Contains(logs.String(), "/run/secrets") {
+		t.Fatalf("health logs leaked credentials or identity: %q", logs.String())
+	}
+}
+
+func TestPooledServiceWebsocketAuthFrameMarksClientUnhealthy(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	conn := &fakeWebsocketConn{readMessages: [][]byte{
+		[]byte(`{"type":"response.failed","status":403,"error":{"message":"secret-access-token raw-user@example.test"}}`),
+	}}
+	dialer := &recordingDialer{conns: []websocketConn{conn}}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = dialer.dial
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "work-a", Service: client},
+	)
+
+	if _, err := pool.Complete(context.Background(), Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+	}); err == nil || ClassifyFailure(err) != FailureAuth {
+		t.Fatalf("Complete() error = %v, want websocket auth failure", err)
+	}
+	if health := pool.Health(); health.UsableClients != 0 || health.Clients[0].Reason != clientHealthReasonAuth {
+		t.Fatalf("Health() = %#v, want auth-unhealthy client", health)
+	}
+	if _, err := pool.Complete(context.Background(), Request{}); !errors.Is(err, ErrNoUsableClients) {
+		t.Fatalf("second Complete() error = %v, want ErrNoUsableClients", err)
+	}
+	if len(dialer.requests) != 1 {
+		t.Fatalf("websocket attempts = %d, want auth-failed client excluded", len(dialer.requests))
+	}
+}
+
+func TestPooledServiceMidstreamAuthFailureMarksUnhealthyWithoutRotating(t *testing.T) {
+	authErr := NewError(ErrorKindAuth, http.StatusUnauthorized, "authentication failed", errors.New("secret-access-token raw-user@example.test"))
+	calls := map[string]int{}
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "work-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls["work-a"]++
+			return poolEvents(StreamEvent{Delta: "partial"}, StreamEvent{Err: authErr}), nil
+		}}},
+		PooledClientConfig{Label: "work-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls["work-b"]++
+			return poolEvents(StreamEvent{Delta: "healthy"}, StreamEvent{Done: true}), nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+	if _, err := pool.Complete(context.Background(), req); !errors.Is(err, authErr) {
+		t.Fatalf("first Complete() error = %v, want midstream auth error", err)
+	}
+	if calls["work-a"] != 1 || calls["work-b"] != 0 {
+		t.Fatalf("midstream calls = %v, want no account rotation", calls)
+	}
+
+	completion, err := pool.Complete(context.Background(), req)
+	if err != nil || completion.Text != "healthy" {
+		t.Fatalf("second Complete() = %#v, %v; want healthy alternate", completion, err)
+	}
+	if calls["work-a"] != 1 || calls["work-b"] != 1 {
+		t.Fatalf("post-failure calls = %v, want unhealthy client skipped", calls)
+	}
+}
+
+func TestPooledServiceRecoversOnlyAfterCredentialRevisionChanges(t *testing.T) {
+	var logs bytes.Buffer
+	firstRevision := sha256.Sum256([]byte("first-secret-access-token raw-user@example.test"))
+	secondRevision := sha256.Sum256([]byte("replacement-secret-access-token replacement@example.test"))
+	service := &revisionedPoolService{
+		currentRevision: firstRevision,
+		authErr: NewError(
+			ErrorKindAuth,
+			http.StatusUnauthorized,
+			"authentication failed",
+			errors.New("first-secret-access-token raw-user@example.test"),
+		),
+	}
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &logs, nil,
+		PooledClientConfig{Label: "work-a", Service: service},
+	)
+
+	if _, err := pool.Complete(context.Background(), Request{}); err == nil {
+		t.Fatal("first Complete() error = nil, want auth failure")
+	}
+	if health := pool.Health(); health.UsableClients != 0 {
+		t.Fatalf("Health().UsableClients = %d before reload, want 0", health.UsableClients)
+	}
+	service.reload(secondRevision)
+	if health := pool.Health(); health.UsableClients != 1 || health.Clients[0].Status != "usable" {
+		t.Fatalf("Health() after reload = %#v, want recovered client", health)
+	}
+	completion, err := pool.Complete(context.Background(), Request{})
+	if err != nil || completion.Text != "recovered" {
+		t.Fatalf("Complete() after reload = %#v, %v", completion, err)
+	}
+	for _, secret := range []string{"first-secret-access-token", "raw-user@example.test", "replacement-secret-access-token", "replacement@example.test"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("health transition logs leaked %q: %s", secret, logs.String())
+		}
+	}
+}
+
+func TestPooledServiceTracksEveryConcurrentFailedCredentialRevision(t *testing.T) {
+	revisionA := sha256.Sum256([]byte("expired-a secret-access-token raw-a@example.test"))
+	revisionB := sha256.Sum256([]byte("expired-b secret-access-token raw-b@example.test"))
+	revisionC := sha256.Sum256([]byte("replacement secret-access-token raw-c@example.test"))
+	service := &revisionedPoolService{currentRevision: revisionB}
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil,
+		PooledClientConfig{Label: "work-a", Service: service},
+	)
+
+	pool.markClientAuthUnhealthy(0, withCredentialRevision(
+		NewError(ErrorKindAuth, http.StatusUnauthorized, "authentication failed", nil),
+		revisionA,
+	))
+	pool.markClientAuthUnhealthy(0, withCredentialRevision(
+		NewError(ErrorKindAuth, http.StatusUnauthorized, "authentication failed", nil),
+		revisionB,
+	))
+	if health := pool.Health(); health.UsableClients != 0 {
+		t.Fatalf("Health() after concurrent failures = %#v, want revision B excluded", health)
+	}
+
+	service.reload(revisionC)
+	if health := pool.Health(); health.UsableClients != 1 {
+		t.Fatalf("Health() after replacement = %#v, want revision C recovered", health)
 	}
 }
 
@@ -1144,6 +1304,47 @@ func calledLabels(calls map[string]int) map[string]bool {
 
 type poolFakeService struct {
 	stream func(context.Context, Request) (<-chan StreamEvent, error)
+}
+
+type revisionedPoolService struct {
+	mu              sync.Mutex
+	currentRevision [sha256.Size]byte
+	authErr         error
+	recovered       bool
+}
+
+func (s *revisionedPoolService) Complete(ctx context.Context, req Request) (Completion, error) {
+	events, err := s.Stream(ctx, req)
+	if err != nil {
+		return Completion{}, err
+	}
+	var completion Completion
+	for event := range events {
+		completion.Text += event.Delta
+	}
+	return completion, nil
+}
+
+func (s *revisionedPoolService) Stream(context.Context, Request) (<-chan StreamEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.recovered {
+		return nil, withCredentialRevision(s.authErr, s.currentRevision)
+	}
+	return poolEvents(StreamEvent{Delta: "recovered"}, StreamEvent{Done: true}), nil
+}
+
+func (s *revisionedPoolService) validateCredentialRevision() ([sha256.Size]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.currentRevision, nil
+}
+
+func (s *revisionedPoolService) reload(revision [sha256.Size]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentRevision = revision
+	s.recovered = true
 }
 
 func (f poolFakeService) Complete(ctx context.Context, req Request) (Completion, error) {

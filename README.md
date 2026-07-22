@@ -375,14 +375,15 @@ outages. All health endpoints are unauthenticated so k8s probes reach them.
 | --- | --- |
 | `GET /health` | Live alias — `200` whenever the process is up (unchanged body `{"status":"ok"}`). |
 | `GET /health/live` | Liveness — `200` whenever the process is up. |
-| `GET /health/ready` | Readiness — `200` when serving, `503 {"status":"draining"}` while draining. |
+| `GET /health/ready` | Readiness — `200` while at least one Codex client is usable; `503` while draining or when none are usable. |
 | `POST /drain/start` | Localhost-only. Begin draining; readiness flips to `503`. |
 | `POST /drain/stop` | Localhost-only. Resume serving. |
 
 - **Live never depends on upstream ChatGPT.** If OpenAI blips, `/health/live`
   (and `/health`) stay `200` so the pod is not restarted for an upstream
-  outage. Readiness likewise never pings chatgpt.com; it only reflects the
-  local drain flag.
+  outage. Readiness never pings chatgpt.com; it reflects the local drain flag
+  and the pool's locally known credential health. Its `codex` object contains
+  only aggregate counts plus configured safe client labels and fixed statuses.
 - **Draining rejects new work, drains in-flight.** While draining, new
   `POST /v1/chat/completions` requests return `503` (`server draining`) *before*
   any upstream call, while requests already past that check finish normally.
@@ -625,6 +626,15 @@ return normally. `fallback_first` additionally retries the first configured
 client for other upstream startup errors from a non-primary shard. Use `fail`
 unless that broader legacy fallback is required.
 
+Every configured auth, profile, and scaffold file is read and parsed before the
+server starts. Invalid files fail startup with the safe client label and a fixed
+file-role/category diagnostic; paths, file contents, tokens, and account IDs are
+omitted. A runtime 401/403 marks that client unhealthy and removes it from
+selection. Replacing its credential file with a different valid revision makes
+it eligible again; restarting the process also reloads all configured clients.
+If no client remains usable, `/health/ready` returns `503` while `/health` and
+`/health/live` remain `200`.
+
 Pool logs are redacted:
 
 ```text
@@ -665,6 +675,8 @@ The metric names and label keys are the stable operator contract:
 | `codex_chat_api_pool_selections_total` | counter | `client_label`, `result` | Codex pool selections (`normal`, `rotated`, `fallback`, or `pinned`). |
 | `codex_chat_api_pool_cooldowns_total` | counter | `client_label`, `failure_class` | Cooldown tickets created or refreshed after a quota/rate-limit failure. |
 | `codex_chat_api_pool_cooldown_skips_total` | counter | `client_label`, `failure_class` | Selection attempts that skipped a currently cooling client. |
+| `codex_chat_api_pool_usable_clients` | gauge | none | Current aggregate count of usable configured Codex clients. |
+| `codex_chat_api_pool_client_usable` | gauge | `client_label` | Whether each configured Codex client is usable (`1`) or auth-unhealthy (`0`). |
 | `codex_chat_api_queue_wait_seconds` | histogram | `provider`, `result` | Agent queue wait through acquisition, rejection, timeout, cancellation, or error; ordinary chats record a zero-second `bypassed` observation. |
 | `codex_chat_api_active_streams` | gauge | `provider` | Downstream streaming responses currently being written. |
 

@@ -7,7 +7,7 @@
 __pycache__/
 
 # Go build/test artifacts
-codex-chat-api
+/codex-chat-api
 bin/
 dist/
 coverage.out
