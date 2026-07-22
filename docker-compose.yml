@@ -51,7 +51,9 @@ services:
       CLAUDE_CODE_OAUTH_REFRESH_TOKEN: "${CLAUDE_CODE_OAUTH_REFRESH_TOKEN:-}"
       ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-}"
     volumes:
-      - "${HOME}/.codex:/home/codex/.codex:ro"
+      # Codex OAuth refresh rotates tokens in auth.json. Use a dedicated
+      # writable copy here; do not share one login with another running client.
+      - "${HOME}/.codex:/home/codex/.codex"
       - "${HOME}/.gemini:/home/codex/.gemini"
       - "${HOME}/.claude:/home/codex/.claude"
       # No ~/.claude.json bind: the host CLI replaces that file via atomic

@@ -80,6 +80,10 @@ type credentialRevisionProvider interface {
 	validateCredentialRevision() ([sha256.Size]byte, error)
 }
 
+type credentialReadinessProvider interface {
+	validateCredentials(context.Context) ([sha256.Size]byte, error)
+}
+
 type softPin struct {
 	key       string
 	index     int
@@ -195,6 +199,30 @@ func (p *PooledService) Health() PoolHealth {
 	for index := range p.clients {
 		p.tryRecoverClient(index)
 	}
+	return p.healthSnapshot()
+}
+
+// Ready validates each local credential and proactively refreshes expiring
+// tokens. Refresh failures remove the affected shard from selection; no model
+// WebSocket is opened by this check.
+func (p *PooledService) Ready(ctx context.Context) PoolHealth {
+	for index := range p.clients {
+		provider, ok := p.clients[index].service.(credentialReadinessProvider)
+		if !ok {
+			p.tryRecoverClient(index)
+			continue
+		}
+		revision, err := provider.validateCredentials(ctx)
+		if err != nil {
+			p.markClientAuthUnhealthy(index, err)
+			continue
+		}
+		p.recoverClientRevision(index, revision)
+	}
+	return p.healthSnapshot()
+}
+
+func (p *PooledService) healthSnapshot() PoolHealth {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	health := PoolHealth{
@@ -492,7 +520,10 @@ func (p *PooledService) tryRecoverClient(index int) bool {
 	if err != nil {
 		return false
 	}
+	return p.recoverClientRevision(index, revision)
+}
 
+func (p *PooledService) recoverClientRevision(index int, revision [sha256.Size]byte) bool {
 	p.mu.Lock()
 	state := &p.health[index]
 	if state.usable {
@@ -1021,7 +1052,7 @@ func allClientsCoolingError(class FailureClass) error {
 
 func noUsableClientsError() error {
 	return NewError(
-		ErrorKindUpstream,
+		ErrorKindAuth,
 		http.StatusServiceUnavailable,
 		ErrNoUsableClients.Error(),
 		ErrNoUsableClients,

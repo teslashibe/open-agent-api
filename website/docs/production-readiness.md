@@ -40,7 +40,8 @@ promtool test rules examples/prometheus/codex-chat-api.rules.test.yml
 Do not continue if any command fails. Confirm that the candidate changes no
 credential material and that `CODEX_CLIENTS` uses only bounded, non-sensitive
 labels. Verify in `k8s-control` that dev and production each request one replica,
-use `/health/live` for liveness and `/health/ready` for readiness, and expose
+use `/health/live` for liveness and `/ready` for readiness, seed every Codex
+Secret into a writable per-client `emptyDir`, and expose
 `/metrics` only to the approved scraper.
 
 ## Dev deploy and soak
@@ -77,7 +78,7 @@ There is no side-by-side multi-replica canary. The dev `sha-<short>` deployment
 is the canary:
 
 1. Keep one replica and the production concurrency settings.
-2. Confirm `/health/live` and `/health/ready` return `200`.
+2. Confirm `/health/live` and `/ready` return `200`.
 3. Exercise models, non-streaming completion, streaming completion, and one
    tool-capable Agent turn.
 4. Confirm request success, bounded queue wait, zero auth-unhealthy clients,
@@ -89,18 +90,44 @@ Do not tag a candidate that has not completed this canary and soak.
 
 ## Credential rotation
 
+The gateway normally refreshes access-token JWTs five minutes before expiry,
+persists rotated access/refresh/ID tokens atomically, and needs no restart. A
+WebSocket 401/403 triggers one forced refresh and one redial. Each `auth.json`
+must therefore be a writable runtime copy with a single writer, not the
+read-only Secret mount itself.
+
+For an active authentication incident, restore service in this order:
+
+1. Run `codex login` through the approved operator flow and obtain a fresh
+   `auth.json` without printing its contents.
+2. Update the SOPS-managed `codex-chat-api-secrets` `CODEX_AUTH_JSON` value.
+3. Reconcile the Secret and restart `deployment/codex-chat-api` in the `smore`
+   namespace so the init container reseeds the writable runtime copy.
+4. Verify `/health/live` and `/ready` are `200`, then send one Terra completion
+   from `smore-api`. Confirm it succeeds before resuming Growth LLM stages.
+
+Use the approved equivalents of the following operational commands; do not put
+credential contents in shell arguments or transcripts:
+
+```bash
+kubectl -n smore rollout restart deployment/codex-chat-api
+kubectl -n smore rollout status deployment/codex-chat-api
+kubectl -n smore get pods -l app=codex-chat-api
+```
+
 Rotate one pool credential at a time so another client remains selectable:
 
 1. Record the safe `client_label`; never record the account, token, auth path,
    or credential contents.
 2. Obtain a new login through the approved operator flow. Validate its JSON and
    permissions outside the application transcript.
-3. Replace the mounted `auth.json` atomically with the new valid file revision.
-   Do not edit a live credential in place or reuse a revision already rejected
-   by this process.
-4. Poll `/health/ready` and `/metrics`. A locally auth-unhealthy client recovers
-   when the pool observes a different valid credential revision; no upstream
-   probe is made by readiness. A restart also reloads all credentials.
+3. Update the source Secret, then atomically replace or restart to reseed the
+   writable runtime `auth.json`. Do not edit a live credential in place or
+   reuse a revision already rejected by this process.
+4. Poll `/ready` and `/metrics`. Readiness never opens a model WebSocket, but it
+   may perform the same bounded OAuth refresh as a request. A locally
+   auth-unhealthy client recovers when the pool observes a different valid
+   credential revision; a restart also reloads all credentials.
 5. Send a canary completion and confirm the client returns to
    `codex_chat_api_pool_client_usable{client_label="..."} 1` with aggregate
    `codex_chat_api_pool_usable_clients` increased by one and back at the
@@ -116,7 +143,7 @@ secret set. Never solve rotation by raising concurrency or adding a replica.
 
 Install the portable rules from
 `examples/prometheus/codex-chat-api.rules.yml`. Keep selectors, the blackbox
-probe for `GET /health/ready`, and notification routes in `k8s-control`.
+probe for `GET /ready`, and notification routes in `k8s-control`.
 
 ### Capacity saturation
 
@@ -130,9 +157,26 @@ replicas.
 ### No usable clients or auth failure
 
 `CodexChatAPINoUsableClients` and `CodexChatAPIClientAuthFailure` use the local
-pool health gauges. Confirm `/health/ready` is `503`, then follow the one-at-a-
+pool health gauges. Confirm `/ready` is `503`, stop callers that receive
+`upstream_authentication_failed`, then follow the one-at-a-
 time credential procedure. If every client is unhealthy, restore one known-good
 revision first. Do not restart repeatedly with unchanged rejected credentials.
+
+## Token-expiry drill and caller circuit break
+
+Before promotion, seed a test login whose access-token JWT is expired while its
+refresh token remains valid. One readiness or completion call must refresh and
+persist the token, and the completion must succeed without a pod restart. Then
+repeat with a rejected refresh token: `/ready` must return `503`, the client
+must be removed from selection, and responses must carry
+`upstream_authentication_failed`.
+
+Growth judge, draft, and outbox workers must treat that code as a shared LLM
+circuit-break signal: stop new LLM work, use exponential backoff, and resume
+only after `/ready` and a bounded canary completion succeed. Discovery may
+continue, but it must not enqueue or retry LLM-dependent work while the circuit
+is open. This caller policy lives in `teslashibe/smore`; verify its expiry drill
+before enabling the production schedule.
 
 ### All clients cooling
 

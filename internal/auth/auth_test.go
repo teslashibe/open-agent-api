@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const secretToken = "secret-access-token"
@@ -22,6 +25,37 @@ func TestParseValidAuth(t *testing.T) {
 	if creds.AccountID != "acct_123" {
 		t.Fatalf("AccountID = %q", creds.AccountID)
 	}
+}
+
+func TestParseOAuthFieldsAndJWTExpiry(t *testing.T) {
+	expiry := time.Date(2026, 7, 22, 6, 33, 34, 0, time.UTC)
+	token := testJWT(expiry)
+	creds, err := Parse([]byte(fmt.Sprintf(`{"tokens":{"access_token":%q,"refresh_token":"refresh-secret","id_token":"id-secret","account_id":"acct_123"},"last_refresh":"2026-07-12T06:33:34Z"}`, token)))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if !creds.Expiry.Equal(expiry) || creds.RefreshToken != "refresh-secret" || creds.IDToken != "id-secret" {
+		t.Fatalf("Parse() = %#v", creds)
+	}
+	if want := time.Date(2026, 7, 12, 6, 33, 34, 0, time.UTC); !creds.LastRefresh.Equal(want) {
+		t.Fatalf("LastRefresh = %s, want %s", creds.LastRefresh, want)
+	}
+}
+
+func TestParseOpaqueAccessTokenHasUnknownExpiry(t *testing.T) {
+	creds, err := Parse([]byte(`{"tokens":{"access_token":"opaque-token","account_id":"acct_123"}}`))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if !creds.Expiry.IsZero() {
+		t.Fatalf("Expiry = %s, want zero", creds.Expiry)
+	}
+}
+
+func testJWT(expiry time.Time) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiry.Unix())))
+	return header + "." + payload + ".signature"
 }
 
 func TestLoadMissingFile(t *testing.T) {

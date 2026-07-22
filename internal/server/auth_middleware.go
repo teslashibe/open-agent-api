@@ -17,7 +17,7 @@ func bearerAuthMiddleware(secret string) fiber.Handler {
 		}
 		token, ok := bearerToken(c.Get(fiber.HeaderAuthorization))
 		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
-			return writeError(c, fiber.StatusUnauthorized, "authentication_error", "authentication failed")
+			return writeErrorCode(c, fiber.StatusUnauthorized, "authentication_error", "invalid gateway credentials", "invalid_gateway_credentials")
 		}
 		return c.Next()
 	}

@@ -107,6 +107,9 @@ func TestHealthLiveReady(t *testing.T) {
 	if got := getStatus(t, app, "/health/ready"); got != http.StatusOK {
 		t.Fatalf("/health/ready status = %d, want %d", got, http.StatusOK)
 	}
+	if got := getStatus(t, app, "/ready"); got != http.StatusOK {
+		t.Fatalf("/ready status = %d, want %d", got, http.StatusOK)
+	}
 }
 
 func TestReadyFailsForZeroUsableClientsWithoutLeakingIdentity(t *testing.T) {
@@ -2313,11 +2316,39 @@ func TestChatCompletionsAuthErrorIsSanitized(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 	body := readString(t, resp.Body)
-	if !strings.Contains(body, "authentication failed") {
-		t.Fatalf("body = %q, want sanitized auth message", body)
+	if !strings.Contains(body, `"message":"upstream authentication failed"`) || !strings.Contains(body, `"code":"upstream_authentication_failed"`) {
+		t.Fatalf("body = %q, want stable upstream auth taxonomy", body)
 	}
 	if strings.Contains(body, secret) {
 		t.Fatalf("response leaked secret: %q", body)
+	}
+}
+
+func TestChatCompletionsStreamingAuthErrorIncludesCircuitBreakCode(t *testing.T) {
+	const secret = "secret-access-token"
+	service := fakeCodexService{
+		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+			events := make(chan codex.StreamEvent, 1)
+			events <- codex.StreamEvent{Err: codex.NewError(
+				codex.ErrorKindAuth,
+				http.StatusUnauthorized,
+				"raw auth "+secret,
+				errors.New("payload contained "+secret),
+			)}
+			close(events)
+			return events, nil
+		},
+	}
+	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	body := readString(t, resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "upstream_authentication_failed") {
+		t.Fatalf("stream auth response = %d %q", resp.StatusCode, body)
+	}
+	if strings.Contains(body, secret) {
+		t.Fatalf("stream auth response leaked secret: %q", body)
 	}
 }
 
