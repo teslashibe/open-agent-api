@@ -107,6 +107,7 @@ func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (*codex.P
 		Clients:           clients,
 		MaxInflight:       cfg.CodexClientMaxInflight,
 		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
+		WaitTimeout:       cfg.CodexClientPoolWaitTimeout,
 		LogOutput:         os.Stdout,
 		CooldownDefault:   cfg.CodexClientCooldownDefault,
 		Metrics:           metrics,

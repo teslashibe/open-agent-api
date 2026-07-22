@@ -22,6 +22,14 @@ func (r Router) Stream(ctx context.Context, req Request) (<-chan StreamEvent, er
 	return r.route(req).Stream(ctx, req)
 }
 
+// SetDraining forwards lifecycle state only to the Codex pool. Gemini and
+// Claude do not use the account pool and must not be coupled to its waiters.
+func (r Router) SetDraining(draining bool) {
+	if service, ok := r.Codex.(DrainAwareService); ok {
+		service.SetDraining(draining)
+	}
+}
+
 // Provider names shared by routing and per-provider concerns such as the
 // server's agent queues.
 const (

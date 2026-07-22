@@ -6,7 +6,12 @@ import (
 )
 
 type recordingService struct {
-	model string
+	model  string
+	drains []bool
+}
+
+func (s *recordingService) SetDraining(draining bool) {
+	s.drains = append(s.drains, draining)
 }
 
 func (s *recordingService) Complete(_ context.Context, req Request) (Completion, error) {
@@ -114,5 +119,22 @@ func TestRouterPassesAPIClaudeModelThrough(t *testing.T) {
 	}
 	if claudeSvc.model != "api/claude-fable-5" {
 		t.Fatalf("claude model = %q", claudeSvc.model)
+	}
+}
+
+func TestRouterForwardsDrainOnlyToCodexPool(t *testing.T) {
+	codexSvc := &recordingService{}
+	geminiSvc := &recordingService{}
+	claudeSvc := &recordingService{}
+	router := Router{Codex: codexSvc, Gemini: geminiSvc, Claude: claudeSvc}
+
+	router.SetDraining(true)
+	router.SetDraining(false)
+
+	if len(codexSvc.drains) != 2 || !codexSvc.drains[0] || codexSvc.drains[1] {
+		t.Fatalf("codex drain transitions = %v", codexSvc.drains)
+	}
+	if len(geminiSvc.drains) != 0 || len(claudeSvc.drains) != 0 {
+		t.Fatalf("non-Codex drain transitions: gemini=%v claude=%v", geminiSvc.drains, claudeSvc.drains)
 	}
 }

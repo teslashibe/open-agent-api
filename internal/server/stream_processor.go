@@ -742,7 +742,11 @@ func deliverToolStream(
 		logDegenerateTurnRetry(opts, streamID, 1, 0)
 
 		proc.resetAttemptStats()
-		retryEvents, err := service.Stream(ctx, buildDegenerateRetryRequest(req))
+		retryReq := buildDegenerateRetryRequest(req)
+		// This retry happens after SSE headers and response chunks have been
+		// written, so pool saturation must fail immediately.
+		retryReq.DisablePoolWait = true
+		retryEvents, err := service.Stream(ctx, retryReq)
 		if err != nil {
 			logLine(opts, "degenerate_turn_retry_error request_id=%s err=%s\n", streamID, detailedError(err))
 			return finishStream()

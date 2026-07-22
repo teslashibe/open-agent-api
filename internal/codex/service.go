@@ -15,6 +15,12 @@ type Service interface {
 	Stream(context.Context, Request) (<-chan StreamEvent, error)
 }
 
+// DrainAwareService can interrupt work that has not yet opened an upstream
+// stream while allowing already-started streams to finish normally.
+type DrainAwareService interface {
+	SetDraining(bool)
+}
+
 // HealthReporter exposes only bounded operational labels and aggregate client
 // counts. Implementations must not include credential paths or identities.
 type HealthReporter interface {
@@ -51,6 +57,10 @@ type Request struct {
 	// It lets that fallback make one attempt when every pooled account is
 	// cooling; ordinary requests always exclude cooling accounts.
 	AllowCooling bool
+	// DisablePoolWait is set for secondary streaming attempts made after the
+	// HTTP response has started. Those attempts may still acquire an immediately
+	// available client, but must never queue behind a saturated pool.
+	DisablePoolWait bool
 }
 
 type Completion struct {

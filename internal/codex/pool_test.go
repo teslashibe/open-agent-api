@@ -1024,6 +1024,222 @@ func TestPooledServiceRejectsSaturatedClientWithoutUpstreamCall(t *testing.T) {
 	}
 }
 
+func TestPooledServiceWaitsForReleasedClientWithinBound(t *testing.T) {
+	upstreams := []chan StreamEvent{make(chan StreamEvent), make(chan StreamEvent)}
+	var mu sync.Mutex
+	calls := 0
+	pool := newWaitingLeaseTestPool(t, 1, 500*time.Millisecond, nil, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			mu.Lock()
+			index := calls
+			calls++
+			mu.Unlock()
+			return upstreams[index], nil
+		}},
+	})
+
+	first, err := pool.Stream(context.Background(), Request{RequestID: "active"})
+	if err != nil {
+		t.Fatalf("first Stream() error = %v", err)
+	}
+	result := make(chan poolStreamResult, 1)
+	go func() {
+		events, err := pool.Stream(context.Background(), Request{RequestID: "waiting"})
+		result <- poolStreamResult{events: events, err: err}
+	}()
+	select {
+	case got := <-result:
+		t.Fatalf("waiting Stream() returned before release: %v", got.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(upstreams[0])
+	drainEvents(first)
+	var second poolStreamResult
+	select {
+	case second = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("waiting Stream() did not acquire released client")
+	}
+	if second.err != nil || second.events == nil {
+		t.Fatalf("waiting Stream() = %v, %v", second.events, second.err)
+	}
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", gotCalls)
+	}
+	close(upstreams[1])
+	drainEvents(second.events)
+	waitPoolInflight(t, pool, "client-a", 0)
+}
+
+func TestPooledServiceSaturationWaitExpiresWithRetryHint(t *testing.T) {
+	upstream := make(chan StreamEvent)
+	pool := newWaitingLeaseTestPool(t, 1, 30*time.Millisecond, nil, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return upstream, nil
+		}},
+	})
+
+	first, err := pool.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("first Stream() error = %v", err)
+	}
+	started := time.Now()
+	_, err = pool.Stream(context.Background(), Request{RequestID: "timeout"})
+	if !errors.Is(err, ErrClientPoolSaturated) {
+		t.Fatalf("waiting Stream() error = %v, want saturation", err)
+	}
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond {
+		t.Fatalf("waiting Stream() returned too early after %s", elapsed)
+	}
+	serviceErr, ok := ErrorAs(err)
+	if !ok || serviceErr.RetryAfter != 30*time.Millisecond {
+		t.Fatalf("saturation retry hint = %#v, want 30ms", serviceErr)
+	}
+
+	close(upstream)
+	drainEvents(first)
+	waitPoolInflight(t, pool, "client-a", 0)
+}
+
+func TestPooledServiceCancellationInterruptsSaturationWait(t *testing.T) {
+	upstream := make(chan StreamEvent)
+	pool := newWaitingLeaseTestPool(t, 1, time.Second, nil, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return upstream, nil
+		}},
+	})
+	first, err := pool.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("first Stream() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := pool.Stream(ctx, Request{})
+		result <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting Stream() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting Stream() did not exit after cancellation")
+	}
+
+	close(upstream)
+	drainEvents(first)
+	waitPoolInflight(t, pool, "client-a", 0)
+}
+
+func TestPooledServiceCancellationDuringSuccessfulScanReleasesLease(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	pool := newWaitingLeaseTestPool(t, 1, time.Second, nil, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls++
+			return poolEvents(StreamEvent{Done: true}), nil
+		}},
+	})
+	// A single-client preferredIndex does not consult now, so this cancellation
+	// occurs inside tryAcquireClient after acquire's loop check but before the
+	// successful lease is returned.
+	pool.now = func() time.Time {
+		cancel()
+		return time.Now()
+	}
+
+	_, err := pool.Stream(ctx, Request{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Stream() error = %v, want context.Canceled", err)
+	}
+	if calls != 0 {
+		t.Fatalf("upstream calls = %d, want zero", calls)
+	}
+	waitPoolInflight(t, pool, "client-a", 0)
+}
+
+func TestPooledServiceDisablePoolWaitFailsImmediately(t *testing.T) {
+	upstream := make(chan StreamEvent)
+	pool := newWaitingLeaseTestPool(t, 1, time.Second, nil, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return upstream, nil
+		}},
+	})
+	first, err := pool.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("first Stream() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err = pool.Stream(ctx, Request{DisablePoolWait: true})
+	if !errors.Is(err, ErrClientPoolSaturated) {
+		t.Fatalf("secondary Stream() error = %v, want saturation", err)
+	}
+
+	close(upstream)
+	drainEvents(first)
+	waitPoolInflight(t, pool, "client-a", 0)
+}
+
+func TestPooledServiceDrainInterruptsWaitWithoutCancelingActiveLease(t *testing.T) {
+	upstream := make(chan StreamEvent)
+	pool := newWaitingLeaseTestPool(t, 1, time.Second, nil, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return upstream, nil
+		}},
+	})
+	first, err := pool.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("first Stream() error = %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := pool.Stream(context.Background(), Request{})
+		result <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	pool.SetDraining(true)
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrClientPoolDraining) {
+			t.Fatalf("waiting Stream() error = %v, want drain error", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting Stream() did not exit after drain")
+	}
+
+	pool.mu.Lock()
+	inflight := pool.inflight["client-a"]
+	pool.mu.Unlock()
+	if inflight != 1 {
+		t.Fatalf("active inflight = %d, want active lease preserved", inflight)
+	}
+	close(upstream)
+	drainEvents(first)
+	waitPoolInflight(t, pool, "client-a", 0)
+}
+
+type poolStreamResult struct {
+	events <-chan StreamEvent
+	err    error
+}
+
 func TestPooledServiceRotatesFromSaturatedClient(t *testing.T) {
 	var logs bytes.Buffer
 	channels := map[string]chan StreamEvent{
@@ -1186,6 +1402,10 @@ func newTestPooledService(t *testing.T, policy string, logs *bytes.Buffer, now f
 }
 
 func newLeaseTestPool(t *testing.T, maxInflight int, logs *bytes.Buffer, clients ...PooledClientConfig) *PooledService {
+	return newWaitingLeaseTestPool(t, maxInflight, 0, logs, clients...)
+}
+
+func newWaitingLeaseTestPool(t *testing.T, maxInflight int, waitTimeout time.Duration, logs *bytes.Buffer, clients ...PooledClientConfig) *PooledService {
 	t.Helper()
 	var output io.Writer
 	if logs != nil {
@@ -1197,6 +1417,7 @@ func newLeaseTestPool(t *testing.T, maxInflight int, logs *bytes.Buffer, clients
 		Clients:           clients,
 		MaxInflight:       maxInflight,
 		UnavailablePolicy: ClientPoolUnavailableFail,
+		WaitTimeout:       waitTimeout,
 		LogOutput:         output,
 	})
 	if err != nil {
