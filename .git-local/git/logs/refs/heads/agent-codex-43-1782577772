@@ -1,5 +1,0 @@
-0000000000000000000000000000000000000000 75a41452f7c0d963b466e817cde29a8cdf91a831 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782577773 -0700	branch: Created from feature/cursor-throughput-stack
-75a41452f7c0d963b466e817cde29a8cdf91a831 86cb8fce4d57f9dee31a8c717cf108a7ae7d3c9b teslashibe <34052452+teslashibe@users.noreply.github.com> 1782578411 -0700	commit: Implement issue #43
-86cb8fce4d57f9dee31a8c717cf108a7ae7d3c9b 4c9648a3d2304cfacadcf53b9e4d94f5c93032d3 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782578623 -0700	commit: Fix issue #43 review findings
-4c9648a3d2304cfacadcf53b9e4d94f5c93032d3 548892f26c11e696b972d50fbcad2832c80d4835 teslashibe <34052452+teslashibe@users.noreply.github.com> 1782582267 -0700	commit: Fix stable Cursor conversation queue keys for issue #43.
-548892f26c11e696b972d50fbcad2832c80d4835 cd22679f43a75f531f68f76c5e02e08feb2ac66f teslashibe <34052452+teslashibe@users.noreply.github.com> 1782582908 -0700	commit: Align cursor fingerprint priority with documented tool-first behavior.

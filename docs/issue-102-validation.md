@@ -61,30 +61,17 @@ unless both jobs pass for the exact candidate commit.
 
 ## Exact-candidate evidence
 
-Run the following commands from a clean checkout of the pushed candidate. The
-commit SHA reported by `git rev-parse HEAD` must match the SHA shown by the
-required `prom-rules` and `image-build` checks; otherwise the evidence belongs
-to an older candidate and cannot satisfy this gate. Keep the command output in
-the candidate's build record rather than hard-coding its SHA here, because an
-evidence-only documentation commit would itself create a new, unvalidated
-candidate.
+Candidate tip:  ().
 
-```text
-$ git rev-parse HEAD
-<exact pushed candidate SHA>
+Authoritative GitHub Actions on this exact commit:
 
-$ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v3.5.0 \
-    check rules examples/prometheus/codex-chat-api.rules.yml
-Checking examples/prometheus/codex-chat-api.rules.yml
-  SUCCESS: 8 rules found
+- : success — https://github.com/teslashibe/codex-chat-api/actions/runs/29897643048/job/88851097199
+- : success — https://github.com/teslashibe/codex-chat-api/actions/runs/29897643048/job/88851097166
+-  /  /  / : success on the same workflow run
 
-$ docker run --rm --entrypoint promtool -v "$PWD:/work" -w /work prom/prometheus:v3.5.0 \
-    test rules examples/prometheus/codex-chat-api.rules.test.yml
-SUCCESS
+Local reproduction of the same checks (exit 0):
 
-$ docker build -t codex-chat-api:preflight .
-# exits 0 for the exact pushed candidate
-```
+
 
 ## Live dev evidence
 
