@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ type streamProcessor struct {
 	toolCallKeyByID     map[string]string
 	upstreamStart       time.Time
 	firstDeltaLatency   *time.Duration
+	deliveredContent    bool
 	responseShape       streamResponseShape
 }
 
@@ -133,10 +135,7 @@ func (p *streamProcessor) markFirstDelta() {
 // emittedContent reports whether any text delta or tool call has already been
 // forwarded to the client, which makes the stream unsafe to rotate mid-flight.
 func (p *streamProcessor) emittedContent() bool {
-	if p.deltas != nil && *p.deltas > 0 {
-		return true
-	}
-	return p.toolCallEmitted != nil && *p.toolCallEmitted
+	return p.deliveredContent
 }
 
 func (p *streamProcessor) normalizeToolCallIndex(key string) int {
@@ -372,7 +371,6 @@ func (p *streamProcessor) writeToolCalls() bool {
 				Arguments: toolCall.arguments,
 			}
 		}
-		p.markFirstDelta()
 		if !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
 			ID:      p.id,
 			Object:  "chat.completion.chunk",
@@ -385,6 +383,8 @@ func (p *streamProcessor) writeToolCalls() bool {
 			*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
 			return false
 		}
+		p.markFirstDelta()
+		p.deliveredContent = true
 	}
 	return true
 }
@@ -404,8 +404,6 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 	default:
 		return true
 	}
-	p.markFirstDelta()
-	*p.deltas++
 	if !writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
 		ID:      p.id,
 		Object:  "chat.completion.chunk",
@@ -418,6 +416,9 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 		*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
 		return false
 	}
+	p.markFirstDelta()
+	*p.deltas++
+	p.deliveredContent = true
 	return true
 }
 
@@ -460,6 +461,21 @@ func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textM
 	return false
 }
 
+// handleUnexpectedEnd converts an upstream channel close without a Done event
+// into the same bounded terminal error used for explicit upstream failures.
+// Count the missing terminal event as the failing event so a stream that
+// connected but never produced content is classified as first_event rather
+// than connect.
+func (p *streamProcessor) handleUnexpectedEnd(write bool) {
+	err := codex.NewError(
+		codex.ErrorKindUpstream,
+		502,
+		"upstream stream ended without a terminal event",
+		io.ErrUnexpectedEOF,
+	)
+	_ = p.handleEvent(codex.StreamEvent{Err: err}, write, deltaTextDrop)
+}
+
 func (p *streamProcessor) writeFinish() bool {
 	finish := "stop"
 	if *p.toolCallEmitted {
@@ -499,6 +515,7 @@ func (p *streamProcessor) resetAttemptStats() {
 	p.toolCallsByKey = map[string]*streamedToolCall{}
 	p.toolCallKeysByIndex = map[int]string{}
 	p.toolCallKeyByID = map[string]string{}
+	p.deliveredContent = false
 	*p.terminal = pendingStreamTerminal()
 }
 
@@ -522,7 +539,8 @@ func (p *streamProcessor) streamEvents(events <-chan codex.StreamEvent, textMode
 				*p.terminal = canceledStreamTerminal(*p.upstreamEvents, p.emittedContent())
 				return false
 			}
-			return true
+			p.handleUnexpectedEnd(true)
+			return false
 		}
 		if p.handleEvent(event, true, textMode) {
 			return false
@@ -635,8 +653,10 @@ func deliverToolStream(
 		if !ok {
 			if ctx.Err() != nil {
 				terminal = canceledStreamTerminal(upstreamEvents, proc.emittedContent())
+				return streamResult()
 			}
-			break
+			proc.handleUnexpectedEnd(true)
+			return finishStream()
 		}
 		if event.Err != nil {
 			if proc.handleEvent(event, true, deltaTextDrop) {

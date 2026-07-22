@@ -210,6 +210,10 @@ func TestMetricsEndpointRecordsStreamingTerminalOutcomes(t *testing.T) {
 			},
 			want: `codex_chat_api_requests_total{phase="mid_stream",provider="codex",result="upstream_error"} 1`,
 		},
+		{
+			name: "channel closes without terminal event",
+			want: `codex_chat_api_requests_total{phase="first_event",provider="codex",result="upstream_error"} 1`,
+		},
 	}
 
 	for _, tt := range tests {
