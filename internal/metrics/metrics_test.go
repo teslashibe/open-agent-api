@@ -19,6 +19,12 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 	m.ObserveQueueWait("gemini", "bypassed", 0)
 	m.IncActiveStreams("codex")
 	m.DecActiveStreams("codex")
+	m.ObserveStructuredLatency("codex", "success", 250*time.Millisecond)
+	m.AddStructuredUsage("codex", 10, 5, 15)
+	m.ObserveStructuredFailure("validation_error")
+	m.ObserveStructuredValidation("failure")
+	m.ObserveStructuredSaturation("rejected")
+	m.SetStructuredAdmission(2, 3)
 
 	body := scrape(t, m)
 	for _, want := range []string{
@@ -30,6 +36,13 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 		`codex_chat_api_queue_wait_seconds_count{provider="codex",result="acquired"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="gemini",result="bypassed"} 1`,
 		`codex_chat_api_active_streams{provider="codex"} 0`,
+		`codex_chat_api_structured_inference_latency_seconds_count{provider="codex",result="success"} 1`,
+		`codex_chat_api_structured_inference_tokens_total{kind="total",provider="codex"} 15`,
+		`codex_chat_api_structured_inference_failures_total{code="validation_error"} 1`,
+		`codex_chat_api_structured_inference_validation_total{result="failure"} 1`,
+		`codex_chat_api_structured_inference_saturation_total{result="rejected"} 1`,
+		`codex_chat_api_structured_inference_active 2`,
+		`codex_chat_api_structured_inference_queued 3`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics body missing %q:\n%s", want, body)
@@ -48,6 +61,10 @@ func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 	m.ObserveRateLimit(secrets[0], secrets[2])
 	m.ObservePoolSelection(secrets[1], secrets[2])
 	m.ObserveQueueWait(secrets[0], secrets[2], time.Second)
+	m.ObserveStructuredLatency(secrets[0], secrets[1], time.Second)
+	m.ObserveStructuredFailure(secrets[2])
+	m.ObserveStructuredValidation(secrets[0])
+	m.ObserveStructuredSaturation(secrets[1])
 
 	body := scrape(t, m)
 	for _, secret := range secrets {

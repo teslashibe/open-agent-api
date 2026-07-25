@@ -20,13 +20,20 @@ type Metrics struct {
 	enabled  bool
 	registry *prometheus.Registry
 
-	requests          *prometheus.CounterVec
-	rateLimits        *prometheus.CounterVec
-	poolSelections    *prometheus.CounterVec
-	poolCooldowns     *prometheus.CounterVec
-	poolCooldownSkips *prometheus.CounterVec
-	queueWait         *prometheus.HistogramVec
-	activeStreams     *prometheus.GaugeVec
+	requests             *prometheus.CounterVec
+	rateLimits           *prometheus.CounterVec
+	poolSelections       *prometheus.CounterVec
+	poolCooldowns        *prometheus.CounterVec
+	poolCooldownSkips    *prometheus.CounterVec
+	queueWait            *prometheus.HistogramVec
+	activeStreams        *prometheus.GaugeVec
+	structuredLatency    *prometheus.HistogramVec
+	structuredTokens     *prometheus.CounterVec
+	structuredFailures   *prometheus.CounterVec
+	structuredValidation *prometheus.CounterVec
+	structuredSaturation *prometheus.CounterVec
+	structuredActive     prometheus.Gauge
+	structuredQueued     prometheus.Gauge
 }
 
 // New builds an isolated registry when enabled and a no-op recorder otherwise.
@@ -66,6 +73,35 @@ func New(enabled bool) *Metrics {
 		Name: "codex_chat_api_active_streams",
 		Help: "Current downstream chat completion streams by provider.",
 	}, []string{"provider"})
+	m.structuredLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "codex_chat_api_structured_inference_latency_seconds",
+		Help:    "Report Studio structured inference latency by provider and result.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"provider", "result"})
+	m.structuredTokens = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "codex_chat_api_structured_inference_tokens_total",
+		Help: "Report Studio structured inference tokens by provider and token kind.",
+	}, []string{"provider", "kind"})
+	m.structuredFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "codex_chat_api_structured_inference_failures_total",
+		Help: "Report Studio structured inference failures by bounded error code.",
+	}, []string{"code"})
+	m.structuredValidation = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "codex_chat_api_structured_inference_validation_total",
+		Help: "Report Studio structured output validation outcomes.",
+	}, []string{"result"})
+	m.structuredSaturation = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "codex_chat_api_structured_inference_saturation_total",
+		Help: "Report Studio structured admission outcomes.",
+	}, []string{"result"})
+	m.structuredActive = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "codex_chat_api_structured_inference_active",
+		Help: "Current active Report Studio structured inference requests.",
+	})
+	m.structuredQueued = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "codex_chat_api_structured_inference_queued",
+		Help: "Current queued Report Studio structured inference requests.",
+	})
 
 	m.registry.MustRegister(
 		m.requests,
@@ -75,6 +111,13 @@ func New(enabled bool) *Metrics {
 		m.poolCooldownSkips,
 		m.queueWait,
 		m.activeStreams,
+		m.structuredLatency,
+		m.structuredTokens,
+		m.structuredFailures,
+		m.structuredValidation,
+		m.structuredSaturation,
+		m.structuredActive,
+		m.structuredQueued,
 	)
 	return m
 }
@@ -146,6 +189,51 @@ func (m *Metrics) DecActiveStreams(provider string) {
 	}
 }
 
+func (m *Metrics) ObserveStructuredLatency(provider, result string, duration time.Duration) {
+	if m.Enabled() {
+		if duration < 0 {
+			duration = 0
+		}
+		m.structuredLatency.WithLabelValues(normalizeProvider(provider), normalizeStructuredResult(result)).Observe(duration.Seconds())
+	}
+}
+
+func (m *Metrics) AddStructuredUsage(provider string, prompt, completion, total int) {
+	if !m.Enabled() {
+		return
+	}
+	for kind, value := range map[string]int{"prompt": prompt, "completion": completion, "total": total} {
+		if value > 0 {
+			m.structuredTokens.WithLabelValues(normalizeProvider(provider), kind).Add(float64(value))
+		}
+	}
+}
+
+func (m *Metrics) ObserveStructuredFailure(code string) {
+	if m.Enabled() {
+		m.structuredFailures.WithLabelValues(normalizeStructuredFailure(code)).Inc()
+	}
+}
+
+func (m *Metrics) ObserveStructuredValidation(result string) {
+	if m.Enabled() {
+		m.structuredValidation.WithLabelValues(allow(result, "failure", "success", "failure")).Inc()
+	}
+}
+
+func (m *Metrics) ObserveStructuredSaturation(result string) {
+	if m.Enabled() {
+		m.structuredSaturation.WithLabelValues(allow(result, "rejected", "admitted", "queued", "rejected", "timeout")).Inc()
+	}
+}
+
+func (m *Metrics) SetStructuredAdmission(active, queued int) {
+	if m.Enabled() {
+		m.structuredActive.Set(float64(active))
+		m.structuredQueued.Set(float64(queued))
+	}
+}
+
 func normalizeProvider(value string) string {
 	return allow(value, "unknown", "codex", "gemini", "claude")
 }
@@ -164,6 +252,14 @@ func normalizeQueueResult(value string) string {
 
 func normalizeFailureClass(value string) string {
 	return allow(value, "unknown", "quota", "rate_limit", "auth", "permanent", "transient", "unknown")
+}
+
+func normalizeStructuredResult(value string) string {
+	return allow(value, "upstream_error", "success", "auth_error", "invalid_request", "unsupported_model", "invalid_schema", "rate_limit", "timeout", "upstream_error", "validation_error", "overloaded", "idempotency_conflict")
+}
+
+func normalizeStructuredFailure(value string) string {
+	return allow(value, "upstream_error", "authentication_error", "invalid_request", "unsupported_model", "invalid_schema", "rate_limit", "timeout", "upstream_error", "validation_error", "overloaded", "idempotency_conflict")
 }
 
 func normalizeClientLabel(value string) string {

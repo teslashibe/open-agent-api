@@ -16,37 +16,45 @@ import (
 )
 
 const (
-	DefaultHost                               = "127.0.0.1"
-	DefaultPort                               = 8088
-	DefaultCodexWebsocketURL                  = "wss://chatgpt.com/backend-api/codex/responses"
-	DefaultCodexTimeout                       = 10 * time.Minute
-	DefaultGeminiEndpoint                     = "https://daily-cloudcode-pa.googleapis.com/v1internal"
-	DefaultGeminiTimeout                      = 10 * time.Minute
-	DefaultClaudeExecutable                   = "claude"
-	DefaultClaudeModel                        = "sonnet"
-	DefaultClaudeTimeout                      = 10 * time.Minute
-	DefaultStreamIdleTimeout                  = 90 * time.Second
-	DefaultCustomToolWire                     = "function"
-	DefaultQuotaFallbackModel                 = "gpt-5.3-codex-spark"
-	DefaultAgentQueueEnabled                  = true
-	DefaultAgentMaxActive                     = 2
-	DefaultAgentMaxActivePerKey               = 1
-	DefaultAgentQueueKeyMode                  = "cursor"
-	DefaultAgentQueueLimit                    = 20
-	DefaultAgentQueueTimeout                  = 5 * time.Minute
-	DefaultAgentQueuePriorityEnabled          = false
-	DefaultContextManagementEnabled           = true
-	DefaultContextMaxBytes                    = 192 * 1024
-	DefaultContextMaxMessages                 = 120
-	DefaultContextRecentMessages              = 24
-	DefaultContextToolOutputMaxBytes          = 32 * 1024
-	DefaultContextCompactedToolOutputMaxBytes = 512
-	DefaultDegenerateTurnRetryEnabled         = true
-	DefaultCodexClientMaxInflight             = 2
-	DefaultCodexClientPoolUnavailable         = "fail"
-	DefaultCodexClientCooldownDefault         = 5 * time.Minute
-	DefaultMetricsEnabled                     = true
-	DefaultGatewayTenantHeader                = "X-Smore-Tenant-ID"
+	DefaultHost                                = "127.0.0.1"
+	DefaultPort                                = 8088
+	DefaultCodexWebsocketURL                   = "wss://chatgpt.com/backend-api/codex/responses"
+	DefaultCodexTimeout                        = 10 * time.Minute
+	DefaultGeminiEndpoint                      = "https://daily-cloudcode-pa.googleapis.com/v1internal"
+	DefaultGeminiTimeout                       = 10 * time.Minute
+	DefaultClaudeExecutable                    = "claude"
+	DefaultClaudeModel                         = "sonnet"
+	DefaultClaudeTimeout                       = 10 * time.Minute
+	DefaultStreamIdleTimeout                   = 90 * time.Second
+	DefaultCustomToolWire                      = "function"
+	DefaultQuotaFallbackModel                  = "gpt-5.3-codex-spark"
+	DefaultAgentQueueEnabled                   = true
+	DefaultAgentMaxActive                      = 2
+	DefaultAgentMaxActivePerKey                = 1
+	DefaultAgentQueueKeyMode                   = "cursor"
+	DefaultAgentQueueLimit                     = 20
+	DefaultAgentQueueTimeout                   = 5 * time.Minute
+	DefaultAgentQueuePriorityEnabled           = false
+	DefaultContextManagementEnabled            = true
+	DefaultContextMaxBytes                     = 192 * 1024
+	DefaultContextMaxMessages                  = 120
+	DefaultContextRecentMessages               = 24
+	DefaultContextToolOutputMaxBytes           = 32 * 1024
+	DefaultContextCompactedToolOutputMaxBytes  = 512
+	DefaultDegenerateTurnRetryEnabled          = true
+	DefaultCodexClientMaxInflight              = 2
+	DefaultCodexClientPoolUnavailable          = "fail"
+	DefaultCodexClientCooldownDefault          = 5 * time.Minute
+	DefaultMetricsEnabled                      = true
+	DefaultGatewayTenantHeader                 = "X-Smore-Tenant-ID"
+	DefaultStructuredInferenceMaxActive        = 4
+	DefaultStructuredInferenceMaxQueue         = 8
+	DefaultStructuredInferenceMaxDeadline      = 10 * time.Minute
+	DefaultStructuredInferenceMaxOutputTokens  = 16384
+	DefaultStructuredInferenceIdempotencyTTL   = 10 * time.Minute
+	DefaultStructuredInferenceIdempotencyLimit = 1000
+	DefaultStructuredInferenceRetryAfter       = 1 * time.Second
+	DefaultStructuredModelPolicyVersion        = "report-studio-model-policy.v1"
 )
 
 // DefaultGatewayProviders enables every provider so the local Cursor workflow
@@ -56,56 +64,65 @@ func DefaultGatewayProviders() []string {
 }
 
 type Config struct {
-	Host                               string
-	Port                               int
-	CodexHome                          string
-	AuthPath                           string
-	CodexProfilePath                   string
-	CodexScaffoldPath                  string
-	CodexWebsocketURL                  string
-	CodexTimeout                       time.Duration
-	GeminiAuthPath                     string
-	GeminiEndpoint                     string
-	GeminiProject                      string
-	GeminiTimeout                      time.Duration
-	ClaudeExecutable                   string
-	ClaudeDefaultModel                 string
-	ClaudeTimeout                      time.Duration
-	StreamIdleTimeout                  time.Duration
-	CustomToolWire                     string
-	QuotaFallbackModel                 string
-	LogBodyShape                       bool
-	LogRequestIdentity                 bool
-	LogCodexToolEvents                 bool
-	AgentQueueEnabled                  bool
-	AgentMaxActive                     int
-	AgentMaxActivePerKey               int
-	AgentQueueKeyMode                  string
-	AgentQueueLimit                    int
-	GeminiAgentMaxActive               int
-	GeminiAgentMaxActivePerKey         int
-	GeminiAgentQueueLimit              int
-	ClaudeAgentMaxActive               int
-	ClaudeAgentMaxActivePerKey         int
-	ClaudeAgentQueueLimit              int
-	AgentQueueTimeout                  time.Duration
-	AgentQueueLockDir                  string
-	AgentQueuePriorityEnabled          bool
-	ContextManagementEnabled           bool
-	ContextMaxBytes                    int
-	ContextMaxMessages                 int
-	ContextRecentMessages              int
-	ContextToolOutputMaxBytes          int
-	ContextCompactedToolOutputMaxBytes int
-	DegenerateTurnRetryEnabled         bool
-	CodexClients                       []CodexClient
-	CodexClientMaxInflight             int
-	CodexClientPoolUnavailable         string
-	CodexClientCooldownDefault         time.Duration
-	MetricsEnabled                     bool
-	GatewayBearerSecret                string
-	GatewayProviders                   []string
-	GatewayTenantHeader                string
+	Host                                string
+	Port                                int
+	CodexHome                           string
+	AuthPath                            string
+	CodexProfilePath                    string
+	CodexScaffoldPath                   string
+	CodexWebsocketURL                   string
+	CodexTimeout                        time.Duration
+	GeminiAuthPath                      string
+	GeminiEndpoint                      string
+	GeminiProject                       string
+	GeminiTimeout                       time.Duration
+	ClaudeExecutable                    string
+	ClaudeDefaultModel                  string
+	ClaudeTimeout                       time.Duration
+	StreamIdleTimeout                   time.Duration
+	CustomToolWire                      string
+	QuotaFallbackModel                  string
+	LogBodyShape                        bool
+	LogRequestIdentity                  bool
+	LogCodexToolEvents                  bool
+	AgentQueueEnabled                   bool
+	AgentMaxActive                      int
+	AgentMaxActivePerKey                int
+	AgentQueueKeyMode                   string
+	AgentQueueLimit                     int
+	GeminiAgentMaxActive                int
+	GeminiAgentMaxActivePerKey          int
+	GeminiAgentQueueLimit               int
+	ClaudeAgentMaxActive                int
+	ClaudeAgentMaxActivePerKey          int
+	ClaudeAgentQueueLimit               int
+	AgentQueueTimeout                   time.Duration
+	AgentQueueLockDir                   string
+	AgentQueuePriorityEnabled           bool
+	ContextManagementEnabled            bool
+	ContextMaxBytes                     int
+	ContextMaxMessages                  int
+	ContextRecentMessages               int
+	ContextToolOutputMaxBytes           int
+	ContextCompactedToolOutputMaxBytes  int
+	DegenerateTurnRetryEnabled          bool
+	CodexClients                        []CodexClient
+	CodexClientMaxInflight              int
+	CodexClientPoolUnavailable          string
+	CodexClientCooldownDefault          time.Duration
+	MetricsEnabled                      bool
+	GatewayBearerSecret                 string
+	GatewayProviders                    []string
+	GatewayTenantHeader                 string
+	StructuredInferenceMaxActive        int
+	StructuredInferenceMaxQueue         int
+	StructuredInferenceMaxDeadline      time.Duration
+	StructuredInferenceMaxOutputTokens  int
+	StructuredInferenceIdempotencyTTL   time.Duration
+	StructuredInferenceIdempotencyLimit int
+	StructuredInferenceRetryAfter       time.Duration
+	StructuredModelPolicyVersion        string
+	StructuredInferenceModels           []string
 }
 
 type CodexClient struct {
@@ -119,6 +136,7 @@ type CodexClient struct {
 func Load(args []string) (Config, error) {
 	cfg := Defaults()
 	clientsJSON := ""
+	structuredModelsRaw := strings.Join(cfg.StructuredInferenceModels, ",")
 
 	if err := loadDotEnv(".env"); err != nil {
 		return Config{}, err
@@ -386,6 +404,45 @@ func Load(args []string) (Config, error) {
 	if value := os.Getenv("GATEWAY_TENANT_HEADER"); value != "" {
 		cfg.GatewayTenantHeader = value
 	}
+	for _, durationValue := range []struct {
+		env    string
+		target *time.Duration
+	}{
+		{"STRUCTURED_INFERENCE_MAX_DEADLINE", &cfg.StructuredInferenceMaxDeadline},
+		{"STRUCTURED_INFERENCE_IDEMPOTENCY_TTL", &cfg.StructuredInferenceIdempotencyTTL},
+		{"STRUCTURED_INFERENCE_RETRY_AFTER", &cfg.StructuredInferenceRetryAfter},
+	} {
+		if value := os.Getenv(durationValue.env); value != "" {
+			parsed, err := time.ParseDuration(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("%s: %w", durationValue.env, err)
+			}
+			*durationValue.target = parsed
+		}
+	}
+	for _, intValue := range []struct {
+		env    string
+		target *int
+	}{
+		{"STRUCTURED_INFERENCE_MAX_ACTIVE", &cfg.StructuredInferenceMaxActive},
+		{"STRUCTURED_INFERENCE_MAX_QUEUE", &cfg.StructuredInferenceMaxQueue},
+		{"STRUCTURED_INFERENCE_MAX_OUTPUT_TOKENS", &cfg.StructuredInferenceMaxOutputTokens},
+		{"STRUCTURED_INFERENCE_IDEMPOTENCY_LIMIT", &cfg.StructuredInferenceIdempotencyLimit},
+	} {
+		if value := os.Getenv(intValue.env); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("%s: %w", intValue.env, err)
+			}
+			*intValue.target = parsed
+		}
+	}
+	if value := os.Getenv("STRUCTURED_INFERENCE_MODEL_POLICY_VERSION"); value != "" {
+		cfg.StructuredModelPolicyVersion = value
+	}
+	if value := os.Getenv("STRUCTURED_INFERENCE_MODELS"); value != "" {
+		structuredModelsRaw = value
+	}
 
 	fs := flag.NewFlagSet("codex-chat-api", flag.ContinueOnError)
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "host address to bind")
@@ -430,6 +487,15 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.GatewayBearerSecret, "gateway-bearer-secret", cfg.GatewayBearerSecret, "shared bearer secret required on /v1 routes (empty disables inbound auth)")
 	fs.StringVar(&providersRaw, "gateway-providers", providersRaw, "comma-separated provider allowlist: codex, gemini, claude (codex is required)")
 	fs.StringVar(&cfg.GatewayTenantHeader, "gateway-tenant-header", cfg.GatewayTenantHeader, "request header whose value overrides agent queue affinity per tenant")
+	fs.IntVar(&cfg.StructuredInferenceMaxActive, "structured-inference-max-active", cfg.StructuredInferenceMaxActive, "maximum active Report Studio structured inference requests")
+	fs.IntVar(&cfg.StructuredInferenceMaxQueue, "structured-inference-max-queue", cfg.StructuredInferenceMaxQueue, "maximum queued Report Studio structured inference requests")
+	fs.DurationVar(&cfg.StructuredInferenceMaxDeadline, "structured-inference-max-deadline", cfg.StructuredInferenceMaxDeadline, "maximum Report Studio request deadline")
+	fs.IntVar(&cfg.StructuredInferenceMaxOutputTokens, "structured-inference-max-output-tokens", cfg.StructuredInferenceMaxOutputTokens, "maximum Report Studio output token limit")
+	fs.DurationVar(&cfg.StructuredInferenceIdempotencyTTL, "structured-inference-idempotency-ttl", cfg.StructuredInferenceIdempotencyTTL, "successful Report Studio idempotency replay TTL")
+	fs.IntVar(&cfg.StructuredInferenceIdempotencyLimit, "structured-inference-idempotency-limit", cfg.StructuredInferenceIdempotencyLimit, "maximum process-local Report Studio idempotency entries")
+	fs.DurationVar(&cfg.StructuredInferenceRetryAfter, "structured-inference-retry-after", cfg.StructuredInferenceRetryAfter, "Retry-After value for Report Studio admission overload")
+	fs.StringVar(&cfg.StructuredModelPolicyVersion, "structured-inference-model-policy-version", cfg.StructuredModelPolicyVersion, "Report Studio model-policy version used in idempotency identity")
+	fs.StringVar(&structuredModelsRaw, "structured-inference-models", structuredModelsRaw, "comma-separated exact public model IDs allowed for Report Studio")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -445,6 +511,7 @@ func Load(args []string) (Config, error) {
 		cfg.AuthPath = filepath.Join(cfg.CodexHome, "auth.json")
 	}
 	cfg.GatewayProviders = parseGatewayProviders(providersRaw)
+	cfg.StructuredInferenceModels = parseStringList(structuredModelsRaw)
 	if clientsJSON != "" {
 		clients, err := parseCodexClients(clientsJSON, cfg)
 		if err != nil {
@@ -463,44 +530,60 @@ func Load(args []string) (Config, error) {
 func Defaults() Config {
 	codexHome := defaultCodexHome()
 	cfg := Config{
-		Host:                               DefaultHost,
-		Port:                               DefaultPort,
-		CodexHome:                          codexHome,
-		AuthPath:                           filepath.Join(codexHome, "auth.json"),
-		CodexProfilePath:                   "codex_profile.json",
-		CodexScaffoldPath:                  "codex_scaffold.json",
-		CodexWebsocketURL:                  DefaultCodexWebsocketURL,
-		CodexTimeout:                       DefaultCodexTimeout,
-		GeminiAuthPath:                     defaultGeminiAuthPath(),
-		GeminiEndpoint:                     DefaultGeminiEndpoint,
-		GeminiTimeout:                      DefaultGeminiTimeout,
-		ClaudeExecutable:                   DefaultClaudeExecutable,
-		ClaudeDefaultModel:                 DefaultClaudeModel,
-		ClaudeTimeout:                      DefaultClaudeTimeout,
-		AgentQueueEnabled:                  DefaultAgentQueueEnabled,
-		AgentMaxActive:                     DefaultAgentMaxActive,
-		AgentMaxActivePerKey:               DefaultAgentMaxActivePerKey,
-		AgentQueueKeyMode:                  DefaultAgentQueueKeyMode,
-		AgentQueueLimit:                    DefaultAgentQueueLimit,
-		AgentQueueTimeout:                  DefaultAgentQueueTimeout,
-		AgentQueueLockDir:                  "",
-		AgentQueuePriorityEnabled:          DefaultAgentQueuePriorityEnabled,
-		ContextManagementEnabled:           DefaultContextManagementEnabled,
-		ContextMaxBytes:                    DefaultContextMaxBytes,
-		ContextMaxMessages:                 DefaultContextMaxMessages,
-		ContextRecentMessages:              DefaultContextRecentMessages,
-		ContextToolOutputMaxBytes:          DefaultContextToolOutputMaxBytes,
-		ContextCompactedToolOutputMaxBytes: DefaultContextCompactedToolOutputMaxBytes,
-		DegenerateTurnRetryEnabled:         DefaultDegenerateTurnRetryEnabled,
-		CodexClientMaxInflight:             DefaultCodexClientMaxInflight,
-		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
-		CodexClientCooldownDefault:         DefaultCodexClientCooldownDefault,
-		MetricsEnabled:                     DefaultMetricsEnabled,
-		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
-		CustomToolWire:                     DefaultCustomToolWire,
-		QuotaFallbackModel:                 DefaultQuotaFallbackModel,
-		GatewayProviders:                   DefaultGatewayProviders(),
-		GatewayTenantHeader:                DefaultGatewayTenantHeader,
+		Host:                                DefaultHost,
+		Port:                                DefaultPort,
+		CodexHome:                           codexHome,
+		AuthPath:                            filepath.Join(codexHome, "auth.json"),
+		CodexProfilePath:                    "codex_profile.json",
+		CodexScaffoldPath:                   "codex_scaffold.json",
+		CodexWebsocketURL:                   DefaultCodexWebsocketURL,
+		CodexTimeout:                        DefaultCodexTimeout,
+		GeminiAuthPath:                      defaultGeminiAuthPath(),
+		GeminiEndpoint:                      DefaultGeminiEndpoint,
+		GeminiTimeout:                       DefaultGeminiTimeout,
+		ClaudeExecutable:                    DefaultClaudeExecutable,
+		ClaudeDefaultModel:                  DefaultClaudeModel,
+		ClaudeTimeout:                       DefaultClaudeTimeout,
+		AgentQueueEnabled:                   DefaultAgentQueueEnabled,
+		AgentMaxActive:                      DefaultAgentMaxActive,
+		AgentMaxActivePerKey:                DefaultAgentMaxActivePerKey,
+		AgentQueueKeyMode:                   DefaultAgentQueueKeyMode,
+		AgentQueueLimit:                     DefaultAgentQueueLimit,
+		AgentQueueTimeout:                   DefaultAgentQueueTimeout,
+		AgentQueueLockDir:                   "",
+		AgentQueuePriorityEnabled:           DefaultAgentQueuePriorityEnabled,
+		ContextManagementEnabled:            DefaultContextManagementEnabled,
+		ContextMaxBytes:                     DefaultContextMaxBytes,
+		ContextMaxMessages:                  DefaultContextMaxMessages,
+		ContextRecentMessages:               DefaultContextRecentMessages,
+		ContextToolOutputMaxBytes:           DefaultContextToolOutputMaxBytes,
+		ContextCompactedToolOutputMaxBytes:  DefaultContextCompactedToolOutputMaxBytes,
+		DegenerateTurnRetryEnabled:          DefaultDegenerateTurnRetryEnabled,
+		CodexClientMaxInflight:              DefaultCodexClientMaxInflight,
+		CodexClientPoolUnavailable:          DefaultCodexClientPoolUnavailable,
+		CodexClientCooldownDefault:          DefaultCodexClientCooldownDefault,
+		MetricsEnabled:                      DefaultMetricsEnabled,
+		StreamIdleTimeout:                   DefaultStreamIdleTimeout,
+		CustomToolWire:                      DefaultCustomToolWire,
+		QuotaFallbackModel:                  DefaultQuotaFallbackModel,
+		GatewayProviders:                    DefaultGatewayProviders(),
+		GatewayTenantHeader:                 DefaultGatewayTenantHeader,
+		StructuredInferenceMaxActive:        DefaultStructuredInferenceMaxActive,
+		StructuredInferenceMaxQueue:         DefaultStructuredInferenceMaxQueue,
+		StructuredInferenceMaxDeadline:      DefaultStructuredInferenceMaxDeadline,
+		StructuredInferenceMaxOutputTokens:  DefaultStructuredInferenceMaxOutputTokens,
+		StructuredInferenceIdempotencyTTL:   DefaultStructuredInferenceIdempotencyTTL,
+		StructuredInferenceIdempotencyLimit: DefaultStructuredInferenceIdempotencyLimit,
+		StructuredInferenceRetryAfter:       DefaultStructuredInferenceRetryAfter,
+		StructuredModelPolicyVersion:        DefaultStructuredModelPolicyVersion,
+		StructuredInferenceModels: []string{
+			"gpt-5.6-sol",
+			"gpt-5.6-sol-low",
+			"gpt-5.6-sol-medium",
+			"gpt-5.6-sol-high",
+			"gpt-5.6-terra",
+			"gpt-5.6-luna",
+		},
 	}
 	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
 	return cfg
@@ -648,7 +731,45 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.GatewayTenantHeader) == "" {
 		return errors.New("gateway tenant header is required")
 	}
+	if c.StructuredInferenceMaxActive < 1 {
+		return errors.New("structured inference max active must be at least 1")
+	}
+	if c.StructuredInferenceMaxQueue < 0 {
+		return errors.New("structured inference max queue must be non-negative")
+	}
+	if c.StructuredInferenceMaxDeadline <= 0 {
+		return errors.New("structured inference max deadline must be positive")
+	}
+	if c.StructuredInferenceMaxOutputTokens < 1 {
+		return errors.New("structured inference max output tokens must be at least 1")
+	}
+	if c.StructuredInferenceIdempotencyTTL <= 0 || c.StructuredInferenceIdempotencyLimit < 1 {
+		return errors.New("structured inference idempotency ttl and limit must be positive")
+	}
+	if c.StructuredInferenceRetryAfter <= 0 {
+		return errors.New("structured inference retry after must be positive")
+	}
+	if strings.TrimSpace(c.StructuredModelPolicyVersion) == "" {
+		return errors.New("structured inference model policy version is required")
+	}
+	if len(c.StructuredInferenceModels) == 0 {
+		return errors.New("structured inference models must not be empty")
+	}
 	return nil
+}
+
+func parseStringList(raw string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range strings.Split(raw, ",") {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // ProviderEnabled reports whether a provider is on the gateway allowlist. An

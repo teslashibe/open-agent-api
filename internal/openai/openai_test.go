@@ -394,3 +394,13 @@ func TestMessageTextStructuredContent(t *testing.T) {
 		})
 	}
 }
+
+func TestLookupModelAliasIsExact(t *testing.T) {
+	alias, ok := LookupModelAlias("gpt-5.6-sol-high")
+	if !ok || alias.UpstreamModel != "gpt-5.6-sol" || alias.ReasoningEffort != "high" {
+		t.Fatalf("alias = %#v ok=%t", alias, ok)
+	}
+	if _, ok := LookupModelAlias("arbitrary-upstream-model"); ok {
+		t.Fatal("arbitrary model unexpectedly resolved as a declared alias")
+	}
+}

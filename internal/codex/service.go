@@ -15,19 +15,22 @@ type Service interface {
 }
 
 type Request struct {
-	Model             string
-	Messages          []openai.ChatMessage
-	Tools             json.RawMessage
-	ToolChoice        json.RawMessage
-	ParallelToolCalls *bool
-	ReasoningEffort   string
-	Verbosity         string
-	Faithful          bool
-	Prewarm           bool
-	RequestID         string
-	AffinityKey       string
-	AffinityKeyHash   string
-	AffinityKeyMode   string
+	Model              string
+	Messages           []openai.ChatMessage
+	Tools              json.RawMessage
+	ToolChoice         json.RawMessage
+	ParallelToolCalls  *bool
+	ReasoningEffort    string
+	Verbosity          string
+	ResponseSchema     json.RawMessage
+	ResponseSchemaName string
+	MaxOutputTokens    int
+	Faithful           bool
+	Prewarm            bool
+	RequestID          string
+	AffinityKey        string
+	AffinityKeyHash    string
+	AffinityKeyMode    string
 	// AllowCooling is set only by the server's model-level quota fallback.
 	// It lets that fallback make one attempt when every pooled account is
 	// cooling; ordinary requests always exclude cooling accounts.

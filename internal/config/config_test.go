@@ -41,6 +41,15 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CLIENT_POOL_UNAVAILABLE")
 	unsetenv(t, "CODEX_CLIENT_COOLDOWN_DEFAULT")
 	unsetenv(t, "CODEX_METRICS_ENABLED")
+	unsetenv(t, "STRUCTURED_INFERENCE_MAX_ACTIVE")
+	unsetenv(t, "STRUCTURED_INFERENCE_MAX_QUEUE")
+	unsetenv(t, "STRUCTURED_INFERENCE_MAX_DEADLINE")
+	unsetenv(t, "STRUCTURED_INFERENCE_MAX_OUTPUT_TOKENS")
+	unsetenv(t, "STRUCTURED_INFERENCE_IDEMPOTENCY_TTL")
+	unsetenv(t, "STRUCTURED_INFERENCE_IDEMPOTENCY_LIMIT")
+	unsetenv(t, "STRUCTURED_INFERENCE_RETRY_AFTER")
+	unsetenv(t, "STRUCTURED_INFERENCE_MODEL_POLICY_VERSION")
+	unsetenv(t, "STRUCTURED_INFERENCE_MODELS")
 	chdir(t, t.TempDir())
 
 	cfg, err := Load(nil)
@@ -71,6 +80,13 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.CodexTimeout != DefaultCodexTimeout {
 		t.Fatalf("CodexTimeout = %s", cfg.CodexTimeout)
+	}
+	if cfg.StructuredInferenceMaxActive != DefaultStructuredInferenceMaxActive ||
+		cfg.StructuredInferenceMaxQueue != DefaultStructuredInferenceMaxQueue ||
+		cfg.StructuredInferenceMaxDeadline != DefaultStructuredInferenceMaxDeadline ||
+		cfg.StructuredInferenceMaxOutputTokens != DefaultStructuredInferenceMaxOutputTokens ||
+		len(cfg.StructuredInferenceModels) == 0 {
+		t.Fatalf("structured inference defaults = %#v", cfg)
 	}
 	if cfg.LogBodyShape {
 		t.Fatal("LogBodyShape = true, want false")

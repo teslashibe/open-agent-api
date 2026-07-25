@@ -25,26 +25,29 @@ import (
 	"github.com/teslashibe/codex-chat-api/internal/config"
 	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
 	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/codex-chat-api/internal/reportstudio"
 	"github.com/teslashibe/codex-chat-api/internal/sse"
 )
 
 type Option func(*options)
 
 type options struct {
-	codexService       codex.Service
-	requestContext     func(*fiber.Ctx) context.Context
-	now                func() time.Time
-	newID              func() string
-	logOutput          io.Writer
-	logMu              *sync.Mutex
-	logBodyShape       bool
-	logRequestIdentity bool
-	agentQueueKeyMode  string
-	agentQueues        map[string]*agentQueue
-	contextConfig      config.Config
-	drain              *atomic.Bool
-	isLocal            func(*fiber.Ctx) bool
-	metrics            *metricspkg.Metrics
+	codexService        codex.Service
+	requestContext      func(*fiber.Ctx) context.Context
+	now                 func() time.Time
+	newID               func() string
+	logOutput           io.Writer
+	logMu               *sync.Mutex
+	logBodyShape        bool
+	logRequestIdentity  bool
+	agentQueueKeyMode   string
+	agentQueues         map[string]*agentQueue
+	contextConfig       config.Config
+	drain               *atomic.Bool
+	isLocal             func(*fiber.Ctx) bool
+	metrics             *metricspkg.Metrics
+	structuredAdmission *reportstudio.Admission
+	structuredStore     *reportstudio.Store
 }
 
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
@@ -105,11 +108,14 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		isLocal: func(c *fiber.Ctx) bool {
 			return net.ParseIP(c.IP()).IsLoopback()
 		},
-		metrics: metricspkg.New(cfg.MetricsEnabled),
+		metrics:             metricspkg.New(cfg.MetricsEnabled),
+		structuredAdmission: reportstudio.NewAdmission(cfg.StructuredInferenceMaxActive, cfg.StructuredInferenceMaxQueue),
+		structuredStore:     reportstudio.NewStore(cfg.StructuredInferenceIdempotencyTTL, cfg.StructuredInferenceIdempotencyLimit),
 	}
 	for _, setter := range setters {
 		setter(&opts)
 	}
+	opts.structuredAdmission.WithObserver(opts.metrics.SetStructuredAdmission)
 	if opts.agentQueues == nil {
 		opts.agentQueues = map[string]*agentQueue{}
 		for _, provider := range []string{codex.ProviderCodex, codex.ProviderGemini, codex.ProviderClaude} {
@@ -168,6 +174,9 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	if opts.metrics.Enabled() {
 		app.Get("/metrics", bearerAuthMiddleware(cfg.GatewayBearerSecret), adaptor.HTTPHandler(opts.metrics.Handler()))
 	}
+	// This route owns a versioned error contract and therefore authenticates
+	// inside its handler before the legacy /v1 middleware is installed.
+	app.Post("/v1/report-studio/inference", reportStudioInference(opts))
 	// Bearer auth guards every /v1 route but never /health, which k8s probes
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))

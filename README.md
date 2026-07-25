@@ -128,6 +128,12 @@ The server implements:
 - `POST /drain/stop` (localhost-only)
 - `GET /v1/models`
 - `POST /v1/chat/completions`
+- `POST /v1/report-studio/inference` (versioned, non-streaming structured extraction)
+
+The additive Report Studio contract provides strict JSON Schema validation,
+bounded admission, caller-scoped idempotency, and build provenance without
+changing the OpenAI-compatible endpoints. See
+[`docs/report-studio-structured-inference.md`](docs/report-studio-structured-inference.md).
 
 ### Model Discovery
 

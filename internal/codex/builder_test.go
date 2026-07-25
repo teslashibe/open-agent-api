@@ -137,6 +137,36 @@ func TestBuildMinimalRequest(t *testing.T) {
 	}
 }
 
+func TestBuildMinimalStructuredRequest(t *testing.T) {
+	builder := fixtureBuilder()
+	payload, err := builder.buildMinimal(Request{
+		Model:              "plain-model",
+		ReasoningEffort:    "low",
+		Verbosity:          "low",
+		Messages:           []openai.ChatMessage{{Role: "user", Content: openai.TextContent("extract")}},
+		ResponseSchemaName: "summary",
+		ResponseSchema:     json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}`),
+		MaxOutputTokens:    321,
+	})
+	if err != nil {
+		t.Fatalf("buildMinimal() error = %v", err)
+	}
+	if payload["max_output_tokens"] != 321 {
+		t.Fatalf("max_output_tokens = %#v", payload["max_output_tokens"])
+	}
+	text := payload["text"].(map[string]any)
+	format := text["format"].(map[string]any)
+	if format["type"] != "json_schema" || format["name"] != "summary" || format["strict"] != true {
+		t.Fatalf("format = %#v", format)
+	}
+	if _, ok := payload["tools"]; ok {
+		t.Fatal("structured minimal payload unexpectedly has tools")
+	}
+	if _, ok := payload["client_metadata"]; ok {
+		t.Fatal("structured minimal payload unexpectedly has coding metadata")
+	}
+}
+
 func TestBuildMinimalRequestIncludesClientTools(t *testing.T) {
 	builder := fixtureBuilder()
 	parallel := false

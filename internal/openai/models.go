@@ -168,3 +168,14 @@ func ResolveModelAlias(model string) ModelAlias {
 		Verbosity:       DefaultVerbosity,
 	}
 }
+
+// LookupModelAlias resolves only declared public aliases. Structured inference
+// uses this exact lookup so arbitrary upstream model IDs cannot bypass policy.
+func LookupModelAlias(model string) (ModelAlias, bool) {
+	for _, alias := range modelAliases {
+		if alias.ID == model {
+			return alias, true
+		}
+	}
+	return ModelAlias{}, false
+}

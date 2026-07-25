@@ -136,6 +136,24 @@ func (b requestBuilder) buildMinimal(req Request) (map[string]any, error) {
 		"text":             map[string]any{"verbosity": req.Verbosity},
 		"prompt_cache_key": b.newPromptCache(),
 	}
+	if rawJSONPresent(req.ResponseSchema) {
+		schema, err := decodeRawJSON(req.ResponseSchema)
+		if err != nil {
+			return nil, NewError(ErrorKindClient, 400, "invalid response schema JSON", err)
+		}
+		payload["text"] = map[string]any{
+			"verbosity": req.Verbosity,
+			"format": map[string]any{
+				"type":   "json_schema",
+				"name":   firstNonEmpty(req.ResponseSchemaName, "structured_output"),
+				"strict": true,
+				"schema": schema,
+			},
+		}
+	}
+	if req.MaxOutputTokens > 0 {
+		payload["max_output_tokens"] = req.MaxOutputTokens
+	}
 	if rawJSONPresent(req.Tools) {
 		tools, err := decodeRawJSON(req.Tools)
 		if err != nil {
