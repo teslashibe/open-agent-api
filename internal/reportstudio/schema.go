@@ -19,6 +19,9 @@ const (
 	maxSchemaDepth      = 5
 	maxSchemaNodes      = 2048
 	maxSchemaProperties = 100
+	maxSchemaEnumValues = 1000
+	maxLargeEnumValues  = 250
+	maxLargeEnumChars   = 15000
 )
 
 var schemaNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -65,7 +68,8 @@ func CompileSchema(req SchemaRequest) (*Validator, error) {
 	}
 	nodes := 0
 	properties := 0
-	if err := inspectSchema(doc, 0, &nodes, &properties, true); err != nil {
+	enumValues := 0
+	if err := inspectSchema(doc, 0, &nodes, &properties, &enumValues, true); err != nil {
 		return nil, err
 	}
 	if typ, _ := root["type"].(string); typ != "object" {
@@ -90,7 +94,7 @@ func CompileSchema(req SchemaRequest) (*Validator, error) {
 	return &Validator{schema: schema}, nil
 }
 
-func inspectSchema(value any, depth int, nodes, propertyCount *int, root bool) error {
+func inspectSchema(value any, depth int, nodes, propertyCount, enumValueCount *int, root bool) error {
 	*nodes = *nodes + 1
 	if depth > maxSchemaDepth {
 		return errors.New("json_schema exceeds maximum nesting depth")
@@ -165,7 +169,7 @@ func inspectSchema(value any, depth int, nodes, propertyCount *int, root bool) e
 		}
 		sort.Strings(propertyNames)
 		for _, name := range propertyNames {
-			if err := inspectSchema(properties[name], depth+1, nodes, propertyCount, false); err != nil {
+			if err := inspectSchema(properties[name], depth+1, nodes, propertyCount, enumValueCount, false); err != nil {
 				return fmt.Errorf("property %q: %w", name, err)
 			}
 		}
@@ -180,7 +184,7 @@ func inspectSchema(value any, depth int, nodes, propertyCount *int, root bool) e
 		if !arrayType {
 			return errors.New("items is only supported for array schemas")
 		}
-		if err := inspectSchema(rawItems, depth+1, nodes, propertyCount, false); err != nil {
+		if err := inspectSchema(rawItems, depth+1, nodes, propertyCount, enumValueCount, false); err != nil {
 			return fmt.Errorf("items: %w", err)
 		}
 	} else if arrayType {
@@ -192,7 +196,7 @@ func inspectSchema(value any, depth int, nodes, propertyCount *int, root bool) e
 			return errors.New("anyOf must be a non-empty array")
 		}
 		for i, alternative := range alternatives {
-			if err := inspectSchema(alternative, depth+1, nodes, propertyCount, false); err != nil {
+			if err := inspectSchema(alternative, depth+1, nodes, propertyCount, enumValueCount, false); err != nil {
 				return fmt.Errorf("anyOf[%d]: %w", i, err)
 			}
 		}
@@ -208,7 +212,7 @@ func inspectSchema(value any, depth int, nodes, propertyCount *int, root bool) e
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if err := inspectSchema(defs[name], depth+1, nodes, propertyCount, false); err != nil {
+			if err := inspectSchema(defs[name], depth+1, nodes, propertyCount, enumValueCount, false); err != nil {
 				return fmt.Errorf("$defs.%s: %w", name, err)
 			}
 		}
@@ -217,6 +221,25 @@ func inspectSchema(value any, depth int, nodes, propertyCount *int, root bool) e
 		values, ok := rawEnum.([]any)
 		if !ok || len(values) == 0 {
 			return errors.New("enum must be a non-empty array")
+		}
+		*enumValueCount += len(values)
+		if *enumValueCount > maxSchemaEnumValues {
+			return fmt.Errorf("json_schema exceeds maximum enum value count of %d", maxSchemaEnumValues)
+		}
+		if len(values) > maxLargeEnumValues {
+			stringChars := 0
+			for _, value := range values {
+				if text, ok := value.(string); ok {
+					stringChars += len([]rune(text))
+				}
+			}
+			if stringChars > maxLargeEnumChars {
+				return fmt.Errorf(
+					"string enum with more than %d values exceeds maximum aggregate length of %d characters",
+					maxLargeEnumValues,
+					maxLargeEnumChars,
+				)
+			}
 		}
 	}
 	for _, keyword := range []string{"description", "title"} {

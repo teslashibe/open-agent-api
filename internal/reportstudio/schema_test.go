@@ -2,6 +2,7 @@ package reportstudio
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -72,6 +73,42 @@ func TestCompileSchemaRejectsInvalidNameAndUnsupportedStrictConstructs(t *testin
 	}`)
 	if _, err := CompileSchema(optionalProperty); err == nil || !strings.Contains(err.Error(), "every property") {
 		t.Fatalf("optional property error = %v", err)
+	}
+}
+
+func TestCompileSchemaRejectsUpstreamEnumLimits(t *testing.T) {
+	schemaWithEnum := func(values []string) SchemaRequest {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"value": map[string]any{"type": "string", "enum": values},
+			},
+			"required":             []string{"value"},
+			"additionalProperties": false,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := strictTestSchema()
+		req.Schema = raw
+		return req
+	}
+
+	tooMany := make([]string, maxSchemaEnumValues+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("value-%04d", i)
+	}
+	if _, err := CompileSchema(schemaWithEnum(tooMany)); err == nil || !strings.Contains(err.Error(), "enum value count") {
+		t.Fatalf("enum count error = %v", err)
+	}
+
+	tooLong := make([]string, maxLargeEnumValues+1)
+	for i := range tooLong {
+		tooLong[i] = fmt.Sprintf("%060d", i)
+	}
+	if _, err := CompileSchema(schemaWithEnum(tooLong)); err == nil || !strings.Contains(err.Error(), "aggregate length") {
+		t.Fatalf("enum string length error = %v", err)
 	}
 }
 

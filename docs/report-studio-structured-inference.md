@@ -48,6 +48,8 @@ object, and may use only locally validated structured-output keywords. Contract
 v1 allows at most five nesting levels and 100 total object properties. Remote
 references and unsupported constructs such as `oneOf`, `allOf`, conditionals,
 and string/numeric constraint keywords are rejected before the upstream call.
+Enums are limited to 1,000 values across the schema. A single string enum with
+more than 250 values may contain at most 15,000 aggregate characters.
 
 Extraction mode always disables tools, the captured Codex coding
 profile/scaffold, and prewarm. The model policy is an exact allowlist configured

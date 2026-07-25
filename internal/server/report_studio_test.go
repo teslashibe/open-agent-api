@@ -255,9 +255,25 @@ func TestReportStudioRejectsUnsupportedStrictSchemaBeforeUpstream(t *testing.T) 
 		return codex.Completion{}, nil
 	}}
 	app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(io.Discard))
+	enumValues := make([]string, 1001)
+	for i := range enumValues {
+		enumValues[i] = fmt.Sprintf("value-%04d", i)
+	}
+	enumSchema, err := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{"type": "string", "enum": enumValues},
+		},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []reportstudio.Request{
 		structuredTestRequest("request-bad-name", "key-bad-name", "input"),
 		structuredTestRequest("request-bad-keyword", "key-bad-keyword", "input"),
+		structuredTestRequest("request-enum-limit", "key-enum-limit", "input"),
 	}
 	tests[0].Schema.Name = "bad schema name"
 	tests[1].Schema.Schema = json.RawMessage(`{
@@ -266,6 +282,7 @@ func TestReportStudioRejectsUnsupportedStrictSchemaBeforeUpstream(t *testing.T) 
 		"required":["title"],
 		"additionalProperties":false
 	}`)
+	tests[2].Schema.Schema = enumSchema
 	for _, req := range tests {
 		resp := postStructured(t, app, req, "structured-secret")
 		body := decodeStructuredError(t, resp)

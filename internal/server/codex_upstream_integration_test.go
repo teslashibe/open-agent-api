@@ -65,6 +65,63 @@ func TestCodexUpstreamGiantToolStreamFlushesCompleteToolCall(t *testing.T) {
 	}
 }
 
+func TestReportStudioCodexTransportSchemaFailureMapsInvalidSchema(t *testing.T) {
+	requireLocalListener(t)
+	upstream := codextest.NewUpstream(codextest.Script{
+		codextest.TextFrame(`{
+			"type":"response.failed",
+			"status":400,
+			"error":{
+				"code":"invalid_json_schema",
+				"message":"Invalid schema for response_format 'summary': enum exceeds the supported limit"
+			}
+		}`),
+	})
+	defer upstream.Close()
+
+	authPath, codexHome, profilePath, scaffoldPath := writeCodexClientFixtures(t)
+	client, err := codex.NewClient(codex.ClientConfig{
+		AuthPath:     authPath,
+		CodexHome:    codexHome,
+		ProfilePath:  profilePath,
+		ScaffoldPath: scaffoldPath,
+		WebsocketURL: upstream.URL(),
+		Timeout:      5 * time.Second,
+		LogOutput:    io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	app := New(
+		structuredTestConfig(),
+		WithCodexService(client),
+		WithLogOutput(io.Discard),
+		fixedServerOptions(),
+	)
+	resp := postStructured(
+		t,
+		app,
+		structuredTestRequest("request-schema-transport", "key-schema-transport", "input"),
+		"structured-secret",
+	)
+	body := decodeStructuredError(t, resp)
+	if resp.StatusCode != http.StatusBadRequest || body.Error.Code != "invalid_schema" {
+		t.Fatalf("schema transport error = status %d body %#v", resp.StatusCode, body)
+	}
+	if !upstream.WaitRequests(1, time.Second) {
+		t.Fatal("structured request did not reach websocket upstream")
+	}
+	payload, err := codextest.DecodePayload(upstream.Requests()[0].Payload)
+	if err != nil {
+		t.Fatalf("decode upstream payload: %v", err)
+	}
+	text, _ := payload["text"].(map[string]any)
+	if _, ok := text["format"].(map[string]any); !ok {
+		t.Fatalf("upstream payload missing structured text format: %#v", payload)
+	}
+}
+
 func TestCodexUpstreamClientCancellationReleasesAgentQueue(t *testing.T) {
 	requireLocalListener(t)
 	before := runtime.NumGoroutine()

@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bytes"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -264,5 +265,37 @@ func TestParseStreamEventUsageLimitCarriesResetHint(t *testing.T) {
 	wantReset := time.Date(2026, 7, 21, 22, 0, 0, 0, time.UTC)
 	if !ok || codexErr.RetryAfter != 30*time.Second || !codexErr.ResetAt.Equal(wantReset) {
 		t.Fatalf("error hint = %#v", codexErr)
+	}
+}
+
+func TestParseStreamEventClassifiesStructuredSchemaFailures(t *testing.T) {
+	tests := []string{
+		`{"type":"response.failed","status":400,"error":{"code":"invalid_json_schema","message":"schema is too large"}}`,
+		`{"type":"response.failed","status":400,"error":{"code":"invalid_request_error","message":"Invalid schema for response_format 'summary'"}}`,
+	}
+	for _, raw := range tests {
+		_, terminal, err := parseStreamEvent([]byte(raw))
+		if err == nil || !terminal {
+			t.Fatalf("parseStreamEvent(%s) = terminal:%t err:%v", raw, terminal, err)
+		}
+		codexErr, ok := ErrorAs(err)
+		if !ok || codexErr.Kind != ErrorKindClient || codexErr.Status != http.StatusBadRequest {
+			t.Fatalf("schema failure = %#v, want client 400", codexErr)
+		}
+	}
+}
+
+func TestParseStreamEventLeavesUnrelatedBadRequestAsUpstream(t *testing.T) {
+	_, terminal, err := parseStreamEvent([]byte(`{
+		"type":"response.failed",
+		"status":400,
+		"error":{"code":"invalid_request_error","message":"another request field is invalid"}
+	}`))
+	if err == nil || !terminal {
+		t.Fatalf("parseStreamEvent() = terminal:%t err:%v", terminal, err)
+	}
+	codexErr, ok := ErrorAs(err)
+	if !ok || codexErr.Kind != ErrorKindUpstream || codexErr.Status != http.StatusBadRequest {
+		t.Fatalf("bad request = %#v, want upstream 400", codexErr)
 	}
 }

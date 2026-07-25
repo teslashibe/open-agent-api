@@ -137,12 +137,39 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 		if strings.Contains(detail, "context_length_exceeded") {
 			return StreamEvent{}, true, NewError(ErrorKindClient, http.StatusBadRequest, "conversation exceeds the model's context window", fmt.Errorf("%w: codex %s: %s", ErrContextWindowExceeded, event.Type, detail))
 		}
+		if isStructuredSchemaFailure(status, detail) {
+			return StreamEvent{}, true, NewError(
+				ErrorKindClient,
+				http.StatusBadRequest,
+				"upstream rejected the structured output schema",
+				fmt.Errorf("codex %s: %s", event.Type, detail),
+			)
+		}
 		retryAfter, resetAt := retryHintFromJSON(raw)
 		err := NewError(ErrorKindUpstream, status, "codex backend error", fmt.Errorf("codex %s: %s", event.Type, detail))
 		return StreamEvent{}, true, withRetryHint(err, retryAfter, resetAt)
 	default:
 		return StreamEvent{}, false, nil
 	}
+}
+
+func isStructuredSchemaFailure(status int, detail string) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	detail = strings.ToLower(detail)
+	if strings.Contains(detail, "invalid_json_schema") {
+		return true
+	}
+	if !strings.Contains(detail, "schema") {
+		return false
+	}
+	for _, marker := range []string{"json_schema", "response_format", "structured output", "text.format"} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e codexEvent) toolCallStartDelta() (ToolCallDelta, bool) {
