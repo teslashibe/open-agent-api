@@ -39,9 +39,39 @@ func TestCompileSchemaRejectsNonStrictAndRemoteReferences(t *testing.T) {
 		t.Fatalf("non-strict error = %v", err)
 	}
 	remote := strictTestSchema()
-	remote.Schema = json.RawMessage(`{"type":"object","properties":{"x":{"$ref":"https://example.test/schema"}},"additionalProperties":false}`)
+	remote.Schema = json.RawMessage(`{"type":"object","properties":{"x":{"$ref":"https://example.test/schema"}},"required":["x"],"additionalProperties":false}`)
 	if _, err := CompileSchema(remote); err == nil || !strings.Contains(err.Error(), "external") {
 		t.Fatalf("remote ref error = %v", err)
+	}
+}
+
+func TestCompileSchemaRejectsInvalidNameAndUnsupportedStrictConstructs(t *testing.T) {
+	invalidName := strictTestSchema()
+	invalidName.Name = "invalid schema name"
+	if _, err := CompileSchema(invalidName); err == nil || !strings.Contains(err.Error(), "schema.name") {
+		t.Fatalf("invalid name error = %v", err)
+	}
+
+	unsupported := strictTestSchema()
+	unsupported.Schema = json.RawMessage(`{
+		"type":"object",
+		"properties":{"title":{"type":"string","minLength":1}},
+		"required":["title"],
+		"additionalProperties":false
+	}`)
+	if _, err := CompileSchema(unsupported); err == nil || !strings.Contains(err.Error(), "minLength") {
+		t.Fatalf("unsupported keyword error = %v", err)
+	}
+
+	optionalProperty := strictTestSchema()
+	optionalProperty.Schema = json.RawMessage(`{
+		"type":"object",
+		"properties":{"title":{"type":"string"},"subtitle":{"type":"string"}},
+		"required":["title"],
+		"additionalProperties":false
+	}`)
+	if _, err := CompileSchema(optionalProperty); err == nil || !strings.Contains(err.Error(), "every property") {
+		t.Fatalf("optional property error = %v", err)
 	}
 }
 

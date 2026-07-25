@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/teslashibe/codex-chat-api/internal/codex"
 	"github.com/teslashibe/codex-chat-api/internal/config"
+	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
 	"github.com/teslashibe/codex-chat-api/internal/openai"
 	"github.com/teslashibe/codex-chat-api/internal/reportstudio"
 )
@@ -55,7 +57,7 @@ func structuredTestRequest(id, key string, input any) reportstudio.Request {
 	}
 }
 
-func postStructured(t *testing.T, app *fiber.App, req reportstudio.Request, token string) *http.Response {
+func postStructured(t *testing.T, app *fiber.App, req reportstudio.Request, token string, headers ...map[string]string) *http.Response {
 	t.Helper()
 	raw, err := json.Marshal(req)
 	if err != nil {
@@ -68,6 +70,11 @@ func postStructured(t *testing.T, app *fiber.App, req reportstudio.Request, toke
 	httpReq.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+token)
+	}
+	for _, headerSet := range headers {
+		for name, value := range headerSet {
+			httpReq.Header.Set(name, value)
+		}
 	}
 	resp, err := app.Test(httpReq, 7000)
 	if err != nil {
@@ -116,7 +123,7 @@ func TestReportStudioSuccessExtractionAndReplay(t *testing.T) {
 	}
 	if first.ContractVersion != reportstudio.ContractVersion || first.Model != "gpt-5.6-sol-actual" ||
 		first.UpstreamResponseID != "resp-upstream" || first.Usage.TotalTokens != 15 ||
-		first.Identity.ResponseID == "" || first.Identity.Replayed {
+		first.Identity.ResponseID == "" || first.Identity.SchemaChecksum == "" || first.Identity.Replayed {
 		t.Fatalf("first response = %#v", first)
 	}
 
@@ -131,6 +138,143 @@ func TestReportStudioSuccessExtractionAndReplay(t *testing.T) {
 	if replayResp.StatusCode != http.StatusOK || replay.RequestID != "request-2" || !replay.Identity.Replayed ||
 		replay.Identity.ResponseID != first.Identity.ResponseID || calls.Load() != 1 {
 		t.Fatalf("replay = %#v status=%d calls=%d", replay, replayResp.StatusCode, calls.Load())
+	}
+}
+
+func TestReportStudioInvalidRequestDoesNotCallUpstream(t *testing.T) {
+	var calls atomic.Int32
+	service := fakeCodexService{complete: func(context.Context, codex.Request) (codex.Completion, error) {
+		calls.Add(1)
+		return codex.Completion{}, nil
+	}}
+	app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(io.Discard))
+	req := structuredTestRequest("request-invalid", "key-invalid", "input")
+	req.MaxOutputTokens = 0
+	resp := postStructured(t, app, req, "structured-secret")
+	body := decodeStructuredError(t, resp)
+	if resp.StatusCode != http.StatusBadRequest || body.Error.Code != "invalid_request" {
+		t.Fatalf("invalid request = status %d body %#v", resp.StatusCode, body)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls.Load())
+	}
+}
+
+func TestReportStudioDeadlineIncludesSchemaPreprocessing(t *testing.T) {
+	var calls atomic.Int32
+	service := fakeCodexService{complete: func(context.Context, codex.Request) (codex.Completion, error) {
+		calls.Add(1)
+		return codex.Completion{}, nil
+	}}
+	slowCompiler := func(opts *options) {
+		compile := opts.structuredCompile
+		opts.structuredCompile = func(req reportstudio.SchemaRequest) (*reportstudio.Validator, error) {
+			time.Sleep(20 * time.Millisecond)
+			return compile(req)
+		}
+	}
+	app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(io.Discard), slowCompiler)
+	req := structuredTestRequest("request-preprocess-timeout", "key-preprocess-timeout", "input")
+	req.DeadlineMS = 5
+	resp := postStructured(t, app, req, "structured-secret")
+	body := decodeStructuredError(t, resp)
+	if resp.StatusCode != http.StatusGatewayTimeout || body.Error.Code != "timeout" {
+		t.Fatalf("preprocessing timeout = status %d body %#v", resp.StatusCode, body)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expired request made %d upstream calls", calls.Load())
+	}
+}
+
+func TestReportStudioSameVersionSchemaChangeConflicts(t *testing.T) {
+	var calls atomic.Int32
+	service := fakeCodexService{complete: func(context.Context, codex.Request) (codex.Completion, error) {
+		calls.Add(1)
+		return codex.Completion{Text: `{"title":"ok","count":1}`, ID: "resp-schema"}, nil
+	}}
+	app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(io.Discard))
+	req := structuredTestRequest("request-schema-a", "key-schema", "input")
+	first := postStructured(t, app, req, "structured-secret")
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d", first.StatusCode)
+	}
+
+	changed := req
+	changed.RequestID = "request-schema-b"
+	changed.Schema.Schema = json.RawMessage(`{
+		"type":"object",
+		"properties":{"title":{"type":"string"}},
+		"required":["title"],
+		"additionalProperties":false
+	}`)
+	conflict := postStructured(t, app, changed, "structured-secret")
+	body := decodeStructuredError(t, conflict)
+	if conflict.StatusCode != http.StatusConflict || body.Error.Code != "idempotency_conflict" {
+		t.Fatalf("schema conflict = status %d body %#v", conflict.StatusCode, body)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestReportStudioTenantHeaderCannotSelectCallerNamespace(t *testing.T) {
+	var calls atomic.Int32
+	service := fakeCodexService{complete: func(context.Context, codex.Request) (codex.Completion, error) {
+		calls.Add(1)
+		return codex.Completion{Text: `{"title":"ok","count":1}`, ID: "resp-caller"}, nil
+	}}
+	cfg := structuredTestConfig()
+	app := New(cfg, WithCodexService(service), WithLogOutput(io.Discard))
+	firstReq := structuredTestRequest("request-caller-a", "key-caller", "input-a")
+	first := postStructured(t, app, firstReq, "structured-secret", map[string]string{
+		cfg.GatewayTenantHeader: "caller-a",
+	})
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d", first.StatusCode)
+	}
+
+	secondReq := structuredTestRequest("request-caller-b", "key-caller", "input-b")
+	second := postStructured(t, app, secondReq, "structured-secret", map[string]string{
+		cfg.GatewayTenantHeader: "caller-b",
+	})
+	body := decodeStructuredError(t, second)
+	if second.StatusCode != http.StatusConflict || body.Error.Code != "idempotency_conflict" {
+		t.Fatalf("caller scope = status %d body %#v", second.StatusCode, body)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestReportStudioRejectsUnsupportedStrictSchemaBeforeUpstream(t *testing.T) {
+	var calls atomic.Int32
+	service := fakeCodexService{complete: func(context.Context, codex.Request) (codex.Completion, error) {
+		calls.Add(1)
+		return codex.Completion{}, nil
+	}}
+	app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(io.Discard))
+	tests := []reportstudio.Request{
+		structuredTestRequest("request-bad-name", "key-bad-name", "input"),
+		structuredTestRequest("request-bad-keyword", "key-bad-keyword", "input"),
+	}
+	tests[0].Schema.Name = "bad schema name"
+	tests[1].Schema.Schema = json.RawMessage(`{
+		"type":"object",
+		"properties":{"title":{"type":"string","minLength":1}},
+		"required":["title"],
+		"additionalProperties":false
+	}`)
+	for _, req := range tests {
+		resp := postStructured(t, app, req, "structured-secret")
+		body := decodeStructuredError(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || body.Error.Code != "invalid_schema" {
+			t.Fatalf("invalid schema = status %d body %#v", resp.StatusCode, body)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("invalid schemas made %d upstream calls", calls.Load())
 	}
 }
 
@@ -202,6 +346,13 @@ func TestReportStudioServiceAndMalformedOutputErrors(t *testing.T) {
 			wantStatus: http.StatusBadGateway, wantCode: "upstream_error",
 		},
 		{
+			name: "upstream schema rejection",
+			complete: func(context.Context, codex.Request) (codex.Completion, error) {
+				return codex.Completion{}, codex.NewError(codex.ErrorKindClient, http.StatusBadRequest, "unsupported schema detail", nil)
+			},
+			wantStatus: http.StatusBadRequest, wantCode: "invalid_schema",
+		},
+		{
 			name: "malformed json",
 			complete: func(context.Context, codex.Request) (codex.Completion, error) {
 				return codex.Completion{Text: "```json\n{}\n```", ID: "resp-malformed"}, nil
@@ -229,6 +380,48 @@ func TestReportStudioServiceAndMalformedOutputErrors(t *testing.T) {
 				t.Fatal("rate limit missing Retry-After")
 			}
 		})
+	}
+}
+
+func TestReportStudioMetricsRecordEndpointOutcomes(t *testing.T) {
+	metrics := metricspkg.New(true)
+	service := fakeCodexService{complete: func(context.Context, codex.Request) (codex.Completion, error) {
+		return codex.Completion{
+			Text: `{"title":"ok","count":1}`, ID: "resp-metrics",
+			Usage: openai.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		}, nil
+	}}
+	cfg := structuredTestConfig()
+	app := New(cfg, WithCodexService(service), WithMetrics(metrics), WithLogOutput(io.Discard))
+	success := postStructured(t, app, structuredTestRequest("request-metrics", "key-metrics", "input"), "structured-secret")
+	success.Body.Close()
+	if success.StatusCode != http.StatusOK {
+		t.Fatalf("success status = %d", success.StatusCode)
+	}
+
+	invalid := structuredTestRequest("request-metrics-invalid", "key-metrics-invalid", "input")
+	invalid.Schema.Name = "invalid name"
+	invalidResp := postStructured(t, app, invalid, "structured-secret")
+	invalidResp.Body.Close()
+	if invalidResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid status = %d", invalidResp.StatusCode)
+	}
+
+	body := scrapeServerMetrics(t, app, map[string]string{
+		"Authorization": "Bearer structured-secret",
+	})
+	for _, want := range []string{
+		`codex_chat_api_structured_inference_latency_seconds_count{provider="codex",result="success"} 1`,
+		`codex_chat_api_structured_inference_tokens_total{kind="total",provider="codex"} 15`,
+		`codex_chat_api_structured_inference_failures_total{code="invalid_schema"} 1`,
+		`codex_chat_api_structured_inference_validation_total{result="success"} 1`,
+		`codex_chat_api_structured_inference_saturation_total{result="admitted"} 1`,
+		`codex_chat_api_structured_inference_active 0`,
+		`codex_chat_api_structured_inference_queued 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, body)
+		}
 	}
 }
 

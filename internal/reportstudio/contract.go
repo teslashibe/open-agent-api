@@ -53,6 +53,7 @@ type Identity struct {
 	IdempotencyKey     string `json:"idempotency_key"`
 	InputChecksum      string `json:"input_checksum"`
 	SchemaVersion      string `json:"schema_version"`
+	SchemaChecksum     string `json:"schema_checksum"`
 	ModelPolicyVersion string `json:"model_policy_version"`
 	Replayed           bool   `json:"replayed"`
 }
@@ -80,6 +81,7 @@ type Scope struct {
 	Operation          string
 	InputChecksum      string
 	SchemaVersion      string
+	SchemaChecksum     string
 	ModelPolicyVersion string
 	Model              string
 }

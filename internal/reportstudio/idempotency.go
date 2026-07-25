@@ -46,6 +46,9 @@ func (s *Store) Execute(
 	scope Scope,
 	fn func() (Success, error),
 ) (Success, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Success{}, false, err
+	}
 	token := digest(caller, idempotencyKey)
 	fingerprint := ScopeFingerprint(scope)
 	for {
@@ -108,6 +111,7 @@ func ScopeFingerprint(scope Scope) string {
 		scope.Operation,
 		scope.InputChecksum,
 		scope.SchemaVersion,
+		scope.SchemaChecksum,
 		scope.ModelPolicyVersion,
 		scope.Model,
 	)

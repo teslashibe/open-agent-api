@@ -31,8 +31,16 @@ func (a *Admission) WithObserver(observer func(active, waiting int)) {
 }
 
 func (a *Admission) Acquire(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	select {
 	case a.active <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-a.active
+			a.notify()
+			return nil, err
+		}
 		a.notify()
 		return a.release, nil
 	default:
@@ -47,6 +55,11 @@ func (a *Admission) Acquire(ctx context.Context) (func(), error) {
 	select {
 	case a.active <- struct{}{}:
 		a.waiting.Add(-1)
+		if err := ctx.Err(); err != nil {
+			<-a.active
+			a.notify()
+			return nil, err
+		}
 		a.notify()
 		return a.release, nil
 	case <-ctx.Done():

@@ -42,6 +42,9 @@ func reportStudioInference(opts options) fiber.Handler {
 	}
 	return func(c *fiber.Ctx) error {
 		start := opts.now()
+		deadlineStart := time.Now()
+		parent, cancelRequest := requestContext(c, opts.requestContext(c))
+		defer cancelRequest()
 		provider := "unknown"
 		result := "invalid_request"
 		defer func() {
@@ -49,7 +52,7 @@ func reportStudioInference(opts options) fiber.Handler {
 			opts.metrics.SetStructuredAdmission(opts.structuredAdmission.Active(), opts.structuredAdmission.Waiting())
 		}()
 
-		caller, authErr := structuredCaller(c, opts.contextConfig.GatewayBearerSecret, opts.contextConfig.GatewayTenantHeader)
+		caller, authErr := structuredCaller(c, opts.contextConfig.GatewayBearerSecret)
 		if authErr != nil {
 			result = "auth_error"
 			return writeStructuredError(c, opts, "", authErr)
@@ -80,6 +83,9 @@ func reportStudioInference(opts options) fiber.Handler {
 			result = err.code
 			return writeStructuredError(c, opts, req.RequestID, err)
 		}
+		deadlineAt := deadlineStart.Add(time.Duration(req.DeadlineMS) * time.Millisecond)
+		ctx, cancelDeadline := context.WithDeadline(parent, deadlineAt)
+		defer cancelDeadline()
 		if !allowedModels[req.Model] {
 			result = "unsupported_model"
 			return writeStructuredError(c, opts, req.RequestID, &structuredError{
@@ -104,7 +110,7 @@ func reportStudioInference(opts options) fiber.Handler {
 			})
 		}
 
-		validator, err := reportstudio.CompileSchema(req.Schema)
+		validator, err := opts.structuredCompile(req.Schema)
 		if err != nil {
 			result = "invalid_schema"
 			return writeStructuredError(c, opts, req.RequestID, &structuredError{
@@ -117,19 +123,30 @@ func reportStudioInference(opts options) fiber.Handler {
 				status: http.StatusBadRequest, code: "invalid_request", message: "input must be one valid JSON value",
 			})
 		}
+		canonicalSchema, err := canonicalSchemaIdentity(req.Schema)
+		if err != nil {
+			result = "invalid_schema"
+			return writeStructuredError(c, opts, req.RequestID, &structuredError{
+				status: http.StatusBadRequest, code: "invalid_schema",
+				message: "schema could not be canonicalized",
+			})
+		}
+		if err := ctx.Err(); err != nil {
+			result = "timeout"
+			return writeStructuredError(c, opts, req.RequestID, &structuredError{
+				status: http.StatusGatewayTimeout, code: "timeout",
+				message: "structured inference deadline exceeded during request validation", retryable: true,
+			})
+		}
 		inputChecksum := reportstudio.Checksum(canonicalInput)
+		schemaChecksum := reportstudio.Checksum(canonicalSchema)
 		scope := reportstudio.Scope{
 			Caller: caller, Operation: reportstudio.Operation, InputChecksum: inputChecksum,
 			SchemaVersion:      req.Schema.Version,
+			SchemaChecksum:     schemaChecksum,
 			ModelPolicyVersion: opts.contextConfig.StructuredModelPolicyVersion,
 			Model:              req.Model,
 		}
-
-		parent, cancelRequest := requestContext(c, opts.requestContext(c))
-		defer cancelRequest()
-		deadline := time.Duration(req.DeadlineMS) * time.Millisecond
-		ctx, cancelDeadline := context.WithTimeout(parent, deadline)
-		defer cancelDeadline()
 
 		response, replayed, execErr := opts.structuredStore.Execute(ctx, caller, req.IdempotencyKey, scope, func() (reportstudio.Success, error) {
 			opts.metrics.SetStructuredAdmission(opts.structuredAdmission.Active(), opts.structuredAdmission.Waiting())
@@ -155,6 +172,13 @@ func reportStudioInference(opts options) fiber.Handler {
 				release()
 				opts.metrics.SetStructuredAdmission(opts.structuredAdmission.Active(), opts.structuredAdmission.Waiting())
 			}()
+			if err := ctx.Err(); err != nil {
+				opts.metrics.ObserveStructuredSaturation("timeout")
+				return reportstudio.Success{}, &structuredError{
+					status: http.StatusGatewayTimeout, code: "timeout",
+					message: "structured inference deadline exceeded before upstream inference", retryable: true,
+				}
+			}
 
 			upstreamStart := opts.now()
 			completion, err := opts.codexService.Complete(ctx, codex.Request{
@@ -207,6 +231,7 @@ func reportStudioInference(opts options) fiber.Handler {
 					IdempotencyKey:     req.IdempotencyKey,
 					InputChecksum:      inputChecksum,
 					SchemaVersion:      req.Schema.Version,
+					SchemaChecksum:     schemaChecksum,
 					ModelPolicyVersion: opts.contextConfig.StructuredModelPolicyVersion,
 				},
 				Provenance: reportstudio.Provenance{
@@ -244,6 +269,19 @@ func reportStudioInference(opts options) fiber.Handler {
 			result = mapped.code
 			return writeStructuredError(c, opts, req.RequestID, mapped)
 		}
+		validatedData, err := validator.ValidateRaw(response.Data)
+		if err != nil {
+			opts.metrics.ObserveStructuredValidation("failure")
+			result = "validation_error"
+			return writeStructuredError(c, opts, req.RequestID, &structuredError{
+				status: http.StatusBadGateway, code: "validation_error",
+				message: "cached model output did not satisfy the requested schema", retryable: true,
+			})
+		}
+		if replayed {
+			opts.metrics.ObserveStructuredValidation("success")
+		}
+		response.Data = validatedData
 		response.RequestID = req.RequestID
 		response.Identity.Replayed = replayed
 		result = "success"
@@ -298,16 +336,13 @@ func allowedReasoning(value string) bool {
 	}
 }
 
-func structuredCaller(c *fiber.Ctx, secret, tenantHeader string) (string, *structuredError) {
+func structuredCaller(c *fiber.Ctx, secret string) (string, *structuredError) {
 	token, ok := bearerToken(c.Get(fiber.HeaderAuthorization))
 	if secret == "" || !ok || subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
 		return "", &structuredError{
 			status: http.StatusUnauthorized, code: "authentication_error",
 			message: "authentication failed",
 		}
-	}
-	if tenant := strings.TrimSpace(c.Get(tenantHeader)); tenant != "" {
-		return "tenant:" + safeStructuredHash(tenant), nil
 	}
 	return "bearer:" + safeStructuredHash(token), nil
 }
@@ -344,6 +379,14 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 	return json.Marshal(value)
 }
 
+func canonicalSchemaIdentity(schema reportstudio.SchemaRequest) ([]byte, error) {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	return canonicalJSON(raw)
+}
+
 func mapStructuredServiceError(err error, retryDefault time.Duration) *structuredError {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return &structuredError{status: http.StatusGatewayTimeout, code: "timeout", message: "upstream deadline exceeded", retryable: true}
@@ -362,7 +405,7 @@ func mapStructuredServiceError(err error, retryDefault time.Duration) *structure
 			}
 			return &structuredError{status: http.StatusTooManyRequests, code: "rate_limit", message: "upstream rate limit", retryable: true, retryAfter: retry}
 		case serviceErr.Kind == codex.ErrorKindClient:
-			return &structuredError{status: http.StatusBadGateway, code: "upstream_error", message: "upstream rejected structured request", retryable: false}
+			return &structuredError{status: http.StatusBadRequest, code: "invalid_schema", message: "upstream rejected the structured output schema", retryable: false}
 		default:
 			return &structuredError{status: http.StatusBadGateway, code: "upstream_error", message: "upstream inference failed", retryable: true}
 		}

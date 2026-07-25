@@ -12,7 +12,8 @@ import (
 func testScope(input string) Scope {
 	return Scope{
 		Caller: "caller", Operation: Operation, InputChecksum: input,
-		SchemaVersion: "schema.v1", ModelPolicyVersion: "policy.v1", Model: "model",
+		SchemaVersion: "schema.v1", SchemaChecksum: "schema-checksum-a",
+		ModelPolicyVersion: "policy.v1", Model: "model",
 	}
 }
 
@@ -38,6 +39,38 @@ func TestStoreReplaysAndRejectsScopeConflict(t *testing.T) {
 	})
 	if !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("conflict error = %v", err)
+	}
+}
+
+func TestStoreRejectsSameVersionWithDifferentSchemaContent(t *testing.T) {
+	store := NewStore(time.Minute, 10)
+	scope := testScope("input")
+	if _, _, err := store.Execute(context.Background(), "caller", "key", scope, func() (Success, error) {
+		return Success{Identity: Identity{ResponseID: "stable"}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	scope.SchemaChecksum = "schema-checksum-b"
+	if _, _, err := store.Execute(context.Background(), "caller", "key", scope, func() (Success, error) {
+		return Success{}, nil
+	}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("schema conflict error = %v", err)
+	}
+}
+
+func TestStoreDoesNotStartWorkAfterDeadline(t *testing.T) {
+	store := NewStore(time.Minute, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	if _, _, err := store.Execute(ctx, "caller", "key", testScope("input"), func() (Success, error) {
+		called = true
+		return Success{}, nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("deadline error = %v", err)
+	}
+	if called {
+		t.Fatal("expired request started idempotent work")
 	}
 }
 

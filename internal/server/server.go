@@ -48,6 +48,7 @@ type options struct {
 	metrics             *metricspkg.Metrics
 	structuredAdmission *reportstudio.Admission
 	structuredStore     *reportstudio.Store
+	structuredCompile   func(reportstudio.SchemaRequest) (*reportstudio.Validator, error)
 }
 
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
@@ -111,6 +112,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		metrics:             metricspkg.New(cfg.MetricsEnabled),
 		structuredAdmission: reportstudio.NewAdmission(cfg.StructuredInferenceMaxActive, cfg.StructuredInferenceMaxQueue),
 		structuredStore:     reportstudio.NewStore(cfg.StructuredInferenceIdempotencyTTL, cfg.StructuredInferenceIdempotencyLimit),
+		structuredCompile:   reportstudio.CompileSchema,
 	}
 	for _, setter := range setters {
 		setter(&opts)

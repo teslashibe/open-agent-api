@@ -61,3 +61,15 @@ func TestAdmissionQueuesWithinBoundAndReleases(t *testing.T) {
 		t.Fatal("queued request was not admitted")
 	}
 }
+
+func TestAdmissionRejectsExpiredContextWithoutConsumingCapacity(t *testing.T) {
+	admission := NewAdmission(1, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := admission.Acquire(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if admission.Active() != 0 || admission.Waiting() != 0 {
+		t.Fatalf("admission state = active %d waiting %d", admission.Active(), admission.Waiting())
+	}
+}

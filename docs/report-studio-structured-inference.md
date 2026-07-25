@@ -36,9 +36,18 @@ secret and `Content-Type: application/json`.
 ```
 
 Unknown request fields are rejected. The deadline is a duration from request
-acceptance. Schemas use JSON Schema draft 2020-12, are size/depth bounded, must
-have an object root with `additionalProperties: false`, and cannot load remote
-references.
+acceptance and includes authentication, parsing, schema compilation, admission,
+and upstream work; a request whose deadline expires during preprocessing never
+starts upstream inference.
+
+Schemas use the strict structured-output subset of JSON Schema draft 2020-12.
+Schema names must contain 1-64 letters, digits, underscores, or hyphens.
+Schemas are size/depth bounded, must have an object root, must require every
+declared object property, must set `additionalProperties: false` on every
+object, and may use only locally validated structured-output keywords. Contract
+v1 allows at most five nesting levels and 100 total object properties. Remote
+references and unsupported constructs such as `oneOf`, `allOf`, conditionals,
+and string/numeric constraint keywords are rejected before the upstream call.
 
 Extraction mode always disables tools, the captured Codex coding
 profile/scaffold, and prewarm. The model policy is an exact allowlist configured
@@ -51,13 +60,15 @@ providers do not preserve the same strict JSON Schema dialect.
 Success contains the schema-validated `data`, actual upstream model, upstream
 response ID, token usage, upstream latency, provenance, and a retry-safe
 identity. `identity.response_id` is derived from the caller, operation, input
-checksum, schema version, model policy version, model, and idempotency key.
-`identity.replayed` identifies a cached response.
+checksum, schema version, canonical schema checksum, model policy version,
+model, and idempotency key. `identity.replayed` identifies a cached response.
+Cached data is revalidated against the current request schema before replay.
 
-Idempotency is caller-scoped. `X-Smore-Tenant-ID` identifies the caller when
-present; otherwise a one-way hash of the authenticated bearer is used. The
-default cache is bounded and process-local with in-flight coalescing. The store
-API is isolated in `internal/reportstudio` so shared storage can be wired in a
+Idempotency is caller-scoped using a one-way hash of the authenticated bearer.
+Client-supplied tenant or forwarding headers never select an idempotency
+namespace. The default cache is bounded and process-local with in-flight
+coalescing. The store API is isolated in `internal/reportstudio` so shared
+storage or independently authenticated caller credentials can be wired in a
 later deployment issue.
 
 ## Errors and Admission
