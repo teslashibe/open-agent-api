@@ -1,0 +1,8 @@
+{
+  "label": "Auth",
+  "position": 3,
+  "link": {
+    "type": "doc",
+    "id": "auth/overview"
+  }
+}

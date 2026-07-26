@@ -1,5 +1,7 @@
 # Codex Chat API
 
+User-facing docs live in **[`website/`](website/)** (Docusaurus). From `website/`: `npm install && npm start`. Agents: see **[`AGENTS.md`](AGENTS.md)**.
+
 A small OpenAI-compatible Go HTTP API that proxies chat requests to the Codex
 backend (`wss://chatgpt.com/backend-api/codex/responses`) using the ChatGPT OAuth
 token stored by `codex login`. No `sk-` API key is needed.
