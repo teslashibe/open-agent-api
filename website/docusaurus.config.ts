@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'Open Chat API',
-  tagline: 'OpenAI-compatible proxy for Codex, Antigravity, and Claude Code',
+  tagline: 'OpenAI-compatible chat over local CLI sessions',
   favicon: 'img/favicon.ico',
 
   url: 'https://teslashibe.github.io',

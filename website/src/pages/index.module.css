@@ -1,23 +1,195 @@
-/**
- * CSS files with the .module.css suffix will be treated as CSS modules
- * and scoped locally.
- */
-
-.heroBanner {
-  padding: 4rem 0;
-  text-align: center;
-  position: relative;
-  overflow: hidden;
+.page {
+  color: var(--oca-ink);
 }
 
-@media screen and (max-width: 996px) {
-  .heroBanner {
-    padding: 2rem;
+.hero {
+  position: relative;
+  min-height: min(92vh, 860px);
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+  padding: 7rem 0 4.5rem;
+  background:
+    radial-gradient(1200px 520px at 12% -10%, var(--oca-glow), transparent 60%),
+    radial-gradient(900px 480px at 88% 8%, rgba(20, 33, 43, 0.08), transparent 55%),
+    linear-gradient(165deg, #f7fafb 0%, #e7eef2 48%, #dce7ec 100%);
+}
+
+[data-theme='dark'] .hero {
+  background:
+    radial-gradient(1200px 520px at 12% -10%, var(--oca-glow), transparent 60%),
+    radial-gradient(900px 480px at 88% 8%, rgba(61, 184, 188, 0.08), transparent 55%),
+    linear-gradient(165deg, #101820 0%, #0f161c 50%, #0b1218 100%);
+}
+
+.heroMesh {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(20, 33, 43, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(20, 33, 43, 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: linear-gradient(to bottom, black 35%, transparent 95%);
+  animation: drift 28s linear infinite;
+}
+
+[data-theme='dark'] .heroMesh {
+  background-image:
+    linear-gradient(rgba(238, 243, 246, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(238, 243, 246, 0.04) 1px, transparent 1px);
+}
+
+@keyframes drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(0, 56px, 0);
   }
 }
 
-.buttons {
+.heroInner {
+  position: relative;
+  z-index: 1;
+  max-width: 720px;
+}
+
+.brand {
+  margin: 0 0 1.1rem;
+  font-family: var(--ifm-heading-font-family);
+  font-size: clamp(3.1rem, 8vw, 5.4rem);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  color: var(--oca-ink);
+}
+
+.headline {
+  margin: 0 0 1rem;
+  font-family: var(--ifm-heading-font-family);
+  font-size: clamp(1.35rem, 2.6vw, 1.85rem);
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--oca-ink-soft);
+  max-width: 28ch;
+}
+
+.support {
+  margin: 0 0 2rem;
+  max-width: 42ch;
+  font-size: 1.05rem;
+  line-height: 1.55;
+  color: var(--oca-ink-soft);
+}
+
+.actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+}
+
+.primaryCta,
+.secondaryCta {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-height: 3rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.55rem;
+  font-weight: 600;
+  text-decoration: none !important;
+  transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease;
+}
+
+.primaryCta {
+  background: var(--oca-ink);
+  color: #f7fafb !important;
+}
+
+.primaryCta:hover {
+  transform: translateY(-1px);
+  background: var(--oca-accent-deep);
+  color: #fff !important;
+}
+
+.secondaryCta {
+  border: 1px solid rgba(20, 33, 43, 0.18);
+  color: var(--oca-ink) !important;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+[data-theme='dark'] .secondaryCta {
+  border-color: rgba(238, 243, 246, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--oca-ink) !important;
+}
+
+.secondaryCta:hover {
+  transform: translateY(-1px);
+  border-color: var(--oca-accent);
+}
+
+.section {
+  padding: 4.5rem 0 5rem;
+}
+
+.sectionTitle {
+  margin: 0 0 0.65rem;
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+  letter-spacing: -0.02em;
+}
+
+.sectionText {
+  margin: 0 0 2rem;
+  max-width: 52ch;
+  color: var(--oca-ink-soft);
+}
+
+.pathGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem 1.75rem;
+}
+
+.pathItem {
+  padding-top: 1rem;
+  border-top: 1px solid rgba(20, 33, 43, 0.12);
+}
+
+[data-theme='dark'] .pathItem {
+  border-top-color: rgba(238, 243, 246, 0.12);
+}
+
+.pathItem h3 {
+  margin: 0 0 0.45rem;
+  font-size: 1.15rem;
+}
+
+.pathItem h3 a {
+  color: var(--oca-ink);
+  text-decoration: none;
+}
+
+.pathItem h3 a:hover {
+  color: var(--oca-accent);
+}
+
+.pathItem p {
+  margin: 0;
+  color: var(--oca-ink-soft);
+  font-size: 0.98rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 860px) {
+  .hero {
+    min-height: auto;
+    align-items: center;
+    padding: 6rem 0 3.5rem;
+  }
+
+  .pathGrid {
+    grid-template-columns: 1fr;
+  }
 }

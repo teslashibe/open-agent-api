@@ -1,66 +1,71 @@
 import type {ReactNode} from 'react';
-import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
-import Heading from '@theme/Heading';
 
 import styles from './index.module.css';
-
-function HomepageHeader() {
-  const {siteConfig} = useDocusaurusContext();
-  return (
-    <header className={clsx('hero hero--primary', styles.heroBanner)}>
-      <div className="container">
-        <Heading as="h1" className="hero__title">
-          {siteConfig.title}
-        </Heading>
-        <p className="hero__subtitle">{siteConfig.tagline}</p>
-        <div className={styles.buttons}>
-          <Link className="button button--secondary button--lg" to="/docs/intro">
-            Get started
-          </Link>
-          <Link
-            className="button button--outline button--secondary button--lg"
-            to="/docs/cursor/byok-ngrok"
-            style={{marginLeft: '0.75rem'}}>
-            Cursor BYOK
-          </Link>
-        </div>
-      </div>
-    </header>
-  );
-}
 
 export default function Home(): ReactNode {
   const {siteConfig} = useDocusaurusContext();
   return (
-    <Layout title={siteConfig.title} description={siteConfig.tagline}>
-      <HomepageHeader />
-      <main>
-        <section className="container margin-vert--lg">
-          <div className="row">
-            <div className="col col--4">
-              <h3>
-                <Link to="/docs/install/docker">Docker</Link>
-              </h3>
-              <p>Run locally with Compose and host OAuth mounts.</p>
+    <Layout
+      title="Open Chat API"
+      description={siteConfig.tagline}>
+      <div className={styles.page}>
+        <header className={styles.hero}>
+          <div className={styles.heroMesh} aria-hidden="true" />
+          <div className="container">
+            <div className={styles.heroInner}>
+              <p className={styles.brand}>Open Chat API</p>
+              <h1 className={styles.headline}>
+                OpenAI-compatible chat over your local CLI sessions.
+              </h1>
+              <p className={styles.support}>
+                One `/v1` endpoint for Codex, Claude Code, and Antigravity —
+                Cursor BYOK, Docker, or an in-cluster gateway. No `sk-` keys.
+              </p>
+              <div className={styles.actions}>
+                <Link className={styles.primaryCta} to="/docs/intro">
+                  Read the docs
+                </Link>
+                <Link className={styles.secondaryCta} to="/docs/cursor/byok-ngrok">
+                  Cursor BYOK setup
+                </Link>
+              </div>
             </div>
-            <div className="col col--4">
-              <h3>
-                <Link to="/docs/install/kubernetes">Kubernetes</Link>
-              </h3>
-              <p>In-cluster gateway for apps behind a bearer secret.</p>
-            </div>
-            <div className="col col--4">
-              <h3>
-                <Link to="/docs/models/catalog">Models</Link>
-              </h3>
-              <p>Full Codex, Antigravity, and Claude Code slug catalog.</p>
+          </div>
+        </header>
+
+        <section className={styles.section}>
+          <div className="container">
+            <h2 className={styles.sectionTitle}>Start where you need</h2>
+            <p className={styles.sectionText}>
+              Install locally, wire credentials, then point Cursor or your apps
+              at the same OpenAI-shaped API.
+            </p>
+            <div className={styles.pathGrid}>
+              <div className={styles.pathItem}>
+                <h3>
+                  <Link to="/docs/install/docker">Docker</Link>
+                </h3>
+                <p>Compose on localhost with host OAuth mounts.</p>
+              </div>
+              <div className={styles.pathItem}>
+                <h3>
+                  <Link to="/docs/install/kubernetes">Kubernetes</Link>
+                </h3>
+                <p>In-cluster gateway behind a bearer secret.</p>
+              </div>
+              <div className={styles.pathItem}>
+                <h3>
+                  <Link to="/docs/models/catalog">Models</Link>
+                </h3>
+                <p>Full slug catalog across every upstream surface.</p>
+              </div>
             </div>
           </div>
         </section>
-      </main>
+      </div>
     </Layout>
   );
 }
