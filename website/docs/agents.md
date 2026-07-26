@@ -4,7 +4,7 @@ sidebar_position: 7
 
 # Agents
 
-For coding agents (Cursor Agent, Codex, Claude Code, etc.), start with the repo-root **[AGENTS.md](https://github.com/teslashibe/open-chat-api/blob/main/AGENTS.md)** — the canonical bootstrap for this service.
+For coding agents (Cursor Agent, Codex, Claude Code, etc.), start with the repo-root **[AGENTS.md](https://github.com/teslashibe/open-agent-api/blob/main/AGENTS.md)** — the canonical bootstrap for this service.
 
 ## Summary
 
@@ -13,7 +13,7 @@ For coding agents (Cursor Agent, Codex, Claude Code, etc.), start with the repo-
 **Run:**
 
 ```bash
-codex login && go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
+codex login && go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088
 # or: docker compose up --build -d
 ```
 
@@ -28,10 +28,10 @@ curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 
 **Rules for agents:**
 
-- Model IDs only from [`internal/openai/models.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/openai/models.go) or live `/v1/models` — do not invent slugs.
+- Model IDs only from [`internal/openai/models.go`](https://github.com/teslashibe/open-agent-api/blob/main/internal/openai/models.go) or live `/v1/models` — do not invent slugs.
 - No secrets in commits; do not casually bind `~/.claude.json`.
 - Update [model catalog](./models/catalog) when changing aliases in `models.go`.
 
-**Key paths:** `cmd/open-chat-api/`, `internal/openai/models.go`, `docker-compose*.yml`, `scripts/sync-antigravity-auth.sh`.
+**Key paths:** `cmd/open-agent-api/`, `internal/openai/models.go`, `docker-compose*.yml`, `scripts/sync-antigravity-auth.sh`.
 
-See [AGENTS.md](https://github.com/teslashibe/open-chat-api/blob/main/AGENTS.md) for the full table, do/don't list, and doc index.
+See [AGENTS.md](https://github.com/teslashibe/open-agent-api/blob/main/AGENTS.md) for the full table, do/don't list, and doc index.

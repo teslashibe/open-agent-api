@@ -38,4 +38,4 @@ Claude Code is skipped entirely when `GATEWAY_PROVIDERS` omits `claude`.
 
 ## Kubernetes
 
-`CLAUDE_CODE_OAUTH_TOKEN` is injected from Secret `open-chat-api-secrets` (env, not a file mount). Rotate by updating the SOPS secret and restarting the Deployment.
+`CLAUDE_CODE_OAUTH_TOKEN` is injected from Secret `open-agent-api-secrets` (env, not a file mount). Rotate by updating the SOPS secret and restarting the Deployment.

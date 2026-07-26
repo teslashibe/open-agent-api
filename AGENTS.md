@@ -1,4 +1,4 @@
-# Agent bootstrap — open-chat-api
+# Agent bootstrap — open-agent-api
 
 OpenAI-compatible Go HTTP proxy for **Cursor BYOK** and any OpenAI SDK client. Routes `POST /v1/chat/completions` across three upstream surfaces — no `sk-` API keys.
 
@@ -13,15 +13,15 @@ Default model when `model` is omitted: **`gpt-5.6-sol`**.
 ## Run instantly
 
 ```bash
-git clone https://github.com/teslashibe/open-chat-api.git
-cd open-chat-api
+git clone https://github.com/teslashibe/open-agent-api.git
+cd open-agent-api
 codex login                                 # required for Codex models
 # scripts/sync-antigravity-auth.sh          # optional Gemini 3.x / Antigravity
 
-docker compose up --build -d                # or: go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
+docker compose up --build -d                # or: go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088
 curl -s http://127.0.0.1:8088/health
 curl -s http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'authorization: Bearer local-open-agent-api' \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"Say hi in five words."}]}' | jq .
 ```
@@ -51,7 +51,7 @@ Endpoints: `GET /health`, `GET /v1/models`, `POST /v1/chat/completions` (stream 
 NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 ```
 
-Cursor settings: API key = any non-empty string (e.g. `local-open-chat-api`); base URL = `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` (ngrok overlay). **Cursor does not allow localhost** — private URLs fail with "Access to private networks is forbidden".
+Cursor settings: API key = any non-empty string (e.g. `local-open-agent-api`); base URL = `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` (ngrok overlay). **Cursor does not allow localhost** — private URLs fail with "Access to private networks is forbidden".
 
 ## Key model slugs
 
@@ -70,7 +70,7 @@ Full tables: [`internal/openai/models.go`](internal/openai/models.go) and [websi
 
 | Path | Purpose |
 | --- | --- |
-| `cmd/open-chat-api/` | Main entrypoint |
+| `cmd/open-agent-api/` | Main entrypoint |
 | `internal/openai/models.go` | Model alias catalog (source of truth) |
 | `internal/server/` | HTTP handlers, routing, queue |
 | `docker-compose.yml` | Default Docker run |

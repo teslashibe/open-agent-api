@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-agent-api/internal/codex"
 )
 
 const defaultModel = "gemini-2.5-flash"

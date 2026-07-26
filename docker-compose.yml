@@ -2,7 +2,7 @@ services:
   api:
     build:
       context: .
-    image: teslashibe/open-chat-api:local
+    image: teslashibe/open-agent-api:local
     command: ["--host", "0.0.0.0", "--port", "8088"]
     environment:
       CODEX_HOME: /home/codex/.codex
@@ -36,7 +36,7 @@ services:
       # Prefer Antigravity oauth (synced via scripts/sync-antigravity-auth.sh).
       GEMINI_AUTH_PATH: "${GEMINI_AUTH_PATH:-/home/codex/.gemini/antigravity_oauth_creds.json}"
       CLAUDE_TIMEOUT: "${CLAUDE_TIMEOUT:-10m}"
-      CODEX_AGENT_QUEUE_LOCK_DIR: "${CODEX_AGENT_QUEUE_LOCK_DIR:-/var/lib/open-chat-api/agent-locks}"
+      CODEX_AGENT_QUEUE_LOCK_DIR: "${CODEX_AGENT_QUEUE_LOCK_DIR:-/var/lib/open-agent-api/agent-locks}"
       CODEX_CONTEXT_MANAGEMENT_ENABLED: "${CODEX_CONTEXT_MANAGEMENT_ENABLED:-true}"
       CODEX_CONTEXT_MAX_BYTES: "${CODEX_CONTEXT_MAX_BYTES:-196608}"
       CODEX_CONTEXT_MAX_MESSAGES: "${CODEX_CONTEXT_MAX_MESSAGES:-120}"
@@ -57,7 +57,7 @@ services:
       # rename, leaving the container a stale truncated inode ("config
       # corrupted"). Auth comes from CLAUDE_CODE_OAUTH_TOKEN (.env); the
       # container CLI maintains its own config in its own HOME.
-      - "agent-queue-locks:/var/lib/open-chat-api/agent-locks"
+      - "agent-queue-locks:/var/lib/open-agent-api/agent-locks"
     ports:
       - "127.0.0.1:${CODEX_CHAT_API_PORT:-8088}:8088"
     healthcheck:

@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: Install with Docker
-description: Clone the repo and run open-chat-api with Docker Compose.
+description: Clone the repo and run open-agent-api with Docker Compose.
 ---
 
 # Install with Docker
@@ -20,8 +20,8 @@ Full local path: clone → auth → Compose → completion.
 ## Clone and start
 
 ```bash
-git clone https://github.com/teslashibe/open-chat-api.git
-cd open-chat-api
+git clone https://github.com/teslashibe/open-agent-api.git
+cd open-agent-api
 
 codex login
 # optional:
@@ -30,7 +30,7 @@ codex login
 docker compose up --build -d
 ```
 
-This builds/runs image `teslashibe/open-chat-api:local` and binds the API to **`127.0.0.1:8088`**.
+This builds/runs image `teslashibe/open-agent-api:local` and binds the API to **`127.0.0.1:8088`**.
 
 ## Verify and call
 
@@ -41,7 +41,7 @@ curl -s http://127.0.0.1:8088/health
 curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 
 curl -s http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'authorization: Bearer local-open-agent-api' \
   -H 'content-type: application/json' \
   -d '{
     "model": "gpt-5.6-terra",
@@ -56,7 +56,7 @@ curl -s http://127.0.0.1:8088/v1/chat/completions \
 | `${HOME}/.codex` | `/home/codex/.codex` | Read-only |
 | `${HOME}/.gemini` | `/home/codex/.gemini` | Writable (OAuth refresh) |
 | `${HOME}/.claude` | `/home/codex/.claude` | CLI home; auth token still comes from env |
-| `agent-queue-locks` | `/var/lib/open-chat-api/agent-locks` | Shared agent-queue locks |
+| `agent-queue-locks` | `/var/lib/open-agent-api/agent-locks` | Shared agent-queue locks |
 
 Compose deliberately **does not** bind-mount `~/.claude.json` (host CLI atomic renames leave a stale inode in the container).
 

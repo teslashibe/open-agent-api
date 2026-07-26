@@ -11,8 +11,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/teslashibe/open-chat-api/internal/auth"
-	"github.com/teslashibe/open-chat-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/auth"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 const (

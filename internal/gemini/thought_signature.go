@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/teslashibe/open-chat-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 // skipThoughtSignatureValidator is Gemini's documented escape hatch when a

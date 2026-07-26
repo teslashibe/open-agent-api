@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/teslashibe/open-chat-api/internal/config"
-	"github.com/teslashibe/open-chat-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/config"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 type contextManagementResult struct {
@@ -176,13 +176,13 @@ func cloneMessages(messages []openai.ChatMessage) []openai.ChatMessage {
 }
 
 func truncatedToolOutput(text string, maxBytes int) string {
-	marker := fmt.Sprintf("[open-chat-api: tool output truncated from %d bytes; kept %d bytes]", len(text), maxBytes)
+	marker := fmt.Sprintf("[open-agent-api: tool output truncated from %d bytes; kept %d bytes]", len(text), maxBytes)
 	keptBytes := maxBytes - len("\n\n") - len(marker)
 	if keptBytes < 0 {
 		keptBytes = 0
 	}
 	kept := prefixBytes(text, keptBytes)
-	return kept + "\n\n" + fmt.Sprintf("[open-chat-api: tool output truncated from %d bytes; kept %d bytes]", len(text), len(kept))
+	return kept + "\n\n" + fmt.Sprintf("[open-agent-api: tool output truncated from %d bytes; kept %d bytes]", len(text), len(kept))
 }
 
 func compactedToolOutput(text string, maxBytes int) string {
@@ -190,7 +190,7 @@ func compactedToolOutput(text string, maxBytes int) string {
 	if kept == text {
 		return text
 	}
-	compacted := kept + "\n\n" + fmt.Sprintf("[open-chat-api: older tool output compacted from %d bytes; kept %d bytes]", len(text), len(kept))
+	compacted := kept + "\n\n" + fmt.Sprintf("[open-agent-api: older tool output compacted from %d bytes; kept %d bytes]", len(text), len(kept))
 	if len(compacted) >= len(text) {
 		return text
 	}

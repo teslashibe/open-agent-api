@@ -3,15 +3,15 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Open Chat API',
-  tagline: 'OpenAI-compatible chat over local CLI sessions',
+  title: 'Open Agent API',
+  tagline: 'OpenAI-compatible agent API over local CLI sessions',
   favicon: 'img/favicon.svg',
 
   url: 'https://teslashibe.github.io',
-  baseUrl: '/open-chat-api/',
+  baseUrl: '/open-agent-api/',
 
   organizationName: 'teslashibe',
-  projectName: 'open-chat-api',
+  projectName: 'open-agent-api',
 
   onBrokenLinks: 'throw',
 
@@ -33,7 +33,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           editUrl:
-            'https://github.com/teslashibe/open-chat-api/tree/main/website/',
+            'https://github.com/teslashibe/open-agent-api/tree/main/website/',
         },
         blog: false,
         theme: {
@@ -46,9 +46,9 @@ const config: Config = {
   themeConfig: {
     image: 'img/logo.svg',
     navbar: {
-      title: 'Open Chat API',
+      title: 'Open Agent API',
       logo: {
-        alt: 'Open Chat API',
+        alt: 'Open Agent API',
         src: 'img/logo.svg',
       },
       items: [
@@ -59,7 +59,7 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          href: 'https://github.com/teslashibe/open-chat-api',
+          href: 'https://github.com/teslashibe/open-agent-api',
           label: 'GitHub',
           position: 'right',
         },
@@ -82,11 +82,11 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/teslashibe/open-chat-api',
+              href: 'https://github.com/teslashibe/open-agent-api',
             },
             {
               label: 'AGENTS.md',
-              href: 'https://github.com/teslashibe/open-chat-api/blob/main/AGENTS.md',
+              href: 'https://github.com/teslashibe/open-agent-api/blob/main/AGENTS.md',
             },
           ],
         },

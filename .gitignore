@@ -9,6 +9,7 @@ __pycache__/
 # Go build/test artifacts
 codex-chat-api
 open-chat-api
+open-agent-api
 bin/
 dist/
 coverage.out

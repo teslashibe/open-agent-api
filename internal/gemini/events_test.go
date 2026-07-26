@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-agent-api/internal/codex"
 )
 
 func TestParseStreamEventTextThoughtToolAndDone(t *testing.T) {

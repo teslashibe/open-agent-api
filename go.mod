@@ -1,4 +1,4 @@
-module github.com/teslashibe/open-chat-api
+module github.com/teslashibe/open-agent-api
 
 go 1.24
 

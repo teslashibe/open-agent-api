@@ -8,7 +8,7 @@ OpenAI-compatible **public IDs** resolved server-side before the upstream call.
 
 **Default model** (when the client omits `model`): **`gpt-5.6-sol`**
 
-**Source of truth:** [`internal/openai/models.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/openai/models.go)
+**Source of truth:** [`internal/openai/models.go`](https://github.com/teslashibe/open-agent-api/blob/main/internal/openai/models.go)
 
 **Listing filter:** `GATEWAY_PROVIDERS` (default `codex,gemini,claude`) controls which providers appear in `GET /v1/models` and can be completed. Disabled providers return `404 model not found`. Unknown IDs pass through with default effort/verbosity.
 

@@ -11,8 +11,8 @@ End-to-end path from an empty machine to a working completion. Pick Docker (reco
 ## 1. Clone
 
 ```bash
-git clone https://github.com/teslashibe/open-chat-api.git
-cd open-chat-api
+git clone https://github.com/teslashibe/open-agent-api.git
+cd open-agent-api
 ```
 
 ## 2. Authenticate upstream
@@ -49,7 +49,7 @@ API listens on **`http://127.0.0.1:8088`**. More detail: [Install with Docker](.
 Requires Go 1.24+.
 
 ```bash
-go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
+go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088
 ```
 
 ## 4. Health check
@@ -65,7 +65,7 @@ curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 
 ```bash
 curl -s http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'authorization: Bearer local-open-agent-api' \
   -H 'content-type: application/json' \
   -d '{
     "model": "gpt-5.6-terra",
@@ -79,7 +79,7 @@ You should get an OpenAI-shaped JSON response with `choices[0].message.content`.
 
 ```bash
 curl -N http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'authorization: Bearer local-open-agent-api' \
   -H 'content-type: application/json' \
   -d '{
     "model": "gpt-5.6-terra",
@@ -110,7 +110,7 @@ In **Cursor → Settings → Models**:
 
 | Field | Value |
 | --- | --- |
-| OpenAI API Key | `local-open-chat-api` (any non-empty string) |
+| OpenAI API Key | `local-open-agent-api` (any non-empty string) |
 | Override OpenAI Base URL | `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` |
 | Model | e.g. `gpt-5.6-terra` |
 

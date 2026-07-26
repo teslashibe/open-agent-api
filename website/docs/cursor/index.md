@@ -1,7 +1,7 @@
 ---
 sidebar_position: 0
 title: Cursor
-description: Use open-chat-api from Cursor Agent with BYOK.
+description: Use open-agent-api from Cursor Agent with BYOK.
 ---
 
 # Cursor

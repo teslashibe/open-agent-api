@@ -226,7 +226,7 @@ func TestChatCompletionRequestParsesToolCallFields(t *testing.T) {
 		"messages":[
 			{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"codex\"}"}},{"id":"call_456","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},
 			{"role":"tool","tool_call_id":"call_123","content":"result"},
-			{"role":"tool","tool_call_id":"call_456","content":"module github.com/teslashibe/open-chat-api"}
+			{"role":"tool","tool_call_id":"call_456","content":"module github.com/teslashibe/open-agent-api"}
 		],
 		"tools":[{"type":"function","function":{"name":"lookup"}}],
 		"tool_choice":{"type":"function","function":{"name":"lookup"}},

@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: Cursor Agent tool calling
-description: How Open Chat API makes Cursor Agent tool calls work over BYOK — Chat Completions tools, streaming delta.tool_calls, and adapters for Codex, Claude Code, and Antigravity.
+description: How Open Agent API makes Cursor Agent tool calls work over BYOK — Chat Completions tools, streaming delta.tool_calls, and adapters for Codex, Claude Code, and Antigravity.
 keywords:
   - Cursor Agent tools
   - Cursor BYOK tool calling
@@ -12,7 +12,7 @@ keywords:
 
 # Cursor Agent tool calling
 
-**Short answer:** Cursor Agent talks to custom OpenAI endpoints using Chat Completions **tools** — the same shape OpenRouter and other OpenAI-compatible APIs use. Open Chat API accepts that wire format, translates it for Codex / Claude Code / Antigravity, then streams Cursor-safe `delta.tool_calls` so Agent mode can run tools locally and continue the chat.
+**Short answer:** Cursor Agent talks to custom OpenAI endpoints using Chat Completions **tools** — the same shape OpenRouter and other OpenAI-compatible APIs use. Open Agent API accepts that wire format, translates it for Codex / Claude Code / Antigravity, then streams Cursor-safe `delta.tool_calls` so Agent mode can run tools locally and continue the chat.
 
 Tools still run **inside Cursor** (read file, shell, etc.). This service never executes your workspace tools; it only carries the protocol.
 
@@ -28,7 +28,7 @@ Cursor Agent only works against a backend that:
 4. Keeps tool-call IDs stable across turns
 5. Speaks `type: "function"` tool calls by default (Cursor’s BYOK parser drops `type: "custom"`)
 
-Open Chat API does that while authenticating upstream with local CLI/OAuth — not OpenAI `sk-` keys.
+Open Agent API does that while authenticating upstream with local CLI/OAuth — not OpenAI `sk-` keys.
 
 **Out of scope**
 
@@ -41,7 +41,7 @@ Open Chat API does that while authenticating upstream with local CLI/OAuth — n
 ```mermaid
 sequenceDiagram
   participant Cursor
-  participant API as Open Chat API
+  participant API as Open Agent API
   participant Up as Upstream (Codex / Gemini / Claude)
 
   Cursor->>API: POST /v1/chat/completions<br/>tools + messages
@@ -97,7 +97,7 @@ Custom / freeform tools are also accepted:
 }
 ```
 
-Wire sniffing lives in [`internal/server/cursor_wire.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/cursor_wire.go).
+Wire sniffing lives in [`internal/server/cursor_wire.go`](https://github.com/teslashibe/open-agent-api/blob/main/internal/server/cursor_wire.go).
 
 ### Why “faithful” Codex mode turns off
 
@@ -130,7 +130,7 @@ After Cursor executes tools, the next request must include:
         }
       ]
     },
-    { "role": "tool", "tool_call_id": "call_123", "content": "module github.com/teslashibe/open-chat-api\n..." }
+    { "role": "tool", "tool_call_id": "call_123", "content": "module github.com/teslashibe/open-agent-api\n..." }
   ]
 }
 ```
@@ -159,7 +159,7 @@ Each tool-call delta must include:
 
 Empty tool deltas are dropped. Bad JSON arguments become an error chunk, not a fake `tool_calls` finish.
 
-Implemented in [`internal/server/stream_processor.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/stream_processor.go); locked in by `assertExactCursorToolSSE` in the server tests.
+Implemented in [`internal/server/stream_processor.go`](https://github.com/teslashibe/open-agent-api/blob/main/internal/server/stream_processor.go); locked in by `assertExactCursorToolSSE` in the server tests.
 
 ### Custom tools and `CODEX_CUSTOM_TOOL_WIRE`
 
@@ -181,7 +181,7 @@ Chat Completions nested tools become flat Responses tools:
   → {"type":"function","name":"X","parameters":{...}}
 ```
 
-History maps `tool_calls` → `function_call` and `role: "tool"` → `function_call_output`. Codex caps `call_id` at **64 characters**; longer Cursor IDs are hashed so the pair still matches. Event shapes: [`docs/codex-tool-events.md`](https://github.com/teslashibe/open-chat-api/blob/main/docs/codex-tool-events.md).
+History maps `tool_calls` → `function_call` and `role: "tool"` → `function_call_output`. Codex caps `call_id` at **64 characters**; longer Cursor IDs are hashed so the pair still matches. Event shapes: [`docs/codex-tool-events.md`](https://github.com/teslashibe/open-agent-api/blob/main/docs/codex-tool-events.md).
 
 ### Gemini / Antigravity
 

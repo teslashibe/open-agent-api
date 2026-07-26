@@ -3,7 +3,7 @@ package claude
 import (
 	"testing"
 
-	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-agent-api/internal/codex"
 )
 
 func TestParseJSONLEventTextDelta(t *testing.T) {

@@ -9,20 +9,20 @@ export default function Home(): ReactNode {
   const {siteConfig} = useDocusaurusContext();
   return (
     <Layout
-      title="Open Chat API"
+      title="Open Agent API"
       description={siteConfig.tagline}>
       <div className={styles.page}>
         <header className={styles.hero}>
           <div className={styles.heroMesh} aria-hidden="true" />
           <div className="container">
             <div className={styles.heroInner}>
-              <p className={styles.brand}>Open Chat API</p>
+              <p className={styles.brand}>Open Agent API</p>
               <h1 className={styles.headline}>
-                OpenAI-compatible chat over your local CLI sessions.
+                OpenAI-compatible agent API over your local CLI sessions.
               </h1>
               <p className={styles.support}>
                 One `/v1` endpoint for Codex, Claude Code, and Antigravity —
-                Cursor BYOK, Docker, or an in-cluster gateway. No `sk-` keys.
+                Cursor Agent BYOK, Docker, or an in-cluster gateway. No `sk-` keys.
               </p>
               <div className={styles.actions}>
                 <Link className={styles.primaryCta} to="/docs/intro">

@@ -11,9 +11,9 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/teslashibe/open-chat-api/internal/codex"
-	"github.com/teslashibe/open-chat-api/internal/config"
-	metricspkg "github.com/teslashibe/open-chat-api/internal/metrics"
+	"github.com/teslashibe/open-agent-api/internal/codex"
+	"github.com/teslashibe/open-agent-api/internal/config"
+	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
 )
 
 func TestMetricsEndpointRecordsRequestsAndQueueWait(t *testing.T) {

@@ -2,7 +2,7 @@
 sidebar_position: 1
 ---
 
-# Open Chat API
+# Open Agent API
 
 OpenAI-compatible Go HTTP proxy for **Cursor BYOK** and any OpenAI SDK client. It routes chat completions across three upstream surfaces without OpenAI `sk-` API keys.
 
@@ -17,13 +17,13 @@ Default model: **`gpt-5.6-sol`**. Current release: **v0.0.25**.
 ## Quick start
 
 ```bash
-git clone https://github.com/teslashibe/open-chat-api.git
-cd open-chat-api
+git clone https://github.com/teslashibe/open-agent-api.git
+cd open-agent-api
 codex login
 docker compose up --build -d
 curl -s http://127.0.0.1:8088/health
 curl -s http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'authorization: Bearer local-open-agent-api' \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"Say hi in five words."}]}' | jq .
 ```
@@ -38,7 +38,7 @@ Full walkthrough: [Install](./install/). Optional Gemini 3.x: `scripts/sync-anti
 - [Cursor tool conventions](./cursor/tool-conventions) — OpenRouter-style tool wire contracts
 - [Model catalog](./models/catalog) — full alias tables and Cursor picks
 - [Contributing](./contributing) — develop, test, CI, PR expectations
-- [Agents](./agents) — coding-agent bootstrap (see also root [`AGENTS.md`](https://github.com/teslashibe/open-chat-api/blob/main/AGENTS.md))
+- [Agents](./agents) — coding-agent bootstrap (see also root [`AGENTS.md`](https://github.com/teslashibe/open-agent-api/blob/main/AGENTS.md))
 
 ## API surface
 
@@ -46,4 +46,6 @@ Full walkthrough: [Install](./install/). Optional Gemini 3.x: `scripts/sync-anti
 - `GET /v1/models` — filtered by `GATEWAY_PROVIDERS` (default `codex,gemini,claude`)
 - `POST /v1/chat/completions` — streaming and non-streaming
 
-Model aliases are defined in [`internal/openai/models.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/openai/models.go).
+JSON responses support **gzip / brotli / deflate** when the client sends `Accept-Encoding`. Streaming (`"stream": true`) is left uncompressed on purpose. Details: [API](./api).
+
+Model aliases are defined in [`internal/openai/models.go`](https://github.com/teslashibe/open-agent-api/blob/main/internal/openai/models.go).

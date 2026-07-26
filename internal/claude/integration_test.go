@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/teslashibe/open-chat-api/internal/codex"
-	"github.com/teslashibe/open-chat-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/codex"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 // fakeClaude writes a small script to disk that emits Claude Code stream-json

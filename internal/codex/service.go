@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/teslashibe/open-chat-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 type Service interface {

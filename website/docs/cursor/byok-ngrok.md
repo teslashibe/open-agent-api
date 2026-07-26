@@ -65,7 +65,7 @@ ngrok http --url=YOUR_SUBDOMAIN.ngrok-free.dev 8088
 
 | Field | Value |
 | --- | --- |
-| OpenAI API Key | `local-open-chat-api` (any non-empty string) |
+| OpenAI API Key | `local-open-agent-api` (any non-empty string) |
 | Override OpenAI Base URL | `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` |
 | Model | Exact public ID — see [catalog](../models/catalog) |
 

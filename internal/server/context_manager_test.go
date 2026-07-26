@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teslashibe/open-chat-api/internal/config"
-	"github.com/teslashibe/open-chat-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/config"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 func TestManageContextDisabledLeavesMessagesUnchanged(t *testing.T) {

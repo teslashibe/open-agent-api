@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-agent-api/internal/codex"
 )
 
 // toolBridgeParser converts Claude's prompt-injected tool protocol

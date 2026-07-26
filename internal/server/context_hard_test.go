@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teslashibe/open-chat-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 func hardTestMessage(role, text string) openai.ChatMessage {

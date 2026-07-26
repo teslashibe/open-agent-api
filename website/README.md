@@ -1,4 +1,4 @@
-# Open Chat API docs
+# Open Agent API docs
 
 Docusaurus site for install, auth, Cursor BYOK, models, and contribution notes.
 

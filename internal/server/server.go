@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,14 +19,15 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/google/uuid"
 
-	"github.com/teslashibe/open-chat-api/internal/codex"
-	"github.com/teslashibe/open-chat-api/internal/config"
-	metricspkg "github.com/teslashibe/open-chat-api/internal/metrics"
-	"github.com/teslashibe/open-chat-api/internal/openai"
-	"github.com/teslashibe/open-chat-api/internal/sse"
+	"github.com/teslashibe/open-agent-api/internal/codex"
+	"github.com/teslashibe/open-agent-api/internal/config"
+	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
+	"github.com/teslashibe/open-agent-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/sse"
 )
 
 type Option func(*options)
@@ -131,11 +133,17 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	}
 
 	app := fiber.New(fiber.Config{
-		AppName:               "open-chat-api",
+		AppName:               "open-agent-api",
 		DisableStartupMessage: true,
 	})
 
 	app.Use(recover.New())
+	// gzip / brotli / deflate when the client sends Accept-Encoding. SSE chat
+	// streams stay uncompressed so flushes are not buffered into one blob.
+	app.Use(compress.New(compress.Config{
+		Level: compress.LevelDefault,
+		Next:  skipResponseCompression,
+	}))
 	app.Use(requestLogger(opts))
 
 	// live reports that the process is up. It must never depend on upstream
@@ -180,6 +188,20 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	return app
 }
 
+// skipResponseCompression disables Fiber compress for streaming chat
+// completions. Compressing SSE would buffer the stream and break Cursor Agent.
+func skipResponseCompression(c *fiber.Ctx) bool {
+	if c.Method() != fiber.MethodPost || c.Path() != "/v1/chat/completions" {
+		return false
+	}
+	body := c.Body()
+	if len(body) == 0 {
+		return true
+	}
+	trimmed := bytes.ReplaceAll(body, []byte(" "), nil)
+	return bytes.Contains(trimmed, []byte(`"stream":true`))
+}
+
 // drainControl sets or clears the draining flag, but only for loopback callers.
 // Remote callers get a 404 and the state is left untouched (AC3).
 func drainControl(opts options, draining bool) fiber.Handler {
@@ -211,7 +233,7 @@ func models(cfg config.Config) fiber.Handler {
 				ID:      alias.ID,
 				Object:  "model",
 				Created: 0,
-				OwnedBy: "open-chat-api",
+				OwnedBy: "open-agent-api",
 			})
 		}
 		return c.JSON(openai.ModelListResponse{
