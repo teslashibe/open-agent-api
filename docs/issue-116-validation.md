@@ -95,10 +95,15 @@ fields additively next to the unchanged `"status":"ok"`:
 
 These are deliberate and must be read before any GitOps rollout:
 
-- **Idempotency is process-local.** A multi-replica deployment replays per pod,
-  not cluster-wide. Two pods can both call upstream for the same idempotency
-  key. Acceptable here because there is no production cutover in this issue; a
-  shared store is required before assuming cluster-wide semantics.
+- **Idempotency is process-local — resolved in issue 120.** As shipped in this
+  issue the store lived only in each pod's memory, so two pods could both call
+  upstream for one idempotency key. Issue 120 adds the durable file backend
+  (`STRUCTURED_IDEMPOTENCY_BACKEND=file` plus a shared
+  `STRUCTURED_IDEMPOTENCY_DIR`), which makes replay survive restarts and work
+  across replicas, and a fail-closed guard: `STRUCTURED_REPLICAS > 1` with the
+  memory backend is now rejected at startup. See
+  [issue-120-validation.md](./issue-120-validation.md). The default is still
+  `memory` with one replica, which is exactly the behavior recorded here.
 - **The JSON Schema subset is narrow by design.** `$ref`, `$defs`, `oneOf`,
   `anyOf`, `allOf`, `not`, `if`/`then`/`else`, `pattern`, `format`,
   `patternProperties`, `propertyNames`, `const`, numeric bounds, and union
