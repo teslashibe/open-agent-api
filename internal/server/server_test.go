@@ -15,9 +15,9 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/config"
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/config"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 type synchronizedBuffer struct {
@@ -215,7 +215,7 @@ func TestModels(t *testing.T) {
 	}
 	for i, wantID := range wantIDs {
 		model := body.Data[i]
-		if model.ID != wantID || model.Object != "model" || model.Created != 0 || model.OwnedBy != "codex-chat-api" {
+		if model.ID != wantID || model.Object != "model" || model.Created != 0 || model.OwnedBy != "open-chat-api" {
 			t.Fatalf("model[%d] = %#v, want id %q", i, model, wantID)
 		}
 	}
@@ -570,19 +570,19 @@ func TestChatCompletionsNonStreamingToolResultContinuation(t *testing.T) {
 				t.Fatalf("assistant continuation message = %#v", assistant)
 			}
 			tool := req.Messages[2]
-			if tool.Role != "tool" || tool.ToolCallID != "call_123" || string(tool.Content) != `"module github.com/teslashibe/codex-chat-api"` {
+			if tool.Role != "tool" || tool.ToolCallID != "call_123" || string(tool.Content) != `"module github.com/teslashibe/open-chat-api"` {
 				t.Fatalf("tool continuation message = %#v", tool)
 			}
 			return codex.Completion{
 				ID:    "chatcmpl-final",
 				Model: req.Model,
-				Text:  "go.mod declares module github.com/teslashibe/codex-chat-api.",
+				Text:  "go.mod declares module github.com/teslashibe/open-chat-api.",
 			}, nil
 		},
 	}
 	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
 
-	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_123","content":"module github.com/teslashibe/codex-chat-api"}],"tools":[{"type":"function","function":{"name":"read_file"}}]}`)
+	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_123","content":"module github.com/teslashibe/open-chat-api"}],"tools":[{"type":"function","function":{"name":"read_file"}}]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -599,7 +599,7 @@ func TestChatCompletionsNonStreamingToolResultContinuation(t *testing.T) {
 	if len(choice.Message.ToolCalls) != 0 {
 		t.Fatalf("tool_calls = %#v, want none", choice.Message.ToolCalls)
 	}
-	if got := string(choice.Message.Content); got != `"go.mod declares module github.com/teslashibe/codex-chat-api."` {
+	if got := string(choice.Message.Content); got != `"go.mod declares module github.com/teslashibe/open-chat-api."` {
 		t.Fatalf("message content = %s", got)
 	}
 }
@@ -638,13 +638,13 @@ func TestChatCompletionsNonStreamingSequentialToolResultContinuation(t *testing.
 			return codex.Completion{
 				ID:    "chatcmpl-final",
 				Model: req.Model,
-				Text:  "Found README.md and go.mod; go.mod declares module github.com/teslashibe/codex-chat-api.",
+				Text:  "Found README.md and go.mod; go.mod declares module github.com/teslashibe/open-chat-api.",
 			}, nil
 		},
 	}
 	app := New(config.Defaults(), WithCodexService(service), fixedServerOptions())
 
-	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"list files then read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_list","type":"function","function":{"name":"list_dir","arguments":"{\"path\":\".\"}"}}]},{"role":"tool","tool_call_id":"call_list","content":"README.md\ngo.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_read","content":"module github.com/teslashibe/codex-chat-api"}],"tools":[{"type":"function","function":{"name":"list_dir"}},{"type":"function","function":{"name":"read_file"}}]}`)
+	resp := doJSON(t, app, `{"model":"gpt-test","messages":[{"role":"user","content":"list files then read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_list","type":"function","function":{"name":"list_dir","arguments":"{\"path\":\".\"}"}}]},{"role":"tool","tool_call_id":"call_list","content":"README.md\ngo.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_read","content":"module github.com/teslashibe/open-chat-api"}],"tools":[{"type":"function","function":{"name":"list_dir"}},{"type":"function","function":{"name":"read_file"}}]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -661,7 +661,7 @@ func TestChatCompletionsNonStreamingSequentialToolResultContinuation(t *testing.
 	if len(choice.Message.ToolCalls) != 0 {
 		t.Fatalf("tool_calls = %#v, want none", choice.Message.ToolCalls)
 	}
-	if got := string(choice.Message.Content); !strings.Contains(got, "README.md") || !strings.Contains(got, "github.com/teslashibe/codex-chat-api") {
+	if got := string(choice.Message.Content); !strings.Contains(got, "README.md") || !strings.Contains(got, "github.com/teslashibe/open-chat-api") {
 		t.Fatalf("message content = %s, want final answer with real tool outputs", got)
 	}
 }
@@ -779,7 +779,7 @@ func TestChatCompletionsAcceptsArbitraryAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer local-codex-chat-api")
+	req.Header.Set("Authorization", "Bearer local-open-chat-api")
 	resp, err := app.Test(req, 2000)
 	if err != nil {
 		t.Fatalf("app.Test() error = %v", err)
@@ -795,7 +795,7 @@ func TestChatCompletionsAcceptsArbitraryAuthorization(t *testing.T) {
 	if !strings.Contains(logBody, "authorization_present=true") {
 		t.Fatalf("logs = %q, want authorization presence", logBody)
 	}
-	if strings.Contains(logBody, "local-codex-chat-api") {
+	if strings.Contains(logBody, "local-open-chat-api") {
 		t.Fatalf("logs leaked authorization value: %q", logBody)
 	}
 }
@@ -1261,7 +1261,7 @@ func TestChatCompletionsStreamingToolResultContinuation(t *testing.T) {
 	var logs bytes.Buffer
 	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
-	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_123","content":"module github.com/teslashibe/codex-chat-api"}],"tools":[{"type":"function","function":{"name":"read_file"}}]}`)
+	resp := doJSON(t, app, `{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"read go.mod"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]},{"role":"tool","tool_call_id":"call_123","content":"module github.com/teslashibe/open-chat-api"}],"tools":[{"type":"function","function":{"name":"read_file"}}]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)

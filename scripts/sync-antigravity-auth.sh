@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sync Antigravity CLI keyring tokens into ~/.gemini/antigravity_oauth_creds.json
-# so Docker / codex-chat-api can refresh and call gemini-3.* models.
+# so Docker / open-chat-api can refresh and call gemini-3.* models.
 set -euo pipefail
 
 OUT="${GEMINI_HOME:-$HOME/.gemini}/antigravity_oauth_creds.json"

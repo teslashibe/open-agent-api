@@ -50,9 +50,9 @@ Compose mounts auth paths and agent-lock volumes — keep `docker-compose.yml` a
 
 ## CI and release
 
-GitHub Actions workflow [`.github/workflows/docker.yml`](https://github.com/teslashibe/codex-chat-api/blob/main/.github/workflows/docker.yml):
+GitHub Actions workflow [`.github/workflows/docker.yml`](https://github.com/teslashibe/open-chat-api/blob/main/.github/workflows/docker.yml):
 
-1. **Build and push** `ghcr.io/teslashibe/codex-chat-api` on pushes to `main` and version tags `v*`.
+1. **Build and push** `ghcr.io/teslashibe/open-chat-api` on pushes to `main` and version tags `v*`.
 2. **Pin-bump** [`teslashibe/k8s-control`](https://github.com/teslashibe/k8s-control): `main` → dev manifest `sha-<short>`; tag → prod manifest `vX.Y.Z`. Flux watches k8s-control and applies the change.
 
 Run the full validation suite before tagging a release.
@@ -61,8 +61,8 @@ Run the full validation suite before tagging a release.
 
 Keep docs in **`website/docs/`** aligned with:
 
-- [`internal/openai/models.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/openai/models.go) — model aliases and defaults
-- [`README.md`](https://github.com/teslashibe/codex-chat-api/blob/main/README.md) — behavior and configuration
+- [`internal/openai/models.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/openai/models.go) — model aliases and defaults
+- [`README.md`](https://github.com/teslashibe/open-chat-api/blob/main/README.md) — behavior and configuration
 - `docker-compose*.yml` — mount paths, env defaults, ngrok overlay
 
 When you add or change model aliases, update [Model catalog](./models/catalog) in the same PR.

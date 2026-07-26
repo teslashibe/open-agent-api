@@ -1,4 +1,4 @@
-# Agent bootstrap — codex-chat-api
+# Agent bootstrap — open-chat-api
 
 OpenAI-compatible Go HTTP proxy for **Cursor BYOK** and any OpenAI SDK client. Routes `POST /v1/chat/completions` across three upstream surfaces — no `sk-` API keys.
 
@@ -16,7 +16,7 @@ Default model when `model` is omitted: **`gpt-5.6-sol`**.
 
 ```bash
 codex login
-go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
 ```
 
 **Docker:**
@@ -56,7 +56,7 @@ Endpoints: `GET /health`, `GET /v1/models`, `POST /v1/chat/completions` (stream 
 NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 ```
 
-Cursor settings: API key = any non-empty string (e.g. `local-codex-chat-api`); base URL = `https://<tunnel-host>/v1`; model = e.g. `gpt-5.6-terra`. Many Cursor builds require HTTPS tunnel — localhost often fails with "Access to private networks is forbidden".
+Cursor settings: API key = any non-empty string (e.g. `local-open-chat-api`); base URL = `https://<tunnel-host>/v1`; model = e.g. `gpt-5.6-terra`. Many Cursor builds require HTTPS tunnel — localhost often fails with "Access to private networks is forbidden".
 
 ## Key model slugs
 
@@ -75,7 +75,7 @@ Full tables: [`internal/openai/models.go`](internal/openai/models.go) and [websi
 
 | Path | Purpose |
 | --- | --- |
-| `cmd/codex-chat-api/` | Main entrypoint |
+| `cmd/open-chat-api/` | Main entrypoint |
 | `internal/openai/models.go` | Model alias catalog (source of truth) |
 | `internal/server/` | HTTP handlers, routing, queue |
 | `docker-compose.yml` | Default Docker run |

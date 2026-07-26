@@ -27,9 +27,9 @@ GOCACHE=$PWD/.gocache go test -race -count=1 ./internal/codex ./internal/server
 Result recorded on 2026-07-21:
 
 ```text
-ok  github.com/teslashibe/codex-chat-api/internal/codex
-ok  github.com/teslashibe/codex-chat-api/internal/config
-ok  github.com/teslashibe/codex-chat-api/internal/server
+ok  github.com/teslashibe/open-chat-api/internal/codex
+ok  github.com/teslashibe/open-chat-api/internal/config
+ok  github.com/teslashibe/open-chat-api/internal/server
 ```
 
 The following regression tests map directly to the criteria:

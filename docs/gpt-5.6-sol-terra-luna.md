@@ -137,7 +137,7 @@ Field caveats (GitHub `openai/codex`, Jul 2026):
 
 ---
 
-## Gap vs `codex-chat-api` today
+## Gap vs `open-chat-api` today
 
 Current Cursor-facing Codex defaults in this repo:
 

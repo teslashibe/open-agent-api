@@ -3,15 +3,15 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Codex Chat API',
+  title: 'Open Chat API',
   tagline: 'OpenAI-compatible proxy for Codex, Antigravity, and Claude Code',
   favicon: 'img/favicon.ico',
 
   url: 'https://teslashibe.github.io',
-  baseUrl: '/codex-chat-api/',
+  baseUrl: '/open-chat-api/',
 
   organizationName: 'teslashibe',
-  projectName: 'codex-chat-api',
+  projectName: 'open-chat-api',
 
   onBrokenLinks: 'throw',
 
@@ -33,7 +33,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           editUrl:
-            'https://github.com/teslashibe/codex-chat-api/tree/main/website/',
+            'https://github.com/teslashibe/open-chat-api/tree/main/website/',
         },
         blog: false,
         theme: {
@@ -46,9 +46,9 @@ const config: Config = {
   themeConfig: {
     image: 'img/docusaurus-social-card.jpg',
     navbar: {
-      title: 'Codex Chat API',
+      title: 'Open Chat API',
       logo: {
-        alt: 'Codex Chat API',
+        alt: 'Open Chat API',
         src: 'img/logo.svg',
       },
       items: [
@@ -59,7 +59,7 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          href: 'https://github.com/teslashibe/codex-chat-api',
+          href: 'https://github.com/teslashibe/open-chat-api',
           label: 'GitHub',
           position: 'right',
         },
@@ -82,11 +82,11 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/teslashibe/codex-chat-api',
+              href: 'https://github.com/teslashibe/open-chat-api',
             },
             {
               label: 'AGENTS.md',
-              href: 'https://github.com/teslashibe/codex-chat-api/blob/main/AGENTS.md',
+              href: 'https://github.com/teslashibe/open-chat-api/blob/main/AGENTS.md',
             },
           ],
         },

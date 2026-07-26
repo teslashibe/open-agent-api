@@ -1,12 +1,14 @@
 ---
 sidebar_position: 3
 title: Install on Kubernetes
-description: Deploy codex-chat-api as an in-cluster OpenAI-compatible gateway for your apps.
+description: Deploy open-chat-api as an in-cluster OpenAI-compatible gateway for your apps.
 ---
 
 # Install on Kubernetes
 
-This app repo does **not** ship Helm charts. Production manifests live in **[teslashibe/k8s-control](https://github.com/teslashibe/k8s-control)** under `manifests/base/codex-chat-api/`.
+This app repo does **not** ship Helm charts. Production manifests live in **[teslashibe/k8s-control](https://github.com/teslashibe/k8s-control)**.
+
+> **Rename note:** GitOps paths/DNS still use the legacy name `codex-chat-api` (`manifests/base/codex-chat-api`, Service `codex-chat-api.smore.svc`). The container image is moving to `ghcr.io/teslashibe/open-chat-api` (CI also publishes a temporary `codex-chat-api` alias). A follow-up in k8s-control can rename resources to match.
 
 The gateway is **internal only**: ClusterIP Service, no Ingress/Certificate, plus a NetworkPolicy that admits traffic only from allow-listed callers.
 
@@ -14,12 +16,12 @@ The gateway is **internal only**: ClusterIP Service, no Ingress/Certificate, plu
 
 | Resource | Role |
 | --- | --- |
-| Deployment `codex-chat-api` | Single replica gateway (namespace `smore`) |
+| Deployment `codex-chat-api` (legacy name) | Single replica gateway (namespace `smore`) |
 | Service ClusterIP `:8088` | In-cluster DNS |
 | NetworkPolicy | Ingress only from `smore-api` and Verum `api`/`scheduler` |
 | Secret `codex-chat-api-secrets` | OAuth + gateway bearer (SOPS) |
 
-**In-cluster base URL for apps:**
+**In-cluster base URL for apps (current GitOps name):**
 
 ```text
 http://codex-chat-api.smore.svc.cluster.local:8088/v1
@@ -27,7 +29,7 @@ http://codex-chat-api.smore.svc.cluster.local:8088/v1
 
 ## Image and GitOps
 
-- Image: `ghcr.io/teslashibe/codex-chat-api`
+- Image: `ghcr.io/teslashibe/open-chat-api` (plus legacy alias `ghcr.io/teslashibe/codex-chat-api`)
 - CI in this repo (`.github/workflows/docker.yml`) builds/pushes, then pin-bumps k8s-control:
   - push to `main` → `manifests/dev` tag `sha-<short>`
   - tag `v*` → `manifests/prod` tag `vX.Y.Z`
@@ -94,7 +96,7 @@ kubectl -n smore exec deploy/smore-api -- sh -c \
 
 ```bash
 codex login
-# in codex-chat-api checkout:
+# in open-chat-api checkout:
 scripts/sync-antigravity-auth.sh
 # refresh CLAUDE_CODE_OAUTH_TOKEN from a fresh claude login / .env
 
@@ -107,4 +109,4 @@ kubectl -n smore rollout restart deploy/codex-chat-api
 
 ## Generic clusters
 
-Copy/adapt `manifests/base/codex-chat-api` from k8s-control: keep bearer auth, secret seeding, ClusterIP (or your own Ingress if you accept exposing it), and keep concurrency low against shared provider accounts.
+Copy/adapt `manifests/base/codex-chat-api` from k8s-control (legacy path): keep bearer auth, secret seeding, ClusterIP (or your own Ingress if you accept exposing it), and keep concurrency low against shared provider accounts.

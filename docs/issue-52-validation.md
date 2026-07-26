@@ -14,9 +14,9 @@ GOCACHE=$PWD/.gocache go test ./internal/codex ./internal/openai ./internal/serv
 Result recorded on 2026-06-27:
 
 ```text
-ok  	github.com/teslashibe/codex-chat-api/internal/codex	(cached)
-ok  	github.com/teslashibe/codex-chat-api/internal/openai	(cached)
-ok  	github.com/teslashibe/codex-chat-api/internal/server	(cached)
+ok  	github.com/teslashibe/open-chat-api/internal/codex	(cached)
+ok  	github.com/teslashibe/open-chat-api/internal/openai	(cached)
+ok  	github.com/teslashibe/open-chat-api/internal/server	(cached)
 ```
 
 The server tests assert exact Cursor-facing streamed SSE shape for fragmented

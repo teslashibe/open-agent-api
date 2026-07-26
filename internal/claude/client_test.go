@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 func TestPromptFromMessages(t *testing.T) {
@@ -74,9 +74,9 @@ func TestPromptFromMessagesPreservesToolResultContinuation(t *testing.T) {
 	prompt := promptFromMessages([]openai.ChatMessage{
 		{Role: "user", Content: openai.TextContent("read go.mod")},
 		{Role: "assistant", ToolCalls: []openai.ToolCall{{ID: "call_123", Type: "function", Function: openai.ToolCallFunction{Name: "read_file", Arguments: `{"path":"go.mod"}`}}}},
-		{Role: "tool", ToolCallID: "call_123", Content: openai.TextContent("module github.com/teslashibe/codex-chat-api")},
+		{Role: "tool", ToolCallID: "call_123", Content: openai.TextContent("module github.com/teslashibe/open-chat-api")},
 	}, []toolSpec{{Name: "read_file", Type: "function"}})
-	for _, want := range []string{"Cursor tool protocol", "Cursor tool call read_file (call_123)", `{"path":"go.mod"}`, "Tool result for call_123", "module github.com/teslashibe/codex-chat-api"} {
+	for _, want := range []string{"Cursor tool protocol", "Cursor tool call read_file (call_123)", `{"path":"go.mod"}`, "Tool result for call_123", "module github.com/teslashibe/open-chat-api"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt = %q, want %q", prompt, want)
 		}

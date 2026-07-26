@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/config"
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/config"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 func quotaErr() error {

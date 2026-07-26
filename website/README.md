@@ -1,4 +1,4 @@
-# Codex Chat API docs
+# Open Chat API docs
 
 Docusaurus site for install, auth, Cursor BYOK, models, and contribution notes.
 

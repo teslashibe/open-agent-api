@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/codex"
 )
 
 // withStreamIdleTimeout guards a provider event stream against silent stalls.

@@ -1,4 +1,4 @@
-module github.com/teslashibe/codex-chat-api
+module github.com/teslashibe/open-chat-api
 
 go 1.24
 

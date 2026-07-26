@@ -387,7 +387,7 @@ func Load(args []string) (Config, error) {
 		cfg.GatewayTenantHeader = value
 	}
 
-	fs := flag.NewFlagSet("codex-chat-api", flag.ContinueOnError)
+	fs := flag.NewFlagSet("open-chat-api", flag.ContinueOnError)
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "host address to bind")
 	fs.IntVar(&cfg.Port, "port", cfg.Port, "port to bind")
 	fs.StringVar(&cfg.CodexHome, "codex-home", cfg.CodexHome, "Codex home directory")

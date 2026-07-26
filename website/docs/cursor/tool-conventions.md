@@ -31,7 +31,7 @@ Non-goals:
 ```mermaid
 sequenceDiagram
   participant Cursor
-  participant API as codex-chat-api
+  participant API as open-chat-api
   participant Up as Upstream (Codex / Gemini / Claude)
 
   Cursor->>API: POST /v1/chat/completions<br/>tools + messages (Chat Completions)
@@ -90,7 +90,7 @@ Custom / freeform tool (also accepted):
 }
 ```
 
-Wire classification lives in [`internal/server/cursor_wire.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/server/cursor_wire.go) (`tool_wire=nested|flat|mixed|none`).
+Wire classification lives in [`internal/server/cursor_wire.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/cursor_wire.go) (`tool_wire=nested|flat|mixed|none`).
 
 ### Faithful vs minimal mode
 
@@ -99,7 +99,7 @@ When the client sends `tools` (Cursor Agent always does):
 - Default: `faithful=false`, `prewarm=false` — **minimal mode**.
 - Faithful Codex mode injects the captured CLI profile/tools and conflicts with client tool definitions; it is **disabled automatically** unless the client forces `"faithful": true`.
 
-See [`internal/server/server.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/server/server.go) (`toolsPresent` → `faithful := defaultBool(req.Faithful, !toolsPresent)`).
+See [`internal/server/server.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/server.go) (`toolsPresent` → `faithful := defaultBool(req.Faithful, !toolsPresent)`).
 
 Tool-capable requests also enter the agent queue (`CODEX_AGENT_QUEUE_KEY_MODE=cursor` by default) and optional context compaction for long histories.
 
@@ -130,7 +130,7 @@ Example skeleton:
         }
       ]
     },
-    { "role": "tool", "tool_call_id": "call_123", "content": "module github.com/teslashibe/codex-chat-api\n..." }
+    { "role": "tool", "tool_call_id": "call_123", "content": "module github.com/teslashibe/open-chat-api\n..." }
   ]
 }
 ```
@@ -161,7 +161,7 @@ Each emitted tool-call delta must be Cursor-safe:
 
 Empty tool-call deltas are dropped. Invalid accumulated function JSON fails the stream with an error chunk instead of a fake `tool_calls` finish.
 
-Tests encode this contract as `assertExactCursorToolSSE` in [`internal/server/server_test.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/server/server_test.go). Implementation: [`internal/server/stream_processor.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/server/stream_processor.go).
+Tests encode this contract as `assertExactCursorToolSSE` in [`internal/server/server_test.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/server_test.go). Implementation: [`internal/server/stream_processor.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/stream_processor.go).
 
 Example streaming frames (conceptual):
 
@@ -201,7 +201,7 @@ Compose sets `CODEX_CUSTOM_TOOL_WIRE=function` so Cursor Agent works without cli
   → {"type":"function","name":"X","parameters":{...}}
 ```
 
-Implemented by `normalizeToolsForCodex` / `normalizeToolChoiceForCodex` in [`internal/codex/builder.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/codex/builder.go). Already-flat tools pass through.
+Implemented by `normalizeToolsForCodex` / `normalizeToolChoiceForCodex` in [`internal/codex/builder.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/codex/builder.go). Already-flat tools pass through.
 
 **History:**
 
@@ -210,7 +210,7 @@ Implemented by `normalizeToolsForCodex` / `normalizeToolChoiceForCodex` in [`int
 
 **`call_id` limit:** Codex enforces **≤ 64 characters**. Cursor can emit longer IDs; `normalizeCallID` SHA-256-hexes overlong IDs deterministically so the assistant call and tool output stay paired.
 
-**Upstream events → internal deltas:** See [`docs/codex-tool-events.md`](https://github.com/teslashibe/codex-chat-api/blob/main/docs/codex-tool-events.md) and [`internal/codex/events.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/codex/events.go):
+**Upstream events → internal deltas:** See [`docs/codex-tool-events.md`](https://github.com/teslashibe/open-chat-api/blob/main/docs/codex-tool-events.md) and [`internal/codex/events.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/codex/events.go):
 
 - `response.output_item.added` (`function_call` / `custom_tool_call`)
 - `response.function_call_arguments.delta` / `.done`
@@ -221,11 +221,11 @@ Those become internal `StreamEvent.ToolCallDelta` values; the stream processor t
 
 ### Gemini / Antigravity
 
-**Inbound tools:** Nested `function` / `custom` / flat tools → Gemini `functionDeclarations` ([`internal/gemini/builder.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/gemini/builder.go)).
+**Inbound tools:** Nested `function` / `custom` / flat tools → Gemini `functionDeclarations` ([`internal/gemini/builder.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/gemini/builder.go)).
 
 - JSON Schema keywords Gemini rejects are stripped (`$schema`, `additionalProperties`, `$defs`, …).
 - Custom tools get an `input: string` schema fallback when parameters are empty.
-- Names marked `type:"custom"` are tracked; streamed Gemini function calls for those names are re-tagged `custom` and arguments unwrapped via `{"input":"..."}` when present ([`internal/gemini/events.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/gemini/events.go)).
+- Names marked `type:"custom"` are tracked; streamed Gemini function calls for those names are re-tagged `custom` and arguments unwrapped via `{"input":"..."}` when present ([`internal/gemini/events.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/gemini/events.go)).
 
 **Outbound:** Same Cursor SSE accumulator / custom-wire downgrade as Codex.
 
@@ -233,7 +233,7 @@ Those become internal `StreamEvent.ToolCallDelta` values; the stream processor t
 
 Claude Code does not natively speak Cursor’s Chat Completions tool protocol. The API injects a **prompt-level Cursor tool protocol** and parses model output back into OpenAI tool calls.
 
-**Injected instructions** ([`internal/claude/tools.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/claude/tools.go)):
+**Injected instructions** ([`internal/claude/tools.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/claude/tools.go)):
 
 - Cursor (not Claude Code) executes tools.
 - Model must emit a fenced block and no other text when it needs workspace state:
@@ -247,7 +247,7 @@ Claude Code does not natively speak Cursor’s Chat Completions tool protocol. T
 - For custom tools, use `"input"` (freeform) instead of `"arguments"`.
 - Available tools are listed as JSON after the instructions.
 
-**Bridge** ([`internal/claude/tool_bridge.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/claude/tool_bridge.go)):
+**Bridge** ([`internal/claude/tool_bridge.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/claude/tool_bridge.go)):
 
 - Scans content **and** reasoning streams so fences never leak as prose.
 - Supports multiple tool calls per turn (incrementing index).
@@ -258,7 +258,7 @@ When `GATEWAY_PROVIDERS` omits `claude`, this entire surface is disabled.
 
 ## OpenAI type contracts (Go)
 
-Defined in [`internal/openai/openai.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/openai/openai.go):
+Defined in [`internal/openai/openai.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/openai/openai.go):
 
 | Type | Role |
 | --- | --- |
@@ -293,7 +293,7 @@ Internal provider events use `codex.ToolCallDelta` / `codex.ToolCall` as the com
 5. Continuations: several tool rounds in the same chat without Cursor falling back to another provider.
 6. Unit/integration: `go test ./internal/server ./internal/codex ./internal/claude ./internal/gemini`.
 
-Deeper Codex event notes: [`docs/codex-tool-events.md`](https://github.com/teslashibe/codex-chat-api/blob/main/docs/codex-tool-events.md).
+Deeper Codex event notes: [`docs/codex-tool-events.md`](https://github.com/teslashibe/open-chat-api/blob/main/docs/codex-tool-events.md).
 
 ## Implementation map
 
