@@ -37,6 +37,75 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 	}
 }
 
+func TestStructuredMetricsExposeBoundedSurface(t *testing.T) {
+	m := New(true)
+	m.AllowStructuredModels([]string{"gpt-5.6-sol"})
+	m.ObserveStructuredLatency("gpt-5.6-sol", "success", 250*time.Millisecond)
+	m.ObserveStructuredLatency("gpt-5.6-sol", "timeout", 30*time.Second)
+	m.ObserveStructuredUsage("gpt-5.6-sol", 11, 22, 33)
+	m.ObserveStructuredFailure("output_validation_failed")
+	m.ObserveStructuredValidation("valid")
+	m.ObserveStructuredValidation("unparsable")
+	m.ObserveQueueWait("structured", "full", time.Second)
+	m.IncStructuredInflight()
+	m.IncStructuredInflight()
+	m.DecStructuredInflight()
+
+	body := scrape(t, m)
+	for _, want := range []string{
+		`codex_chat_api_structured_latency_seconds_count{model="gpt-5.6-sol",result="success"} 1`,
+		`codex_chat_api_structured_latency_seconds_count{model="gpt-5.6-sol",result="timeout"} 1`,
+		`codex_chat_api_structured_tokens_total{kind="prompt",model="gpt-5.6-sol"} 11`,
+		`codex_chat_api_structured_tokens_total{kind="completion",model="gpt-5.6-sol"} 22`,
+		`codex_chat_api_structured_tokens_total{kind="total",model="gpt-5.6-sol"} 33`,
+		`codex_chat_api_structured_failures_total{code="output_validation_failed"} 1`,
+		`codex_chat_api_structured_validation_total{result="valid"} 1`,
+		`codex_chat_api_structured_validation_total{result="unparsable"} 1`,
+		`codex_chat_api_queue_wait_seconds_count{provider="structured",result="full"} 1`,
+		`codex_chat_api_structured_inflight 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestStructuredMetricsBoundModelAndCodeCardinality(t *testing.T) {
+	m := New(true)
+	m.AllowStructuredModels([]string{"gpt-5.6-sol"})
+	m.ObserveStructuredLatency("attacker-supplied-model", "success", time.Second)
+	m.ObserveStructuredUsage("attacker-supplied-model", 1, 1, 2)
+	m.ObserveStructuredFailure("made_up_code")
+	m.ObserveStructuredValidation("made_up_result")
+	m.ObserveStructuredLatency("gpt-5.6-sol", "made_up_code", time.Second)
+
+	body := scrape(t, m)
+	if strings.Contains(body, "attacker-supplied-model") || strings.Contains(body, "made_up") {
+		t.Fatalf("structured metrics leaked unbounded labels:\n%s", body)
+	}
+	for _, want := range []string{
+		`codex_chat_api_structured_latency_seconds_count{model="other",result="success"} 1`,
+		`codex_chat_api_structured_latency_seconds_count{model="gpt-5.6-sol",result="unknown"} 1`,
+		`codex_chat_api_structured_failures_total{code="unknown"} 1`,
+		`codex_chat_api_structured_validation_total{result="invalid"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestDisabledStructuredMetricsAreNoop(t *testing.T) {
+	m := New(false)
+	m.AllowStructuredModels([]string{"gpt-5.6-sol"})
+	m.ObserveStructuredLatency("gpt-5.6-sol", "success", time.Second)
+	m.ObserveStructuredUsage("gpt-5.6-sol", 1, 1, 2)
+	m.ObserveStructuredFailure("timeout")
+	m.ObserveStructuredValidation("valid")
+	m.IncStructuredInflight()
+	m.DecStructuredInflight()
+}
+
 func TestMetricsNormalizeUntrustedLabels(t *testing.T) {
 	m := New(true)
 	secrets := []string{
