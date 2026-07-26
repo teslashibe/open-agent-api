@@ -4,23 +4,23 @@ sidebar_position: 1
 
 # Model catalog
 
-OpenAI-compatible **public IDs** resolved server-side before the upstream call.
+These are the OpenAI-compatible **public IDs** clients should send. The server resolves them before calling upstream.
 
 **Default model** (when the client omits `model`): **`gpt-5.6-sol`**
 
 **Source of truth:** [`internal/openai/models.go`](https://github.com/teslashibe/open-agent-api/blob/main/internal/openai/models.go)
 
-**Listing filter:** `GATEWAY_PROVIDERS` (default `codex,gemini,claude`) controls which providers appear in `GET /v1/models` and can be completed. Disabled providers return `404 model not found`. Unknown IDs pass through with default effort/verbosity.
+`GATEWAY_PROVIDERS` (default `codex,gemini,claude`) decides which providers show up in `GET /v1/models` and can actually complete. Disabled providers return `404 model not found`. Unknown IDs pass through with default effort/verbosity.
 
-**Discovery:**
+To see what’s live:
 
 ```bash
 curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 ```
 
-GPT-5.6 ChatGPT/Codex context is ~272K tokens (not the API card's 1.05M).
+GPT-5.6 ChatGPT/Codex context is ~272K tokens (not the API card’s 1.05M).
 
-`ultra` is a Codex product multi-agent mode, **not** a `reasoning.effort` value — there is no `-ultra` alias.
+`ultra` is a Codex product multi-agent mode, **not** a `reasoning.effort` value — there’s no `-ultra` alias.
 
 ---
 

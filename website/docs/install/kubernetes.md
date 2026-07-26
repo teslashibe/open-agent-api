@@ -6,11 +6,11 @@ description: Deploy open-agent-api as an in-cluster OpenAI-compatible gateway fo
 
 # Install on Kubernetes
 
-This app repo does **not** ship Helm charts. Production manifests live in **[teslashibe/k8s-control](https://github.com/teslashibe/k8s-control)**.
+This repo doesn’t ship Helm charts. Production manifests live in **[teslashibe/k8s-control](https://github.com/teslashibe/k8s-control)**.
 
-> **Rename note:** GitOps paths/DNS still use the legacy name `codex-chat-api` (`manifests/base/codex-chat-api`, Service `codex-chat-api.smore.svc`). The container image is `ghcr.io/teslashibe/open-agent-api` (CI also publishes temporary `open-chat-api` + `codex-chat-api` aliases). A follow-up in k8s-control can rename resources to match.
+> **Heads up:** GitOps paths and DNS still use the old name `codex-chat-api` (`manifests/base/codex-chat-api`, Service `codex-chat-api.smore.svc`). The image is `ghcr.io/teslashibe/open-agent-api` (CI also publishes temporary `open-chat-api` + `codex-chat-api` aliases). Renaming the k8s resources is a follow-up in k8s-control.
 
-The gateway is **internal only**: ClusterIP Service, no Ingress/Certificate, plus a NetworkPolicy that admits traffic only from allow-listed callers.
+The gateway is **internal only** — ClusterIP, no Ingress/Certificate, and a NetworkPolicy that only lets allow-listed callers in.
 
 ## What you get
 
@@ -109,4 +109,4 @@ kubectl -n smore rollout restart deploy/codex-chat-api
 
 ## Generic clusters
 
-Copy/adapt `manifests/base/codex-chat-api` from k8s-control (legacy path): keep bearer auth, secret seeding, ClusterIP (or your own Ingress if you accept exposing it), and keep concurrency low against shared provider accounts.
+Copy or adapt `manifests/base/codex-chat-api` from k8s-control (legacy path). Keep bearer auth, secret seeding, and ClusterIP (or your own Ingress if you’re okay exposing it), and keep concurrency low against shared provider accounts.

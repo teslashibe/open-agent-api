@@ -18,11 +18,11 @@ export default function Home(): ReactNode {
             <div className={styles.heroInner}>
               <p className={styles.brand}>Open Agent API</p>
               <h1 className={styles.headline}>
-                OpenAI-compatible agent API over your local CLI sessions.
+                Your local CLI sessions, behind an OpenAI-shaped API.
               </h1>
               <p className={styles.support}>
-                One `/v1` endpoint for Codex, Claude Code, and Antigravity —
-                Cursor Agent BYOK, Docker, or an in-cluster gateway. No `sk-` keys.
+                One `/v1` for Codex, Claude Code, and Antigravity. Point Cursor
+                Agent, Docker, or an in-cluster app at it — no `sk-` keys.
               </p>
               <div className={styles.actions}>
                 <Link className={styles.primaryCta} to="/docs/intro">
@@ -38,29 +38,29 @@ export default function Home(): ReactNode {
 
         <section className={styles.section}>
           <div className="container">
-            <h2 className={styles.sectionTitle}>Start where you need</h2>
+            <h2 className={styles.sectionTitle}>Pick a starting point</h2>
             <p className={styles.sectionText}>
-              Install locally, wire credentials, then point Cursor or your apps
-              at the same OpenAI-shaped API.
+              Get it running locally, plug in credentials, then point Cursor or
+              your apps at the same API.
             </p>
             <div className={styles.pathGrid}>
               <div className={styles.pathItem}>
                 <h3>
                   <Link to="/docs/install/docker">Docker</Link>
                 </h3>
-                <p>Compose on localhost with host OAuth mounts.</p>
+                <p>Compose on localhost, with your host logins mounted in.</p>
               </div>
               <div className={styles.pathItem}>
                 <h3>
                   <Link to="/docs/install/kubernetes">Kubernetes</Link>
                 </h3>
-                <p>In-cluster gateway behind a bearer secret.</p>
+                <p>Run it in-cluster behind a bearer secret.</p>
               </div>
               <div className={styles.pathItem}>
                 <h3>
                   <Link to="/docs/models/catalog">Models</Link>
                 </h3>
-                <p>Full slug catalog across every upstream surface.</p>
+                <p>Every public slug across Codex, Gemini, and Claude.</p>
               </div>
             </div>
           </div>

@@ -6,7 +6,7 @@ description: Clone the repo, start the API, and make your first chat completion.
 
 # Install
 
-End-to-end path from an empty machine to a working completion. Pick Docker (recommended) or Go.
+From an empty machine to a working completion. Docker is the easy path; Go works if you’d rather skip containers.
 
 ## 1. Clone
 
@@ -15,38 +15,38 @@ git clone https://github.com/teslashibe/open-agent-api.git
 cd open-agent-api
 ```
 
-## 2. Authenticate upstream
+## 2. Log in upstream
 
-At least one surface is required. Codex is the default path:
+You need at least one surface. Codex is the usual starting point:
 
 ```bash
-# Codex / ChatGPT (required for gpt-* models)
+# Codex / ChatGPT (needed for gpt-* models)
 codex login
 
 # Optional — Gemini 3.x / Antigravity
 scripts/sync-antigravity-auth.sh
 
 # Optional — Claude Code CLI
-# install Claude Code, then complete `claude` login
+# install Claude Code, then finish `claude` login
 ```
 
-Details: [Auth overview](../auth/overview).
+More detail: [Auth overview](../auth/overview).
 
 ## 3. Start the API
 
 ### Docker (recommended)
 
-Requires Docker + Docker Compose.
+Needs Docker + Docker Compose.
 
 ```bash
 docker compose up --build -d
 ```
 
-API listens on **`http://127.0.0.1:8088`**. More detail: [Install with Docker](./docker).
+It listens on **`http://127.0.0.1:8088`**. Extra Compose notes: [Install with Docker](./docker).
 
 ### Go (no Docker)
 
-Requires Go 1.24+.
+Needs Go 1.24+.
 
 ```bash
 go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088
@@ -61,7 +61,7 @@ curl -s http://127.0.0.1:8088/health
 curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 ```
 
-## 5. Make a chat completion
+## 5. First completion
 
 ```bash
 curl -s http://127.0.0.1:8088/v1/chat/completions \
@@ -75,7 +75,7 @@ curl -s http://127.0.0.1:8088/v1/chat/completions \
   }' | jq .
 ```
 
-You should get an OpenAI-shaped JSON response with `choices[0].message.content`. Streaming:
+You should get OpenAI-shaped JSON with `choices[0].message.content`. Streaming looks like this:
 
 ```bash
 curl -N http://127.0.0.1:8088/v1/chat/completions \
@@ -90,16 +90,16 @@ curl -N http://127.0.0.1:8088/v1/chat/completions \
   }'
 ```
 
-The bearer value can be any non-empty string when `GATEWAY_BEARER_SECRET` is unset (local default).
+When `GATEWAY_BEARER_SECRET` is unset (the local default), the bearer can be any non-empty string.
 
-Localhost is fine for `curl` and OpenAI SDKs on the same machine. **Cursor BYOK cannot use localhost** — continue to step 6.
+Localhost is fine for `curl` and SDKs on the same machine. **Cursor BYOK can’t use localhost** — keep going to step 6.
 
-## 6. Use with Cursor (ngrok required)
+## 6. Cursor (needs a public HTTPS tunnel)
 
-Cursor routes BYOK through its cloud and blocks private networks (`Access to private networks is forbidden`). Expose the API with your own ngrok domain (Cursor BYOK cannot use localhost):
+Cursor sends BYOK through its cloud and rejects private networks (`Access to private networks is forbidden`). Tunnel the API with your own ngrok domain:
 
 ```bash
-# Need an ngrok authtoken: https://dashboard.ngrok.com/get-started/your-authtoken
+# Authtoken: https://dashboard.ngrok.com/get-started/your-authtoken
 NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 
 curl -s https://YOUR_SUBDOMAIN.ngrok-free.dev/health
@@ -116,9 +116,9 @@ In **Cursor → Settings → Models**:
 
 Open a **new** Agent chat and try: `List the files in this repo.`
 
-Full detail: [Cursor BYOK + ngrok](../cursor/byok-ngrok).
+Full walkthrough: [Cursor BYOK + ngrok](../cursor/byok-ngrok).
 
 ## Next
 
-- [Model catalog](../models/catalog) — all public model IDs
+- [Model catalog](../models/catalog) — every public model ID
 - [Kubernetes](./kubernetes) — in-cluster gateway for apps

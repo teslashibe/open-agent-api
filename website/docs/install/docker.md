@@ -1,21 +1,21 @@
 ---
 sidebar_position: 2
 title: Install with Docker
-description: Clone the repo and run open-agent-api with Docker Compose.
+description: Run open-agent-api with Docker Compose.
 ---
 
 # Install with Docker
 
-Full local path: clone → auth → Compose → completion.
+Clone, log in, bring Compose up, hit a completion. That’s the whole loop.
 
 ## Prerequisites
 
 - Git
 - Docker and Docker Compose
 - Host credentials (see [Auth](../auth/overview)):
-  - `~/.codex` from `codex login` (required for Codex models)
+  - `~/.codex` from `codex login` (needed for Codex models)
   - `~/.gemini` after `scripts/sync-antigravity-auth.sh` (Gemini 3.x / Antigravity)
-  - Claude Code OAuth via `.env` `CLAUDE_CODE_OAUTH_TOKEN` (optional; do **not** bind `~/.claude.json`)
+  - Claude Code OAuth via `.env` `CLAUDE_CODE_OAUTH_TOKEN` (optional — don’t bind-mount `~/.claude.json`)
 
 ## Clone and start
 
@@ -30,9 +30,9 @@ codex login
 docker compose up --build -d
 ```
 
-This builds/runs image `teslashibe/open-agent-api:local` and binds the API to **`127.0.0.1:8088`**.
+That builds/runs `teslashibe/open-agent-api:local` and binds the API to **`127.0.0.1:8088`**.
 
-## Verify and call
+## Verify
 
 ```bash
 curl -s http://127.0.0.1:8088/health
@@ -58,11 +58,11 @@ curl -s http://127.0.0.1:8088/v1/chat/completions \
 | `${HOME}/.claude` | `/home/codex/.claude` | CLI home; auth token still comes from env |
 | `agent-queue-locks` | `/var/lib/open-agent-api/agent-locks` | Shared agent-queue locks |
 
-Compose deliberately **does not** bind-mount `~/.claude.json` (host CLI atomic renames leave a stale inode in the container).
+We deliberately **don’t** bind-mount `~/.claude.json` — host CLI atomic renames leave a stale inode inside the container.
 
-## Important environment
+## Environment worth knowing
 
-Defaults live in `docker-compose.yml`. Notable ones:
+Defaults live in `docker-compose.yml`. The ones people bump most often:
 
 | Variable | Default / role |
 | --- | --- |
@@ -74,11 +74,11 @@ Defaults live in `docker-compose.yml`. Notable ones:
 | `CLAUDE_CODE_OAUTH_TOKEN` | From host `.env` (optional) |
 | `CODEX_CHAT_API_PORT` | Host port mapping (default `8088`) |
 
-Put secrets in a local `.env` (gitignored), never in committed files.
+Put secrets in a local `.env` (gitignored), not in committed files.
 
-## Cursor / public HTTPS (required for Cursor)
+## Cursor / public HTTPS
 
-Cursor **does not allow localhost** for BYOK (`Access to private networks is forbidden`). Always use the ngrok overlay:
+Cursor won’t accept localhost for BYOK (`Access to private networks is forbidden`). Use the ngrok overlay:
 
 ```bash
 NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
@@ -86,7 +86,7 @@ NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok
 
 Cursor base URL: `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` — never `http://127.0.0.1:8088/v1`.
 
-Full steps: [Cursor BYOK + ngrok](../cursor/byok-ngrok).
+Step-by-step: [Cursor BYOK + ngrok](../cursor/byok-ngrok).
 
 ## Logs and stop
 

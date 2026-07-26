@@ -6,7 +6,7 @@ description: Sync Antigravity OAuth for Gemini 3.x and gateway models.
 
 # Gemini / Antigravity auth
 
-Prefer **Antigravity** OAuth for Gemini 3.x and Antigravity gateway model IDs. Plain Gemini CLI `~/.gemini/oauth_creds.json` still works for Gemini **2.5** when Antigravity creds are absent.
+For Gemini 3.x and Antigravity gateway model IDs, prefer **Antigravity** OAuth. Plain Gemini CLI `~/.gemini/oauth_creds.json` still covers Gemini **2.5** when Antigravity creds aren’t around.
 
 ## Sync (macOS)
 
@@ -17,9 +17,9 @@ Prefer **Antigravity** OAuth for Gemini 3.x and Antigravity gateway model IDs. P
 scripts/sync-antigravity-auth.sh
 ```
 
-Writes `~/.gemini/antigravity_oauth_creds.json` (mode `600`).
+That writes `~/.gemini/antigravity_oauth_creds.json` (mode `600`).
 
-The script requires macOS `security` and a prior Antigravity login. Re-run when 3.x calls start failing auth.
+Needs macOS `security` and a prior Antigravity login. Re-run when 3.x calls start failing auth.
 
 ## Configuration
 

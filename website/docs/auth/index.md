@@ -1,12 +1,12 @@
 ---
 sidebar_position: 0
 title: Auth
-description: Credential setup for supported upstream platforms.
+description: Credential setup for the supported upstreams.
 ---
 
 # Auth
 
-See [Auth overview](./overview) for the three surfaces, then:
+Start with [Auth overview](./overview) for the big picture, then dive into the surface you care about:
 
 - [Codex / ChatGPT](./codex)
 - [Claude Code](./claude-code)

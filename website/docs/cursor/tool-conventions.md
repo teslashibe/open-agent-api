@@ -1,26 +1,20 @@
 ---
 sidebar_position: 2
 title: Cursor Agent tool calling
-description: How Open Agent API makes Cursor Agent tool calls work over BYOK — Chat Completions tools, streaming delta.tool_calls, and adapters for Codex, Claude Code, and Antigravity.
-keywords:
-  - Cursor Agent tools
-  - Cursor BYOK tool calling
-  - OpenAI chat completions tools
-  - delta.tool_calls
-  - Cursor custom OpenAI endpoint
+description: How Cursor Agent tool calls travel through this proxy — Chat Completions tools, streaming delta.tool_calls, and the Codex / Claude / Antigravity adapters.
 ---
 
 # Cursor Agent tool calling
 
-**Short answer:** Cursor Agent talks to custom OpenAI endpoints using Chat Completions **tools** — the same shape OpenRouter and other OpenAI-compatible APIs use. Open Agent API accepts that wire format, translates it for Codex / Claude Code / Antigravity, then streams Cursor-safe `delta.tool_calls` so Agent mode can run tools locally and continue the chat.
+Cursor Agent talks to custom OpenAI endpoints with Chat Completions **tools** — the same shape OpenRouter and friends use. This proxy accepts that wire format, translates it for Codex / Claude Code / Antigravity, then streams Cursor-safe `delta.tool_calls` so Agent can run tools locally and keep going.
 
-Tools still run **inside Cursor** (read file, shell, etc.). This service never executes your workspace tools; it only carries the protocol.
+The tools still run **inside Cursor** (read file, shell, and so on). We never execute workspace tools here; we just carry the protocol.
 
-Use this page when you need the exact request/response contracts or when changing the adapters in Go.
+Read this when you need the exact contracts, or when you’re changing the Go adapters.
 
-## What Cursor needs from a BYOK endpoint
+## What Cursor expects
 
-Cursor Agent only works against a backend that:
+Agent only works against a backend that:
 
 1. Accepts `tools`, `tool_choice`, and `parallel_tool_calls` on `POST /v1/chat/completions`
 2. Streams complete `delta.tool_calls` frames and ends with `finish_reason: "tool_calls"`
@@ -28,13 +22,13 @@ Cursor Agent only works against a backend that:
 4. Keeps tool-call IDs stable across turns
 5. Speaks `type: "function"` tool calls by default (Cursor’s BYOK parser drops `type: "custom"`)
 
-Open Agent API does that while authenticating upstream with local CLI/OAuth — not OpenAI `sk-` keys.
+That’s what we do, while authenticating upstream with local CLI/OAuth — not OpenAI `sk-` keys.
 
 **Out of scope**
 
 - `/v1/responses` (Cursor may probe it; we don’t implement it)
 - Running Cursor’s tools on the server
-- Spreading one chat’s tool turns across random Codex shards (routing is sticky per chat)
+- Spreading one chat’s tool turns across random Codex shards (routing stays sticky per chat)
 
 ## How an Agent turn flows
 
@@ -101,9 +95,9 @@ Wire sniffing lives in [`internal/server/cursor_wire.go`](https://github.com/tes
 
 ### Why “faithful” Codex mode turns off
 
-When the client sends `tools` (Agent always does), we default to **minimal mode** (`faithful=false`). Faithful mode injects the captured Codex CLI tool profile, which clashes with Cursor’s own tools and tends to fail upstream. You can force `"faithful": true` in the JSON body, but Agent shouldn’t.
+When the client sends `tools` (Agent always does), we default to **minimal mode** (`faithful=false`). Faithful mode injects the captured Codex CLI tool profile, which clashes with Cursor’s own tools and usually blows up upstream. You can force `"faithful": true` in the JSON body — Agent shouldn’t need that.
 
-Tool-capable requests also go through the agent queue (`CODEX_AGENT_QUEUE_KEY_MODE=cursor` by default) and optional context compaction on long histories.
+Tool-capable requests also go through the agent queue (`CODEX_AGENT_QUEUE_KEY_MODE=cursor` by default), with optional context compaction on long histories.
 
 ### Continuations after a tool runs
 

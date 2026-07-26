@@ -1,12 +1,14 @@
 ---
 sidebar_position: 0
 title: Cursor
-description: Use open-agent-api from Cursor Agent with BYOK.
+description: Use Open Agent API from Cursor Agent with BYOK.
 ---
 
 # Cursor
 
-1. [BYOK + pinned ngrok](./byok-ngrok) — tunnel, settings, model slugs
+Two pages cover the Cursor path:
+
+1. [BYOK + ngrok](./byok-ngrok) — tunnel, settings, model slugs
 2. [Cursor Agent tool calling](./tool-conventions) — how tools / `delta.tool_calls` work over BYOK
 
-Also see the [model catalog](../models/catalog) for exact slugs to add in Cursor Settings → Models.
+For exact slugs to add under Settings → Models, see the [model catalog](../models/catalog).

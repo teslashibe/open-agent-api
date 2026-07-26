@@ -1,24 +1,24 @@
 ---
 sidebar_position: 1
 title: Cursor BYOK + ngrok
-description: Point Cursor at the API with a pinned free ngrok channel — localhost is not allowed.
+description: Point Cursor at the API over a public HTTPS tunnel — localhost won’t work.
 ---
 
 # Cursor BYOK + ngrok
 
-Use this API as a custom OpenAI-compatible endpoint for Cursor Chat, Cmd+K, and **Agent**. Tab autocomplete does not use custom endpoints.
+Use this API as a custom OpenAI-compatible endpoint for Cursor Chat, Cmd+K, and **Agent**. Tab autocomplete ignores custom endpoints.
 
-## Localhost does not work
+## Localhost doesn’t work
 
-Cursor BYOK is proxied through Cursor-managed servers. Private addresses are rejected:
+Cursor BYOK goes through Cursor’s cloud. Private addresses get rejected:
 
 ```text
 Access to private networks is forbidden
 ```
 
-Do **not** set the base URL to `http://127.0.0.1:8088/v1` or `http://localhost:8088/v1`. You will often see an OpenAI key error **with no request in local server logs**.
+Don’t set the base URL to `http://127.0.0.1:8088/v1` or `http://localhost:8088/v1`. You’ll often see an OpenAI key error **and nothing in your local server logs** — Cursor never reached you.
 
-You need a public **HTTPS** tunnel. This repo standardizes on a pinned free ngrok domain.
+You need a public **HTTPS** tunnel. This repo’s Compose overlay assumes a free ngrok domain you reserve yourself.
 
 ## Prerequisites
 
@@ -31,15 +31,15 @@ Confirm the API locally first (curl only):
 curl -s http://127.0.0.1:8088/health
 ```
 
-## Preferred: your free ngrok domain
+## Use your own free ngrok domain
 
-Reserve a free domain in the [ngrok dashboard](https://dashboard.ngrok.com/), then set `NGROK_DOMAIN` to that hostname (example placeholder):
+Reserve a free domain in the [ngrok dashboard](https://dashboard.ngrok.com/), then set `NGROK_DOMAIN` to that hostname — for example:
 
 ```text
 YOUR_SUBDOMAIN.ngrok-free.dev
 ```
 
-Do not commit a personal reserved domain into this repo.
+Please don’t commit a personal reserved domain into this repo.
 
 ### Background via Docker (recommended)
 
@@ -53,7 +53,7 @@ NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok
 
 ### Host ngrok
 
-With the API already on `127.0.0.1:8088`:
+If the API is already on `127.0.0.1:8088`:
 
 ```bash
 ngrok http --url=YOUR_SUBDOMAIN.ngrok-free.dev 8088
@@ -69,9 +69,9 @@ ngrok http --url=YOUR_SUBDOMAIN.ngrok-free.dev 8088
 | Override OpenAI Base URL | `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` |
 | Model | Exact public ID — see [catalog](../models/catalog) |
 
-**Do not** use a `http://127.0.0.1…` or `http://localhost…` base URL.
+Again: no `http://127.0.0.1…` or `http://localhost…` base URL.
 
-Recommended slugs to add in Cursor:
+Handy slugs to add in Cursor:
 
 ```text
 gpt-5.6-terra
@@ -95,9 +95,9 @@ gpt-5.3-codex-spark
 | Fastest cheap turn | `gemini-3.1-flash-lite` |
 | Claude Code fast | `haiku` |
 
-Open a **new** Agent chat after changing base URL / models (old chats can keep poisoned history).
+After changing the base URL or models, open a **new** Agent chat — old ones can keep poisoned history.
 
-Agent tool calling (Chat Completions `tools` / `delta.tool_calls` / continuations) is documented in [Cursor tool conventions](./tool-conventions).
+How Agent tool calling works over the wire: [Cursor tool conventions](./tool-conventions).
 
 ## Validate the tunnel
 
@@ -119,11 +119,11 @@ You should see real tool execution and matching `POST /v1/chat/completions` line
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `Access to private networks is forbidden` | Localhost / private base URL | Use the ngrok `https://…/v1` URL |
-| `Unauthorized User Openai API key` and **no server log** | Cursor never reached you | Non-empty dummy key; confirm `/v1/models` via tunnel |
+| `Unauthorized User Openai API key` and **no server log** | Cursor never reached you | Non-empty dummy key; confirm `/v1/models` via the tunnel |
 | `[error: upstream error]` on first Agent turn | Missing `codex login` / bad auth | Re-login; check server `stream_error` logs |
 | `[error: upstream error]` in an **existing** chat | Poisoned history | Start a **new** Agent chat |
-| Several Agent chats stall | Queue / concurrency | Keep queue on, `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1` |
+| Several Agent chats stall | Queue / concurrency | Keep the queue on, `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1` |
 
 ## Alternatives
 
-`cloudflared tunnel --url http://127.0.0.1:8088` or `tailscale funnel 8088` also work if they give you a public HTTPS URL. This repo standardizes on the pinned ngrok domain for a stable Cursor base URL.
+`cloudflared tunnel --url http://127.0.0.1:8088` or `tailscale funnel 8088` also work if they give you public HTTPS. We document ngrok because a reserved free domain keeps the Cursor base URL stable.

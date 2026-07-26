@@ -6,16 +6,16 @@ description: Authenticate the Claude Code CLI upstream.
 
 # Claude Code auth
 
-Routes Haiku / Sonnet / Opus / Fable (and `api/claude-*` aliases) through the local **`claude`** CLI — not through Antigravity.
+Haiku / Sonnet / Opus / Fable (and `api/claude-*` aliases) go through the local **`claude`** CLI — not through Antigravity.
 
 :::tip
-IDs like `claude-sonnet-4-6` that go through **Antigravity** are a different surface. See [Antigravity](./antigravity) and the [model catalog](../models/catalog).
+Some IDs like `claude-sonnet-4-6` can also ride **Antigravity**. That’s a different surface — see [Antigravity](./antigravity) and the [model catalog](../models/catalog).
 :::
 
 ## Setup
 
-1. Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) so `claude` is on `PATH`.
-2. Complete CLI login so `claude` works interactively on the host.
+1. Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) so `claude` is on your `PATH`.
+2. Finish CLI login until `claude` works interactively on the host.
 
 ## Configuration
 

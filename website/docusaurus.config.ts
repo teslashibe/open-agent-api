@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'Open Agent API',
-  tagline: 'OpenAI-compatible agent API over local CLI sessions',
+  tagline: 'Your local CLI sessions, behind an OpenAI-shaped API',
   favicon: 'img/favicon.svg',
 
   url: 'https://teslashibe.github.io',
