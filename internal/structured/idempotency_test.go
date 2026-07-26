@@ -209,3 +209,47 @@ func TestStoreWithoutKeyAlwaysRuns(t *testing.T) {
 		t.Fatalf("calls = %d, want 3", calls)
 	}
 }
+
+// A backend that fails every operation must degrade to running fn, never to a
+// new error class.
+func TestStoreDegradesWhenTheBackendFails(t *testing.T) {
+	store := NewIdempotencyStoreWithBackend(time.Minute, 8, nil, brokenBackend{})
+	results := map[string]int{}
+	store.WithObserver(func(result string) { results[result]++ })
+
+	var calls int32
+	response, replay, err := store.Do(context.Background(), "k", upstreamOnce(&calls, "resp-1"))
+	if err != nil || replay || response.UpstreamResponseID != "resp-1" {
+		t.Fatalf("degraded call = %#v replay=%v err=%v", response, replay, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+	if results[IdempotencyBackendError] == 0 {
+		t.Fatalf("outcomes = %v, want a backend_error observation", results)
+	}
+	if results[IdempotencyMiss] != 1 {
+		t.Fatalf("outcomes = %v, want exactly one miss", results)
+	}
+
+	// The process-local layer still replays, so a degraded backend costs
+	// durability, not correctness within the pod.
+	if _, replay, err := store.Do(context.Background(), "k", upstreamOnce(&calls, "resp-2")); err != nil || !replay {
+		t.Fatalf("local replay after a backend failure replay=%v err=%v", replay, err)
+	}
+	if results[IdempotencyLocalHit] != 1 {
+		t.Fatalf("outcomes = %v, want one local_hit", results)
+	}
+}
+
+type brokenBackend struct{}
+
+func (brokenBackend) Load(string) (IdempotencyRecord, bool, error) {
+	return IdempotencyRecord{}, false, errors.New("backend down")
+}
+
+func (brokenBackend) Store(string, IdempotencyRecord) error { return errors.New("backend down") }
+
+func (brokenBackend) Reserve(string, time.Time) (func(bool), bool, error) {
+	return func(bool) {}, false, errors.New("backend down")
+}

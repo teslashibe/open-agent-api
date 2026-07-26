@@ -507,6 +507,89 @@ func TestStructuredInferenceReplaysIdempotentRequests(t *testing.T) {
 	}
 }
 
+// Issue 120 AC1, AC2, AC3: with the file backend two independent gateway
+// processes over one shared directory replay each other's stored response. App
+// B is both "the other pod" and "the same pod after a restart": it has its own
+// empty in-memory store and its own upstream service, so a replay there can
+// only have come from the durable record.
+func TestStructuredInferenceReplaysAcrossRestartsAndReplicas(t *testing.T) {
+	dir := t.TempDir()
+	cfg := structuredTestConfig()
+	cfg.StructuredIdempotencyBackend = config.IdempotencyBackendFile
+	cfg.StructuredIdempotencyDir = dir
+
+	var callsA, callsB int32
+	appA := New(cfg, WithCodexService(fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			atomic.AddInt32(&callsA, 1)
+			return codex.Completion{
+				Text:  structuredTestOutput,
+				Model: openai.DefaultModel,
+				ID:    "resp-pod-a",
+				Usage: openai.Usage{PromptTokens: 11, CompletionTokens: 5, TotalTokens: 16},
+			}, nil
+		},
+	}), WithLogOutput(nil))
+	appB := New(cfg, WithCodexService(fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			atomic.AddInt32(&callsB, 1)
+			return codex.Completion{Text: `{"title":"divergent","score":0}`, Model: openai.DefaultModel, ID: "resp-pod-b"}, nil
+		},
+	}), WithLogOutput(nil))
+
+	first := decodeStructuredSuccess(t, postStructured(t, appA, structuredBody()))
+	if first.IdempotentReplay {
+		t.Fatal("pod A reported a replay for the original request")
+	}
+	second := decodeStructuredSuccess(t, postStructured(t, appB, structuredBody()))
+	if !second.IdempotentReplay {
+		t.Fatal("pod B did not replay the record pod A stored")
+	}
+	if got := atomic.LoadInt32(&callsB); got != 0 {
+		t.Fatalf("pod B upstream calls = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&callsA); got != 1 {
+		t.Fatalf("pod A upstream calls = %d, want 1", got)
+	}
+
+	// Everything but the freshly measured replay latency must be identical.
+	normalize := func(response structured.Response) string {
+		response.LatencyMS = 0
+		response.IdempotentReplay = false
+		raw, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	if normalize(second) != normalize(first) {
+		t.Fatalf("replayed body diverged:\n B: %s\n A: %s", normalize(second), normalize(first))
+	}
+	if second.UpstreamResponseID != "resp-pod-a" || string(second.Data) != structuredTestOutput {
+		t.Fatalf("pod B served %#v, want pod A's stored response", second)
+	}
+}
+
+// Issue 120 AC1: the memory backend stays process-local, which is exactly why
+// Config.Validate fails closed on a multi-replica memory deployment.
+func TestStructuredInferenceMemoryBackendStaysProcessLocal(t *testing.T) {
+	cfg := structuredTestConfig()
+	var callsB int32
+	appA := New(cfg, WithCodexService(staticStructuredService(structuredTestOutput)), WithLogOutput(nil))
+	appB := New(cfg, WithCodexService(fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			atomic.AddInt32(&callsB, 1)
+			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel, ID: "resp-pod-b"}, nil
+		},
+	}), WithLogOutput(nil))
+
+	decodeStructuredSuccess(t, postStructured(t, appA, structuredBody()))
+	second := decodeStructuredSuccess(t, postStructured(t, appB, structuredBody()))
+	if second.IdempotentReplay || atomic.LoadInt32(&callsB) != 1 {
+		t.Fatalf("memory backend replayed across processes (replay=%v calls=%d)", second.IdempotentReplay, callsB)
+	}
+}
+
 // AC6: idempotency is scoped by caller, operation, input, schema version, and
 // model policy version. Changing any of them must re-run the inference.
 func TestStructuredInferenceIdempotencyIsScoped(t *testing.T) {
@@ -631,54 +714,72 @@ func TestStructuredInferenceConcurrency(t *testing.T) {
 		})
 
 		t.Run(fmt.Sprintf("duplicate/%d", concurrency), func(t *testing.T) {
-			var calls int32
-			started := make(chan struct{}, concurrency)
-			release := make(chan struct{})
-			service := fakeCodexService{
-				complete: func(context.Context, codex.Request) (codex.Completion, error) {
-					atomic.AddInt32(&calls, 1)
-					started <- struct{}{}
-					<-release
-					return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel, ID: "resp-shared"}, nil
-				},
-			}
-			cfg := structuredTestConfig()
-			cfg.StructuredMaxActive = concurrency
-			cfg.StructuredMaxActivePerKey = concurrency
-			cfg.StructuredQueueLimit = concurrency * 2
-			app := New(cfg, WithCodexService(service), WithLogOutput(nil))
-
-			responses := make([]structured.Response, concurrency)
-			var wg sync.WaitGroup
-			for i := 0; i < concurrency; i++ {
-				wg.Add(1)
-				go func(index int) {
-					defer wg.Done()
-					responses[index] = decodeStructuredSuccess(t, postStructured(t, app, structuredBody()))
-				}(i)
-			}
-			<-started
-			// Let the duplicates pile up behind the single in-flight call.
-			time.Sleep(50 * time.Millisecond)
-			close(release)
-			wg.Wait()
-
-			if got := atomic.LoadInt32(&calls); got != 1 {
-				t.Fatalf("upstream calls = %d, want 1 concurrent duplicates to single-flight", got)
-			}
-			leaders := 0
-			for index, response := range responses {
-				if string(response.Data) != structuredTestOutput {
-					t.Fatalf("response %d data = %s", index, response.Data)
-				}
-				if !response.IdempotentReplay {
-					leaders++
-				}
-			}
-			if leaders != 1 {
-				t.Fatalf("non-replay responses = %d, want exactly 1", leaders)
-			}
+			assertStructuredDuplicatesSingleFlight(t, concurrency, func(*config.Config) {})
 		})
+
+		// The same guarantee must hold with the durable backend in the path,
+		// where single-flight also runs through a filesystem reservation.
+		t.Run(fmt.Sprintf("duplicate-file-backend/%d", concurrency), func(t *testing.T) {
+			dir := t.TempDir()
+			assertStructuredDuplicatesSingleFlight(t, concurrency, func(cfg *config.Config) {
+				cfg.StructuredIdempotencyBackend = config.IdempotencyBackendFile
+				cfg.StructuredIdempotencyDir = dir
+			})
+		})
+	}
+}
+
+// assertStructuredDuplicatesSingleFlight sends `concurrency` identical requests
+// at once and asserts exactly one upstream call and one non-replay response.
+func assertStructuredDuplicatesSingleFlight(t *testing.T, concurrency int, configure func(*config.Config)) {
+	t.Helper()
+	var calls int32
+	started := make(chan struct{}, concurrency)
+	release := make(chan struct{})
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			atomic.AddInt32(&calls, 1)
+			started <- struct{}{}
+			<-release
+			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel, ID: "resp-shared"}, nil
+		},
+	}
+	cfg := structuredTestConfig()
+	cfg.StructuredMaxActive = concurrency
+	cfg.StructuredMaxActivePerKey = concurrency
+	cfg.StructuredQueueLimit = concurrency * 2
+	configure(&cfg)
+	app := New(cfg, WithCodexService(service), WithLogOutput(nil))
+
+	responses := make([]structured.Response, concurrency)
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			responses[index] = decodeStructuredSuccess(t, postStructured(t, app, structuredBody()))
+		}(i)
+	}
+	<-started
+	// Let the duplicates pile up behind the single in-flight call.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 concurrent duplicates to single-flight", got)
+	}
+	leaders := 0
+	for index, response := range responses {
+		if string(response.Data) != structuredTestOutput {
+			t.Fatalf("response %d data = %s", index, response.Data)
+		}
+		if !response.IdempotentReplay {
+			leaders++
+		}
+	}
+	if leaders != 1 {
+		t.Fatalf("non-replay responses = %d, want exactly 1", leaders)
 	}
 }
 
@@ -704,6 +805,7 @@ func TestStructuredInferenceRecordsMetrics(t *testing.T) {
 		`codex_chat_api_structured_failures_total{code="output_validation_failed"} 1`,
 		`codex_chat_api_structured_validation_total{result="valid"} 1`,
 		`codex_chat_api_structured_validation_total{result="unparsable"} 1`,
+		`codex_chat_api_structured_idempotency_total{result="miss"} 2`,
 		`codex_chat_api_queue_wait_seconds_count{provider="structured",result="acquired"} 2`,
 		`codex_chat_api_structured_inflight 0`,
 	} {

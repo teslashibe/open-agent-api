@@ -46,6 +46,10 @@ func TestStructuredMetricsExposeBoundedSurface(t *testing.T) {
 	m.ObserveStructuredFailure("output_validation_failed")
 	m.ObserveStructuredValidation("valid")
 	m.ObserveStructuredValidation("unparsable")
+	m.ObserveStructuredIdempotency("local_hit")
+	m.ObserveStructuredIdempotency("store_hit")
+	m.ObserveStructuredIdempotency("miss")
+	m.ObserveStructuredIdempotency("backend_error")
 	m.ObserveQueueWait("structured", "full", time.Second)
 	m.IncStructuredInflight()
 	m.IncStructuredInflight()
@@ -61,6 +65,10 @@ func TestStructuredMetricsExposeBoundedSurface(t *testing.T) {
 		`codex_chat_api_structured_failures_total{code="output_validation_failed"} 1`,
 		`codex_chat_api_structured_validation_total{result="valid"} 1`,
 		`codex_chat_api_structured_validation_total{result="unparsable"} 1`,
+		`codex_chat_api_structured_idempotency_total{result="local_hit"} 1`,
+		`codex_chat_api_structured_idempotency_total{result="store_hit"} 1`,
+		`codex_chat_api_structured_idempotency_total{result="miss"} 1`,
+		`codex_chat_api_structured_idempotency_total{result="backend_error"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="structured",result="full"} 1`,
 		`codex_chat_api_structured_inflight 1`,
 	} {
@@ -77,6 +85,7 @@ func TestStructuredMetricsBoundModelAndCodeCardinality(t *testing.T) {
 	m.ObserveStructuredUsage("attacker-supplied-model", 1, 1, 2)
 	m.ObserveStructuredFailure("made_up_code")
 	m.ObserveStructuredValidation("made_up_result")
+	m.ObserveStructuredIdempotency("made_up_outcome")
 	m.ObserveStructuredLatency("gpt-5.6-sol", "made_up_code", time.Second)
 
 	body := scrape(t, m)
@@ -88,6 +97,7 @@ func TestStructuredMetricsBoundModelAndCodeCardinality(t *testing.T) {
 		`codex_chat_api_structured_latency_seconds_count{model="gpt-5.6-sol",result="unknown"} 1`,
 		`codex_chat_api_structured_failures_total{code="unknown"} 1`,
 		`codex_chat_api_structured_validation_total{result="invalid"} 1`,
+		`codex_chat_api_structured_idempotency_total{result="unknown"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics body missing %q:\n%s", want, body)
@@ -102,6 +112,7 @@ func TestDisabledStructuredMetricsAreNoop(t *testing.T) {
 	m.ObserveStructuredUsage("gpt-5.6-sol", 1, 1, 2)
 	m.ObserveStructuredFailure("timeout")
 	m.ObserveStructuredValidation("valid")
+	m.ObserveStructuredIdempotency("store_hit")
 	m.IncStructuredInflight()
 	m.DecStructuredInflight()
 }

@@ -57,6 +57,18 @@ const (
 	DefaultStructuredMaxDeadline     = 5 * time.Minute
 	DefaultStructuredMaxOutputTokens = 32768
 	DefaultStructuredIdempotencyTTL  = 10 * time.Minute
+	// Idempotency stays in memory unless a deploy points it at a shared
+	// directory, so a single-replica gateway keeps today's behavior exactly.
+	DefaultStructuredIdempotencyBackend = IdempotencyBackendMemory
+	DefaultStructuredReplicas           = 1
+)
+
+// Structured idempotency backends. "memory" is process-local; "file" is a
+// shared directory (a ReadWriteMany PVC, or a bind mount under Docker) that
+// makes replay durable across restarts and replicas.
+const (
+	IdempotencyBackendMemory = "memory"
+	IdempotencyBackendFile   = "file"
 )
 
 // DefaultGatewayProviders enables every provider so the local Cursor workflow
@@ -132,6 +144,17 @@ type Config struct {
 	StructuredMaxOutputTokens int
 	// StructuredIdempotencyTTL is how long a stored response can be replayed.
 	StructuredIdempotencyTTL time.Duration
+	// StructuredIdempotencyBackend selects the idempotency store: "memory"
+	// (process-local) or "file" (durable, shared across pods and restarts).
+	StructuredIdempotencyBackend string
+	// StructuredIdempotencyDir is the shared directory backing the file
+	// backend. Every replica must mount the same volume.
+	StructuredIdempotencyDir string
+	// StructuredReplicas is how many gateway replicas share this configuration.
+	// More than one replica with the memory backend is rejected at load time:
+	// process-local idempotency would let two pods both call upstream for the
+	// same key.
+	StructuredReplicas int
 	// StructuredModels overrides the structured-capable model allowlist. Empty
 	// means the built-in allowlist in internal/structured.
 	StructuredModels []string
@@ -430,6 +453,7 @@ func Load(args []string) (Config, error) {
 		{"STRUCTURED_MAX_ACTIVE_PER_KEY", &cfg.StructuredMaxActivePerKey},
 		{"STRUCTURED_QUEUE_LIMIT", &cfg.StructuredQueueLimit},
 		{"STRUCTURED_MAX_OUTPUT_TOKENS", &cfg.StructuredMaxOutputTokens},
+		{"STRUCTURED_REPLICAS", &cfg.StructuredReplicas},
 	} {
 		if value := os.Getenv(override.env); value != "" {
 			parsed, err := strconv.Atoi(value)
@@ -454,6 +478,12 @@ func Load(args []string) (Config, error) {
 			}
 			*override.target = parsed
 		}
+	}
+	if value := os.Getenv("STRUCTURED_IDEMPOTENCY_BACKEND"); value != "" {
+		cfg.StructuredIdempotencyBackend = value
+	}
+	if value := os.Getenv("STRUCTURED_IDEMPOTENCY_DIR"); value != "" {
+		cfg.StructuredIdempotencyDir = value
 	}
 	structuredModelsRaw := strings.Join(cfg.StructuredModels, ",")
 	if value := os.Getenv("STRUCTURED_MODELS"); value != "" {
@@ -511,6 +541,9 @@ func Load(args []string) (Config, error) {
 	fs.DurationVar(&cfg.StructuredMaxDeadline, "structured-max-deadline", cfg.StructuredMaxDeadline, "upper bound applied to the caller-supplied structured deadline_ms")
 	fs.IntVar(&cfg.StructuredMaxOutputTokens, "structured-max-output-tokens", cfg.StructuredMaxOutputTokens, "upper bound applied to the caller-supplied structured max_output_tokens")
 	fs.DurationVar(&cfg.StructuredIdempotencyTTL, "structured-idempotency-ttl", cfg.StructuredIdempotencyTTL, "how long a structured response can be replayed for the same idempotency key")
+	fs.StringVar(&cfg.StructuredIdempotencyBackend, "structured-idempotency-backend", cfg.StructuredIdempotencyBackend, "structured idempotency store: memory (process-local) or file (shared directory, durable across pods and restarts)")
+	fs.StringVar(&cfg.StructuredIdempotencyDir, "structured-idempotency-dir", cfg.StructuredIdempotencyDir, "shared directory backing the file idempotency backend; every replica must mount the same volume")
+	fs.IntVar(&cfg.StructuredReplicas, "structured-replicas", cfg.StructuredReplicas, "number of gateway replicas sharing this configuration; more than one requires the file idempotency backend")
 	fs.StringVar(&structuredModelsRaw, "structured-models", structuredModelsRaw, "comma-separated structured-capable model allowlist (empty uses the built-in list)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -592,6 +625,9 @@ func Defaults() Config {
 		StructuredMaxDeadline:              DefaultStructuredMaxDeadline,
 		StructuredMaxOutputTokens:          DefaultStructuredMaxOutputTokens,
 		StructuredIdempotencyTTL:           DefaultStructuredIdempotencyTTL,
+		StructuredIdempotencyBackend:       DefaultStructuredIdempotencyBackend,
+		StructuredIdempotencyDir:           "",
+		StructuredReplicas:                 DefaultStructuredReplicas,
 	}
 	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
 	return cfg
@@ -770,7 +806,36 @@ func (c Config) validateStructured() error {
 	if c.StructuredIdempotencyTTL <= 0 {
 		return errors.New("structured idempotency ttl must be positive")
 	}
+	backend := c.IdempotencyBackend()
+	switch backend {
+	case IdempotencyBackendMemory:
+	case IdempotencyBackendFile:
+		if strings.TrimSpace(c.StructuredIdempotencyDir) == "" {
+			return errors.New("structured idempotency backend file requires STRUCTURED_IDEMPOTENCY_DIR")
+		}
+	default:
+		return fmt.Errorf("structured idempotency backend must be %q or %q", IdempotencyBackendMemory, IdempotencyBackendFile)
+	}
+	if c.StructuredReplicas < 0 {
+		return errors.New("structured replicas must be non-negative")
+	}
+	// Fail closed: process-local idempotency across several replicas would let
+	// two pods both call upstream for one key, double-billing the caller and
+	// possibly returning divergent bodies.
+	if c.StructuredEnabled && c.StructuredReplicas > 1 && backend != IdempotencyBackendFile {
+		return errors.New("structured inference with more than one replica needs a durable idempotency store: set STRUCTURED_IDEMPOTENCY_BACKEND=file with a shared STRUCTURED_IDEMPOTENCY_DIR, or run a single replica")
+	}
 	return nil
+}
+
+// IdempotencyBackend normalizes the configured structured idempotency backend.
+// An empty value means the default, so a hand-built Config keeps working.
+func (c Config) IdempotencyBackend() string {
+	backend := strings.ToLower(strings.TrimSpace(c.StructuredIdempotencyBackend))
+	if backend == "" {
+		return DefaultStructuredIdempotencyBackend
+	}
+	return backend
 }
 
 // ProviderEnabled reports whether a provider is on the gateway allowlist. An

@@ -102,6 +102,30 @@ func withLocalCheck(isLocal func(*fiber.Ctx) bool) Option {
 	}
 }
 
+// newStructuredIdempotencyStore builds the configured idempotency store. The
+// file backend makes replay durable across restarts and shared by every replica
+// mounting the same directory; "memory" keeps the original process-local store.
+// Config.Validate already fails closed on a multi-replica memory deployment, so
+// the only fallback here is a hand-built Config with no directory.
+func newStructuredIdempotencyStore(cfg config.Config, opts options) *structured.IdempotencyStore {
+	memory := func() *structured.IdempotencyStore {
+		return structured.NewIdempotencyStore(cfg.StructuredIdempotencyTTL, structured.DefaultIdempotencyEntries, opts.now)
+	}
+	if cfg.IdempotencyBackend() != config.IdempotencyBackendFile {
+		return memory()
+	}
+	backend, err := structured.NewFileBackend(cfg.StructuredIdempotencyDir, cfg.StructuredIdempotencyTTL, structured.DefaultIdempotencyEntries, opts.now)
+	if err != nil {
+		logLine(opts, "structured_idempotency_backend backend=memory reason=%s\n", err)
+		return memory()
+	}
+	logLine(opts, "structured_idempotency_backend backend=file dir=%s ttl=%s replicas=%d\n",
+		backend.Dir(), cfg.StructuredIdempotencyTTL, cfg.StructuredReplicas)
+	return structured.
+		NewIdempotencyStoreWithBackend(cfg.StructuredIdempotencyTTL, structured.DefaultIdempotencyEntries, opts.now, backend).
+		WithReservationTTL(cfg.StructuredMaxDeadline)
+}
+
 func New(cfg config.Config, setters ...Option) *fiber.App {
 	opts := options{
 		codexService: codex.UnavailableService{},
@@ -169,8 +193,9 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		opts.structuredPolicy = structured.NewPolicy(models, cfg.ProviderEnabled)
 	}
 	if opts.structuredIdempotency == nil {
-		opts.structuredIdempotency = structured.NewIdempotencyStore(cfg.StructuredIdempotencyTTL, structured.DefaultIdempotencyEntries, opts.now)
+		opts.structuredIdempotency = newStructuredIdempotencyStore(cfg, opts)
 	}
+	opts.structuredIdempotency.WithObserver(opts.metrics.ObserveStructuredIdempotency)
 	opts.metrics.AllowStructuredModels(opts.structuredPolicy.Models())
 
 	app := fiber.New(fiber.Config{

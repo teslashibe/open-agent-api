@@ -29,11 +29,12 @@ type Metrics struct {
 	queueWait         *prometheus.HistogramVec
 	activeStreams     *prometheus.GaugeVec
 
-	structuredLatency    *prometheus.HistogramVec
-	structuredTokens     *prometheus.CounterVec
-	structuredFailures   *prometheus.CounterVec
-	structuredValidation *prometheus.CounterVec
-	structuredInflight   prometheus.Gauge
+	structuredLatency     *prometheus.HistogramVec
+	structuredTokens      *prometheus.CounterVec
+	structuredFailures    *prometheus.CounterVec
+	structuredValidation  *prometheus.CounterVec
+	structuredIdempotency *prometheus.CounterVec
+	structuredInflight    prometheus.Gauge
 
 	// structuredModels bounds the model label to the configured structured
 	// allowlist. Anything else collapses to "other" so a caller cannot grow
@@ -96,6 +97,10 @@ func New(enabled bool) *Metrics {
 		Name: "codex_chat_api_structured_validation_total",
 		Help: "Structured inference schema validation outcomes.",
 	}, []string{"result"})
+	m.structuredIdempotency = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "codex_chat_api_structured_idempotency_total",
+		Help: "Structured inference idempotency outcomes: local_hit, store_hit, miss, backend_error.",
+	}, []string{"result"})
 	m.structuredInflight = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "codex_chat_api_structured_inflight",
 		Help: "Structured inference requests currently admitted, for saturation alerting.",
@@ -113,6 +118,7 @@ func New(enabled bool) *Metrics {
 		m.structuredTokens,
 		m.structuredFailures,
 		m.structuredValidation,
+		m.structuredIdempotency,
 		m.structuredInflight,
 	)
 	return m
@@ -248,6 +254,15 @@ func (m *Metrics) ObserveStructuredValidation(result string) {
 	}
 }
 
+// ObserveStructuredIdempotency counts one idempotency outcome. The label set is
+// closed — local_hit, store_hit, miss, backend_error — so a durable backend
+// cannot grow cardinality with keys or paths.
+func (m *Metrics) ObserveStructuredIdempotency(result string) {
+	if m.Enabled() {
+		m.structuredIdempotency.WithLabelValues(normalizeStructuredIdempotency(result)).Inc()
+	}
+}
+
 // IncStructuredInflight and DecStructuredInflight track admitted structured
 // requests so saturation is observable independently of chat traffic.
 func (m *Metrics) IncStructuredInflight() {
@@ -299,6 +314,10 @@ func normalizeStructuredCode(value string) string {
 
 func normalizeStructuredValidation(value string) string {
 	return allow(value, "invalid", "valid", "invalid", "unparsable")
+}
+
+func normalizeStructuredIdempotency(value string) string {
+	return allow(value, "unknown", "local_hit", "store_hit", "miss", "backend_error")
 }
 
 func normalizeProvider(value string) string {

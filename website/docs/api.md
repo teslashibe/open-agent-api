@@ -113,17 +113,29 @@ Two strict-mode rules apply to every object: `additionalProperties` must be pres
 
 A response is replayed (`"idempotent_replay": true`) only when the caller, `operation`, input checksum, `schema_version`, `model_policy_version`, **and** `idempotency_key` all match. Change any of them and the inference re-runs. Concurrent duplicates single-flight — one upstream call, everyone gets the same answer. Failures are never stored, so a retry after an error really retries.
 
-The store is **process-local**: a multi-replica deployment replays per pod, not cluster-wide.
+By default the store is **process-local** (`STRUCTURED_IDEMPOTENCY_BACKEND=memory`): replay lives in one pod's memory and is lost on restart. That's fine for the single-replica default.
+
+For anything bigger, point every replica at one shared directory:
+
+```bash
+STRUCTURED_IDEMPOTENCY_BACKEND=file
+STRUCTURED_IDEMPOTENCY_DIR=/var/lib/open-agent-api/structured-idempotency
+STRUCTURED_REPLICAS=2
+```
+
+Then a stored response replays across pods and survives a restart for the whole `STRUCTURED_IDEMPOTENCY_TTL` — one upstream call, one bill, one body. The gateway **fails closed**: `STRUCTURED_REPLICAS > 1` with the memory backend is refused at startup rather than silently double-calling upstream.
+
+The shared volume must have POSIX `rename`/`link` semantics (a `ReadWriteMany` PVC). Replay after a completed request is exact; concurrent single-flight across pods is best-effort — see [issue-120-validation.md](https://github.com/teslashibe/open-agent-api/blob/main/docs/issue-120-validation.md) for the exact bound.
 
 ### Admission and models
 
-Structured traffic has its own queue budget (`STRUCTURED_MAX_ACTIVE`, `STRUCTURED_MAX_ACTIVE_PER_KEY`, `STRUCTURED_QUEUE_LIMIT`, `STRUCTURED_QUEUE_TIMEOUT`) so it can never starve Cursor/agent traffic. Extraction requests carry no tools, skip the captured Codex CLI profile and scaffold, and never prewarm a connection.
+Structured traffic has its own queue budget (`STRUCTURED_MAX_ACTIVE`, `STRUCTURED_MAX_ACTIVE_PER_KEY`, `STRUCTURED_QUEUE_LIMIT`, `STRUCTURED_QUEUE_TIMEOUT`) so it can never starve Cursor/agent traffic. The rest of the knobs: `STRUCTURED_MAX_DEADLINE`, `STRUCTURED_MAX_OUTPUT_TOKENS`, `STRUCTURED_IDEMPOTENCY_TTL`, `STRUCTURED_IDEMPOTENCY_BACKEND`, `STRUCTURED_IDEMPOTENCY_DIR`, `STRUCTURED_REPLICAS`, and `STRUCTURED_MODELS` (each also a `--structured-*` flag). Extraction requests carry no tools, skip the captured Codex CLI profile and scaffold, and never prewarm a connection.
 
 The allowlist is Codex-only by default (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` and their effort variants); override it with `STRUCTURED_MODELS`. Gemini and Claude Code aliases return `unsupported_model` because they do not honour strict `json_schema` output.
 
 ### Metrics
 
-`codex_chat_api_structured_latency_seconds`, `codex_chat_api_structured_tokens_total`, `codex_chat_api_structured_failures_total`, `codex_chat_api_structured_validation_total`, and `codex_chat_api_structured_inflight`, plus queue waits under `provider="structured"`.
+`codex_chat_api_structured_latency_seconds`, `codex_chat_api_structured_tokens_total`, `codex_chat_api_structured_failures_total`, `codex_chat_api_structured_validation_total`, `codex_chat_api_structured_idempotency_total` (`result` is `local_hit`, `store_hit`, `miss`, or `backend_error`), and `codex_chat_api_structured_inflight`, plus queue waits under `provider="structured"`.
 
 ## Response compression
 
