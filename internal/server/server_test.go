@@ -18,6 +18,7 @@ import (
 	"github.com/teslashibe/open-agent-api/internal/codex"
 	"github.com/teslashibe/open-agent-api/internal/config"
 	"github.com/teslashibe/open-agent-api/internal/openai"
+	"github.com/teslashibe/open-agent-api/internal/structured"
 )
 
 type synchronizedBuffer struct {
@@ -60,12 +61,26 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	var body map[string]string
+	// Provenance is additive: "status" keeps its pre-ticket value and the new
+	// build/contract_version fields sit alongside it.
+	var body map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if body["status"] != "ok" {
-		t.Fatalf("status body = %q, want ok", body["status"])
+		t.Fatalf("status body = %v, want ok", body["status"])
+	}
+	if body["contract_version"] != structured.ContractVersion {
+		t.Fatalf("contract_version = %v, want %q", body["contract_version"], structured.ContractVersion)
+	}
+	build, ok := body["build"].(map[string]any)
+	if !ok {
+		t.Fatalf("build = %v, want an object", body["build"])
+	}
+	for _, field := range []string{"version", "commit", "build_date", "go_version"} {
+		if value, _ := build[field].(string); value == "" {
+			t.Fatalf("build.%s is empty in %v", field, build)
+		}
 	}
 }
 

@@ -136,6 +136,25 @@ func (b requestBuilder) buildMinimal(req Request) (map[string]any, error) {
 		"text":             map[string]any{"verbosity": req.Verbosity},
 		"prompt_cache_key": b.newPromptCache(),
 	}
+	// Extraction turns are structured inference: strict output format, a hard
+	// output cap, and no tool surface at all. Returning here guarantees no
+	// tools/tool_choice/parallel_tool_calls can reach the payload even if a
+	// caller populated them.
+	if req.Extraction {
+		text := map[string]any{"verbosity": req.Verbosity}
+		if rawJSONPresent(req.ResponseFormat) {
+			format, err := decodeRawJSON(req.ResponseFormat)
+			if err != nil {
+				return nil, NewError(ErrorKindClient, 400, "invalid response_format JSON", err)
+			}
+			text["format"] = format
+		}
+		payload["text"] = text
+		if req.MaxOutputTokens > 0 {
+			payload["max_output_tokens"] = req.MaxOutputTokens
+		}
+		return payload, nil
+	}
 	if rawJSONPresent(req.Tools) {
 		tools, err := decodeRawJSON(req.Tools)
 		if err != nil {

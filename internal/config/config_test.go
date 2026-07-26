@@ -777,3 +777,82 @@ func TestProviderEnabledEmptyAllowlistMeansAll(t *testing.T) {
 		}
 	}
 }
+
+func TestStructuredInferenceDefaultsAreDark(t *testing.T) {
+	cfg := Defaults()
+	if cfg.StructuredEnabled {
+		t.Fatal("StructuredEnabled = true, want the endpoint dark by default")
+	}
+	if len(cfg.StructuredModels) != 0 {
+		t.Fatalf("StructuredModels = %v, want the built-in allowlist", cfg.StructuredModels)
+	}
+	if cfg.StructuredMaxActive != DefaultStructuredMaxActive ||
+		cfg.StructuredMaxActivePerKey != DefaultStructuredMaxActivePerKey ||
+		cfg.StructuredQueueLimit != DefaultStructuredQueueLimit ||
+		cfg.StructuredQueueTimeout != DefaultStructuredQueueTimeout ||
+		cfg.StructuredMaxDeadline != DefaultStructuredMaxDeadline ||
+		cfg.StructuredMaxOutputTokens != DefaultStructuredMaxOutputTokens ||
+		cfg.StructuredIdempotencyTTL != DefaultStructuredIdempotencyTTL {
+		t.Fatalf("structured defaults = %#v", cfg)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadStructuredEnvironmentAndFlags(t *testing.T) {
+	t.Setenv("STRUCTURED_INFERENCE_ENABLED", "true")
+	t.Setenv("STRUCTURED_MAX_ACTIVE", "9")
+	t.Setenv("STRUCTURED_MAX_ACTIVE_PER_KEY", "3")
+	t.Setenv("STRUCTURED_QUEUE_LIMIT", "7")
+	t.Setenv("STRUCTURED_QUEUE_TIMEOUT", "11s")
+	t.Setenv("STRUCTURED_MAX_DEADLINE", "90s")
+	t.Setenv("STRUCTURED_MAX_OUTPUT_TOKENS", "4096")
+	t.Setenv("STRUCTURED_IDEMPOTENCY_TTL", "2m")
+	t.Setenv("STRUCTURED_MODELS", "gpt-5.6-sol, gpt-5.6-terra ,gpt-5.6-sol")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.StructuredEnabled || cfg.StructuredMaxActive != 9 || cfg.StructuredMaxActivePerKey != 3 ||
+		cfg.StructuredQueueLimit != 7 || cfg.StructuredQueueTimeout != 11*time.Second ||
+		cfg.StructuredMaxDeadline != 90*time.Second || cfg.StructuredMaxOutputTokens != 4096 ||
+		cfg.StructuredIdempotencyTTL != 2*time.Minute {
+		t.Fatalf("structured config from environment = %#v", cfg)
+	}
+	if len(cfg.StructuredModels) != 2 || cfg.StructuredModels[0] != "gpt-5.6-sol" || cfg.StructuredModels[1] != "gpt-5.6-terra" {
+		t.Fatalf("StructuredModels = %v, want the trimmed de-duplicated list", cfg.StructuredModels)
+	}
+
+	cfg, err = Load([]string{"--structured-enabled=false", "--structured-max-active=2", "--structured-models=gpt-5.6-luna"})
+	if err != nil {
+		t.Fatalf("Load() with flags error = %v", err)
+	}
+	if cfg.StructuredEnabled || cfg.StructuredMaxActive != 2 {
+		t.Fatalf("structured config from flags = %#v", cfg)
+	}
+	if len(cfg.StructuredModels) != 1 || cfg.StructuredModels[0] != "gpt-5.6-luna" {
+		t.Fatalf("StructuredModels = %v, want the flag override", cfg.StructuredModels)
+	}
+}
+
+func TestLoadInvalidStructuredValues(t *testing.T) {
+	for name, env := range map[string][2]string{
+		"enabled":         {"STRUCTURED_INFERENCE_ENABLED", "sometimes"},
+		"max active":      {"STRUCTURED_MAX_ACTIVE", "many"},
+		"queue timeout":   {"STRUCTURED_QUEUE_TIMEOUT", "soon"},
+		"zero max active": {"STRUCTURED_MAX_ACTIVE", "0"},
+		"zero deadline":   {"STRUCTURED_MAX_DEADLINE", "0s"},
+		"zero ttl":        {"STRUCTURED_IDEMPOTENCY_TTL", "0s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(env[0], env[1])
+			chdir(t, t.TempDir())
+			if _, err := Load(nil); err == nil {
+				t.Fatalf("Load() with %s=%s error = nil, want a validation error", env[0], env[1])
+			}
+		})
+	}
+}

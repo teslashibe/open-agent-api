@@ -148,7 +148,12 @@ func compactToolCalls(toolCalls []ToolCall) []ToolCall {
 func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	sessionID := c.builder.newSessionID()
 
-	if req.Faithful && req.Prewarm {
+	// Extraction turns never take the faithful path: the prewarm connection and
+	// the 168 KB captured CLI profile/scaffold are pure overhead for structured
+	// inference and would reintroduce a tool surface.
+	faithful := req.Faithful && !req.Extraction
+
+	if faithful && req.Prewarm {
 		c.prewarm(ctx, req, sessionID)
 	}
 
@@ -156,7 +161,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 
 	var payload map[string]any
 	var kind requestKind = requestKindTurn
-	if req.Faithful {
+	if faithful {
 		payload = c.builder.buildFaithful(req.Messages, req.Model, sessionID, kind, req.ReasoningEffort, req.Verbosity)
 	} else {
 		var err error
@@ -167,7 +172,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		}
 	}
 
-	conn, err := c.open(ctx, req.Faithful, sessionID, kind)
+	conn, err := c.open(ctx, faithful, sessionID, kind)
 	if err != nil {
 		cancel()
 		return nil, err
