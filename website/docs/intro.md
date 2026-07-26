@@ -12,7 +12,7 @@ A small Go proxy that looks like the OpenAI Chat Completions API. Point Cursor B
 | **Gemini / Antigravity** | Antigravity or Gemini CLI oauth | Gemini 2.5/3.x + Antigravity gateway Claude/GPT-OSS IDs |
 | **Claude Code** | `claude` CLI login | Haiku / Sonnet / Opus / Fable |
 
-Default model is **`gpt-5.6-sol`**. Current release: **v0.0.25**.
+Default model is **`gpt-5.6-sol`**. Current release: **v0.1.0**.
 
 ## Quick start
 
