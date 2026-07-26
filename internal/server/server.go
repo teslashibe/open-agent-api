@@ -21,11 +21,11 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/google/uuid"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/config"
-	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
-	"github.com/teslashibe/codex-chat-api/internal/openai"
-	"github.com/teslashibe/codex-chat-api/internal/sse"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/config"
+	metricspkg "github.com/teslashibe/open-chat-api/internal/metrics"
+	"github.com/teslashibe/open-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/sse"
 )
 
 type Option func(*options)
@@ -131,7 +131,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	}
 
 	app := fiber.New(fiber.Config{
-		AppName:               "codex-chat-api",
+		AppName:               "open-chat-api",
 		DisableStartupMessage: true,
 	})
 
@@ -211,7 +211,7 @@ func models(cfg config.Config) fiber.Handler {
 				ID:      alias.ID,
 				Object:  "model",
 				Created: 0,
-				OwnedBy: "codex-chat-api",
+				OwnedBy: "open-chat-api",
 			})
 		}
 		return c.JSON(openai.ModelListResponse{

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 func TestBuildFaithfulRequestUsesProfileScaffoldAndTurnShape(t *testing.T) {
@@ -242,7 +242,7 @@ func TestBuildMinimalRequestIncludesToolResultContinuation(t *testing.T) {
 					},
 				},
 			},
-			{Role: "tool", ToolCallID: "call_123", Content: openai.TextContent("module github.com/teslashibe/codex-chat-api")},
+			{Role: "tool", ToolCallID: "call_123", Content: openai.TextContent("module github.com/teslashibe/open-chat-api")},
 		},
 		Tools: json.RawMessage(`[{"type":"function","function":{"name":"read_file"}}]`),
 	})
@@ -264,7 +264,7 @@ func TestBuildMinimalRequestIncludesToolResultContinuation(t *testing.T) {
 	output := input[2].(map[string]any)
 	if output["type"] != "function_call_output" ||
 		output["call_id"] != "call_123" ||
-		output["output"] != "module github.com/teslashibe/codex-chat-api" {
+		output["output"] != "module github.com/teslashibe/open-chat-api" {
 		t.Fatalf("function output item = %#v", output)
 	}
 }
@@ -306,7 +306,7 @@ func TestBuildMinimalRequestIncludesSequentialToolResults(t *testing.T) {
 					},
 				},
 			},
-			{Role: "tool", ToolCallID: "call_read", Content: openai.TextContent("module github.com/teslashibe/codex-chat-api")},
+			{Role: "tool", ToolCallID: "call_read", Content: openai.TextContent("module github.com/teslashibe/open-chat-api")},
 		},
 		Tools: json.RawMessage(`[{"type":"function","function":{"name":"list_dir"}},{"type":"function","function":{"name":"read_file"}}]`),
 	})

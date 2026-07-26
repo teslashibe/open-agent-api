@@ -1,4 +1,4 @@
-# Codex Chat API
+# Open Chat API
 
 User-facing docs live in **[`website/`](website/)** (Docusaurus). From `website/`: `npm install && npm start`. Agents: see **[`AGENTS.md`](AGENTS.md)**.
 
@@ -27,7 +27,7 @@ The old Python prototype has been removed. The Go server is the supported runtim
 
 ```bash
 codex login
-go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
 ```
 
 2. Expose it with ngrok (required for most Cursor BYOK paths):
@@ -42,7 +42,7 @@ Default reserved domain: `icebound-melida-unstoppably.ngrok-free.dev` (override 
 
 | Field | Value |
 | --- | --- |
-| OpenAI API Key | `local-codex-chat-api` (any non-empty string) |
+| OpenAI API Key | `local-open-chat-api` (any non-empty string) |
 | Override OpenAI Base URL | `https://icebound-melida-unstoppably.ngrok-free.dev/v1` |
 | Model | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, or an effort alias such as `gpt-5.6-sol-high` |
 
@@ -61,7 +61,7 @@ options, troubleshooting, and validation prompts.
 ## Run
 
 ```bash
-go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
 ```
 
 Then verify the server is reachable:
@@ -147,25 +147,25 @@ Expected response:
       "id": "gpt-5.5",
       "object": "model",
       "created": 0,
-      "owned_by": "codex-chat-api"
+      "owned_by": "open-chat-api"
     },
     {
       "id": "gpt-5.5-low",
       "object": "model",
       "created": 0,
-      "owned_by": "codex-chat-api"
+      "owned_by": "open-chat-api"
     },
     {
       "id": "gpt-5.5-high",
       "object": "model",
       "created": 0,
-      "owned_by": "codex-chat-api"
+      "owned_by": "open-chat-api"
     },
     {
       "id": "gpt-5.5-fast",
       "object": "model",
       "created": 0,
-      "owned_by": "codex-chat-api"
+      "owned_by": "open-chat-api"
     }
   ]
 }
@@ -213,7 +213,7 @@ That writes `~/.gemini/antigravity_oauth_creds.json` (compose sets
 
 ```bash
 curl -s http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-codex-chat-api' \
+  -H 'authorization: Bearer local-open-chat-api' \
   -H 'content-type: application/json' \
   -d '{
     "model": "gpt-5.5",
@@ -426,7 +426,7 @@ Cursor requires a non-empty OpenAI API key even though this API ignores it.
 Upstream Codex authentication comes from `~/.codex/auth.json` (`codex login`).
 
 ```text
-OpenAI API Key:        local-codex-chat-api
+OpenAI API Key:        local-open-chat-api
 Override Base URL:     https://<tunnel-host>/v1
 Model:                 gpt-5.6-sol-high
 ```
@@ -481,7 +481,7 @@ Example with Cloudflare's quick tunnel:
 
 ```bash
 # terminal 1
-go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
 
 # terminal 2
 cloudflared tunnel --url http://127.0.0.1:8088
@@ -532,7 +532,7 @@ CODEX_AGENT_MAX_ACTIVE_PER_KEY=1
 CODEX_AGENT_QUEUE_KEY_MODE=cursor
 CODEX_AGENT_QUEUE_LIMIT=20
 CODEX_AGENT_QUEUE_TIMEOUT=5m
-CODEX_AGENT_QUEUE_LOCK_DIR=/tmp/codex-chat-api-agent-locks
+CODEX_AGENT_QUEUE_LOCK_DIR=/tmp/open-chat-api-agent-locks
 CODEX_AGENT_QUEUE_PRIORITY_ENABLED=false
 ```
 
@@ -630,7 +630,7 @@ the same writable shared volume so the same chat cannot stream concurrently in
 different processes. Keep `CODEX_AGENT_MAX_ACTIVE_PER_KEY=1`; sticky routing by
 the same queue key is still recommended to reduce lock contention.
 The supplied Docker Compose file mounts this path on a named volume by default
-at `/var/lib/codex-chat-api/agent-locks`, so replicas started from that Compose
+at `/var/lib/open-chat-api/agent-locks`, so replicas started from that Compose
 project share locks without extra volume wiring.
 
 ### Prometheus metrics
@@ -672,13 +672,13 @@ gateway secret (prefer a mounted secret file over an inline value):
 
 ```yaml
 scrape_configs:
-  - job_name: codex-chat-api
+  - job_name: open-chat-api
     metrics_path: /metrics
     authorization:
       type: Bearer
-      credentials_file: /etc/prometheus/secrets/codex-chat-api-gateway
+      credentials_file: /etc/prometheus/secrets/open-chat-api-gateway
     static_configs:
-      - targets: [codex-chat-api.default.svc.cluster.local:8088]
+      - targets: [open-chat-api.default.svc.cluster.local:8088]
 ```
 
 The queue classifies request shapes as `tool_generating`,
@@ -788,14 +788,14 @@ through a Cloudflare tunnel and returned actual top-level files.
 Enable redacted body-shape logging:
 
 ```bash
-CODEX_LOG_BODY_SHAPE=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+CODEX_LOG_BODY_SHAPE=true go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
 ```
 
 To discover stable Cursor request identity signals, enable the request identity
 diagnostic line:
 
 ```bash
-CODEX_LOG_REQUEST_IDENTITY=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+CODEX_LOG_REQUEST_IDENTITY=true go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
 ```
 
 Successful Cursor probes should log:
@@ -947,7 +947,7 @@ Live checks with `codex login` and the server running on `127.0.0.1:8088`:
 curl -s http://127.0.0.1:8088/health
 curl -s http://127.0.0.1:8088/v1/models | jq .
 curl -s http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-codex-chat-api' \
+  -H 'authorization: Bearer local-open-chat-api' \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-5.5-high","messages":[{"role":"user","content":"Say hi in 5 words"}]}' | jq .
 curl -N http://127.0.0.1:8088/v1/chat/completions \

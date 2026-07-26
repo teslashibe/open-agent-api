@@ -8,6 +8,7 @@ __pycache__/
 
 # Go build/test artifacts
 codex-chat-api
+open-chat-api
 bin/
 dist/
 coverage.out

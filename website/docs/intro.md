@@ -2,7 +2,7 @@
 sidebar_position: 1
 ---
 
-# Codex Chat API
+# Open Chat API
 
 OpenAI-compatible Go HTTP proxy for **Cursor BYOK** and any OpenAI SDK client. It routes chat completions across three upstream surfaces without OpenAI `sk-` API keys.
 
@@ -18,7 +18,7 @@ Default model: **`gpt-5.6-sol`**. Current release: **v0.0.25**.
 
 ```bash
 codex login
-go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
 curl -s http://127.0.0.1:8088/health
 ```
 
@@ -32,7 +32,7 @@ For Gemini 3.x / Antigravity before Docker: `scripts/sync-antigravity-auth.sh`.
 - [Cursor tool conventions](./cursor/tool-conventions) — OpenRouter-style tool wire contracts
 - [Model catalog](./models/catalog) — full alias tables and Cursor picks
 - [Contributing](./contributing) — develop, test, CI, PR expectations
-- [Agents](./agents) — coding-agent bootstrap (see also root [`AGENTS.md`](https://github.com/teslashibe/codex-chat-api/blob/main/AGENTS.md))
+- [Agents](./agents) — coding-agent bootstrap (see also root [`AGENTS.md`](https://github.com/teslashibe/open-chat-api/blob/main/AGENTS.md))
 
 ## API surface
 
@@ -40,4 +40,4 @@ For Gemini 3.x / Antigravity before Docker: `scripts/sync-antigravity-auth.sh`.
 - `GET /v1/models` — filtered by `GATEWAY_PROVIDERS` (default `codex,gemini,claude`)
 - `POST /v1/chat/completions` — streaming and non-streaming
 
-Model aliases are defined in [`internal/openai/models.go`](https://github.com/teslashibe/codex-chat-api/blob/main/internal/openai/models.go).
+Model aliases are defined in [`internal/openai/models.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/openai/models.go).

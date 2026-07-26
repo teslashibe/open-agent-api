@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 type streamFrame struct {

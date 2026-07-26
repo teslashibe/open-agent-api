@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
+	metricspkg "github.com/teslashibe/open-chat-api/internal/metrics"
 )
 
 func TestPooledServiceRecordsCooldownRotationAndSkipMetrics(t *testing.T) {

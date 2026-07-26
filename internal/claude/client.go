@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 const (

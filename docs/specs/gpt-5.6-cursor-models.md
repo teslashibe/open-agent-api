@@ -2,7 +2,7 @@
 
 **Status:** Implemented  
 **Date:** 2026-07-16  
-**Repo:** `codex-chat-api`  
+**Repo:** `open-chat-api`  
 **Depends on:** [`docs/gpt-5.6-sol-terra-luna.md`](../gpt-5.6-sol-terra-luna.md) (inventory)
 
 **Resolved open questions:** default=`gpt-5.6-sol`; ship `codex-*` aliases in v1;

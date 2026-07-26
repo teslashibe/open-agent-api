@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: Install with Docker
-description: Run codex-chat-api locally with Docker Compose.
+description: Run open-chat-api locally with Docker Compose.
 ---
 
 # Install with Docker
@@ -22,7 +22,7 @@ From the repo root:
 docker compose up --build -d
 ```
 
-This builds/runs image `teslashibe/codex-chat-api:local` and binds the API to **`127.0.0.1:8088`**.
+This builds/runs image `teslashibe/open-chat-api:local` and binds the API to **`127.0.0.1:8088`**.
 
 ## Verify
 
@@ -49,7 +49,7 @@ curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 | `${HOME}/.codex` | `/home/codex/.codex` | Read-only |
 | `${HOME}/.gemini` | `/home/codex/.gemini` | Writable (OAuth refresh) |
 | `${HOME}/.claude` | `/home/codex/.claude` | CLI home; auth token still comes from env |
-| `agent-queue-locks` | `/var/lib/codex-chat-api/agent-locks` | Shared agent-queue locks |
+| `agent-queue-locks` | `/var/lib/open-chat-api/agent-locks` | Shared agent-queue locks |
 
 Compose deliberately **does not** bind-mount `~/.claude.json` (host CLI atomic renames leave a stale inode in the container).
 
