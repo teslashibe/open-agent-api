@@ -76,13 +76,15 @@ Defaults live in `docker-compose.yml`. Notable ones:
 
 Put secrets in a local `.env` (gitignored), never in committed files.
 
-## Cursor / public HTTPS
+## Cursor / public HTTPS (required for Cursor)
 
-Most Cursor BYOK paths need a tunnel. Use the ngrok overlay:
+Cursor **does not allow localhost** for BYOK (`Access to private networks is forbidden`). Always use the ngrok overlay:
 
 ```bash
 NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 ```
+
+Cursor base URL: `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` — never `http://127.0.0.1:8088/v1`.
 
 Full steps: [Cursor BYOK + ngrok](../cursor/byok-ngrok).
 

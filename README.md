@@ -32,7 +32,7 @@ curl -s http://127.0.0.1:8088/v1/chat/completions \
   -d '{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"Say hi in five words."}]}' | jq .
 ```
 
-Cursor BYOK (pinned ngrok):
+Cursor BYOK **cannot use localhost** — expose with the pinned ngrok domain:
 
 ```bash
 NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
@@ -41,7 +41,7 @@ NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok
 | Cursor field | Value |
 | --- | --- |
 | OpenAI API Key | `local-open-chat-api` (any non-empty string) |
-| Override OpenAI Base URL | `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` |
+| Override OpenAI Base URL | `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` (**not** `http://127.0.0.1…`) |
 | Model | e.g. `gpt-5.6-terra` — see [model catalog](https://teslashibe.github.io/open-chat-api/docs/models/catalog) |
 
 ## Documentation

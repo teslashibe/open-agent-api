@@ -51,7 +51,7 @@ Endpoints: `GET /health`, `GET /v1/models`, `POST /v1/chat/completions` (stream 
 NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 ```
 
-Cursor settings: API key = any non-empty string (e.g. `local-open-chat-api`); base URL = `https://<tunnel-host>/v1`; model = e.g. `gpt-5.6-terra`. Many Cursor builds require HTTPS tunnel — localhost often fails with "Access to private networks is forbidden".
+Cursor settings: API key = any non-empty string (e.g. `local-open-chat-api`); base URL = `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` (ngrok overlay). **Cursor does not allow localhost** — private URLs fail with "Access to private networks is forbidden".
 
 ## Key model slugs
 

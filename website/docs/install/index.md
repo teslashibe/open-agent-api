@@ -92,8 +92,33 @@ curl -N http://127.0.0.1:8088/v1/chat/completions \
 
 The bearer value can be any non-empty string when `GATEWAY_BEARER_SECRET` is unset (local default).
 
+Localhost is fine for `curl` and OpenAI SDKs on the same machine. **Cursor BYOK cannot use localhost** — continue to step 6.
+
+## 6. Use with Cursor (ngrok required)
+
+Cursor routes BYOK through its cloud and blocks private networks (`Access to private networks is forbidden`). Expose the API with the pinned free ngrok domain:
+
+```bash
+# Need an ngrok authtoken: https://dashboard.ngrok.com/get-started/your-authtoken
+NGROK_AUTHTOKEN=... docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
+
+curl -s https://YOUR_SUBDOMAIN.ngrok-free.dev/health
+# → {"status":"ok"}
+```
+
+In **Cursor → Settings → Models**:
+
+| Field | Value |
+| --- | --- |
+| OpenAI API Key | `local-open-chat-api` (any non-empty string) |
+| Override OpenAI Base URL | `https://YOUR_SUBDOMAIN.ngrok-free.dev/v1` |
+| Model | e.g. `gpt-5.6-terra` |
+
+Open a **new** Agent chat and try: `List the files in this repo.`
+
+Full detail: [Cursor BYOK + ngrok](../cursor/byok-ngrok).
+
 ## Next
 
-- [Cursor BYOK + ngrok](../cursor/byok-ngrok) — point Cursor Agent at a public HTTPS tunnel
 - [Model catalog](../models/catalog) — all public model IDs
 - [Kubernetes](./kubernetes) — in-cluster gateway for apps
