@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 const degenerateRetryInstructions = "This turn requires using the provided tools. Call at least one appropriate tool now. Do not answer with prose only."

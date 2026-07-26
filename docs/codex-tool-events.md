@@ -86,14 +86,14 @@ logging does not emit one `codex_tool_event` line per argument fragment.
 Start the API with a valid Codex login:
 
 ```bash
-GOCACHE=$PWD/.gocache CODEX_LOG_CODEX_TOOL_EVENTS=true go run ./cmd/codex-chat-api --host 127.0.0.1 --port 8088
+GOCACHE=$PWD/.gocache CODEX_LOG_CODEX_TOOL_EVENTS=true go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
 ```
 
 Non-streaming check:
 
 ```bash
 curl -s http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-codex-chat-api' \
+  -H 'authorization: Bearer local-open-chat-api' \
   -H 'content-type: application/json' \
   -d '{
     "model":"gpt-5.5",
@@ -110,7 +110,7 @@ Streaming check:
 
 ```bash
 curl -N http://127.0.0.1:8088/v1/chat/completions \
-  -H 'authorization: Bearer local-codex-chat-api' \
+  -H 'authorization: Bearer local-open-chat-api' \
   -H 'content-type: application/json' \
   -d '{
     "model":"gpt-5.5",

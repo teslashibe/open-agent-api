@@ -7,17 +7,17 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/teslashibe/codex-chat-api/internal/claude"
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/config"
-	"github.com/teslashibe/codex-chat-api/internal/gemini"
-	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
-	"github.com/teslashibe/codex-chat-api/internal/server"
+	"github.com/teslashibe/open-chat-api/internal/claude"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/config"
+	"github.com/teslashibe/open-chat-api/internal/gemini"
+	metricspkg "github.com/teslashibe/open-chat-api/internal/metrics"
+	"github.com/teslashibe/open-chat-api/internal/server"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "codex-chat-api: %v\n", err)
+		fmt.Fprintf(os.Stderr, "open-chat-api: %v\n", err)
 		os.Exit(1)
 	}
 }

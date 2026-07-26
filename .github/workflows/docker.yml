@@ -1,7 +1,10 @@
-# Build/push ghcr.io/teslashibe/codex-chat-api, then pin-bump k8s-control.
+# Build/push ghcr.io/teslashibe/open-chat-api, then pin-bump k8s-control.
 # Flux watches k8s-control@main and applies the change:
 #   - push to main  -> bump manifests/dev  to sha-<short>
 #   - push of a v*  -> bump manifests/prod to vX.Y.Z
+#
+# During the rename from codex-chat-api, the pin-bump accepts either image
+# name in k8s-control and rewrites it to open-chat-api.
 name: docker
 
 on:
@@ -30,7 +33,9 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: |
+            ghcr.io/${{ github.repository }}
+            ghcr.io/teslashibe/codex-chat-api
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -72,18 +77,19 @@ jobs:
             echo "tag=sha-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bump codex-chat-api image pin
+      - name: Bump open-chat-api image pin
         run: |
           set -euo pipefail
           FILE="${{ steps.target.outputs.file }}"
           TAG="${{ steps.target.outputs.tag }}"
-          if ! grep -q 'ghcr.io/teslashibe/codex-chat-api:' "$FILE"; then
-            echo "deploy verification failed: no codex-chat-api image pin in ${FILE}" >&2
+          if grep -qE 'ghcr\.io/teslashibe/(open-chat-api|codex-chat-api):' "$FILE"; then
+            sed -i -E "s#ghcr\.io/teslashibe/(open-chat-api|codex-chat-api):[^[:space:]]+#ghcr.io/teslashibe/open-chat-api:${TAG}#g" "$FILE"
+          else
+            echo "deploy verification failed: no open-chat-api/codex-chat-api image pin in ${FILE}" >&2
             exit 1
           fi
-          sed -i -E "s#ghcr\.io/teslashibe/codex-chat-api:[^[:space:]]+#ghcr.io/teslashibe/codex-chat-api:${TAG}#g" "$FILE"
-          if ! grep -q "ghcr.io/teslashibe/codex-chat-api:${TAG}" "$FILE"; then
-            echo "deploy verification failed: codex-chat-api was not pinned to ${TAG}" >&2
+          if ! grep -q "ghcr.io/teslashibe/open-chat-api:${TAG}" "$FILE"; then
+            echo "deploy verification failed: open-chat-api was not pinned to ${TAG}" >&2
             exit 1
           fi
           echo "---- diff ----"
@@ -97,8 +103,8 @@ jobs:
             echo "No image change for ${{ steps.target.outputs.env }}; nothing to commit."
             exit 0
           fi
-          git config user.name "codex-chat-api-ci[bot]"
-          git config user.email "codex-chat-api-ci@users.noreply.github.com"
+          git config user.name "open-chat-api-ci[bot]"
+          git config user.email "open-chat-api-ci@users.noreply.github.com"
           git add "$FILE"
-          git commit -m "deploy(codex-chat-api): ${{ steps.target.outputs.env }} -> ${{ steps.target.outputs.tag }}"
+          git commit -m "deploy(open-chat-api): ${{ steps.target.outputs.env }} -> ${{ steps.target.outputs.tag }}"
           git push origin main

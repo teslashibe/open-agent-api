@@ -15,9 +15,9 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/teslashibe/codex-chat-api/internal/codex"
-	"github.com/teslashibe/codex-chat-api/internal/codextest"
-	"github.com/teslashibe/codex-chat-api/internal/config"
+	"github.com/teslashibe/open-chat-api/internal/codex"
+	"github.com/teslashibe/open-chat-api/internal/codextest"
+	"github.com/teslashibe/open-chat-api/internal/config"
 )
 
 func TestCodexUpstreamGiantToolStreamFlushesCompleteToolCall(t *testing.T) {

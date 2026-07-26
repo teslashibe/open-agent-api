@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	metricspkg "github.com/teslashibe/codex-chat-api/internal/metrics"
+	metricspkg "github.com/teslashibe/open-chat-api/internal/metrics"
 )
 
 const (

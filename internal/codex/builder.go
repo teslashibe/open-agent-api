@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 const (

@@ -3,7 +3,7 @@ package server
 import (
 	"strings"
 
-	"github.com/teslashibe/codex-chat-api/internal/openai"
+	"github.com/teslashibe/open-chat-api/internal/openai"
 )
 
 type turnClass string
