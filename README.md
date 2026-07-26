@@ -18,10 +18,18 @@ OpenAI-compatible Go HTTP proxy for Cursor BYOK and any OpenAI SDK client. One `
 ## Quick start
 
 ```bash
+git clone https://github.com/teslashibe/open-chat-api.git
+cd open-chat-api
+
 codex login
 scripts/sync-antigravity-auth.sh   # optional: Gemini 3.x / Antigravity
+
 docker compose up --build -d
 curl -s http://127.0.0.1:8088/health
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"Say hi in five words."}]}' | jq .
 ```
 
 Cursor BYOK (pinned ngrok):

@@ -1,45 +1,52 @@
 ---
 sidebar_position: 2
 title: Install with Docker
-description: Run open-chat-api locally with Docker Compose.
+description: Clone the repo and run open-chat-api with Docker Compose.
 ---
 
 # Install with Docker
 
+Full local path: clone → auth → Compose → completion.
+
 ## Prerequisites
 
+- Git
 - Docker and Docker Compose
-- Host credentials already set up (see [Auth](../auth/overview)):
+- Host credentials (see [Auth](../auth/overview)):
   - `~/.codex` from `codex login` (required for Codex models)
   - `~/.gemini` after `scripts/sync-antigravity-auth.sh` (Gemini 3.x / Antigravity)
   - Claude Code OAuth via `.env` `CLAUDE_CODE_OAUTH_TOKEN` (optional; do **not** bind `~/.claude.json`)
 
-## Start
-
-From the repo root:
+## Clone and start
 
 ```bash
+git clone https://github.com/teslashibe/open-chat-api.git
+cd open-chat-api
+
+codex login
+# optional:
+# scripts/sync-antigravity-auth.sh
+
 docker compose up --build -d
 ```
 
 This builds/runs image `teslashibe/open-chat-api:local` and binds the API to **`127.0.0.1:8088`**.
 
-## Verify
+## Verify and call
 
 ```bash
 curl -s http://127.0.0.1:8088/health
-```
+# → {"status":"ok"}
 
-Expected:
-
-```json
-{"status":"ok"}
-```
-
-List models:
-
-```bash
 curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
+
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "gpt-5.6-terra",
+    "messages": [{"role":"user","content":"Say hi in five words."}]
+  }' | jq .
 ```
 
 ## What Compose mounts

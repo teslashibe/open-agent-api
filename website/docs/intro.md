@@ -17,12 +17,18 @@ Default model: **`gpt-5.6-sol`**. Current release: **v0.0.25**.
 ## Quick start
 
 ```bash
+git clone https://github.com/teslashibe/open-chat-api.git
+cd open-chat-api
 codex login
-go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
+docker compose up --build -d
 curl -s http://127.0.0.1:8088/health
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"Say hi in five words."}]}' | jq .
 ```
 
-For Gemini 3.x / Antigravity before Docker: `scripts/sync-antigravity-auth.sh`.
+Full walkthrough: [Install](./install/). Optional Gemini 3.x: `scripts/sync-antigravity-auth.sh`.
 
 ## Docs
 

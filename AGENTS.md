@@ -12,23 +12,18 @@ Default model when `model` is omitted: **`gpt-5.6-sol`**.
 
 ## Run instantly
 
-**Local (fastest):**
-
 ```bash
-codex login
-go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
-```
+git clone https://github.com/teslashibe/open-chat-api.git
+cd open-chat-api
+codex login                                 # required for Codex models
+# scripts/sync-antigravity-auth.sh          # optional Gemini 3.x / Antigravity
 
-**Docker:**
-
-```bash
-docker compose up --build -d
-```
-
-**Gemini 3.x / Antigravity (before Docker):**
-
-```bash
-scripts/sync-antigravity-auth.sh
+docker compose up --build -d                # or: go run ./cmd/open-chat-api --host 127.0.0.1 --port 8088
+curl -s http://127.0.0.1:8088/health
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'authorization: Bearer local-open-chat-api' \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"Say hi in five words."}]}' | jq .
 ```
 
 ## Auth prerequisites (one-liners)
