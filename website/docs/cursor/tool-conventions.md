@@ -1,70 +1,77 @@
 ---
 sidebar_position: 2
-title: Cursor tool conventions
-description: How this API exposes OpenRouter-style Cursor Agent tool contracts across Codex, Gemini/Antigravity, and Claude Code.
+title: Cursor Agent tool calling
+description: How Open Chat API makes Cursor Agent tool calls work over BYOK — Chat Completions tools, streaming delta.tool_calls, and adapters for Codex, Claude Code, and Antigravity.
+keywords:
+  - Cursor Agent tools
+  - Cursor BYOK tool calling
+  - OpenAI chat completions tools
+  - delta.tool_calls
+  - Cursor custom OpenAI endpoint
 ---
 
-# Cursor tool conventions
+# Cursor Agent tool calling
 
-Cursor Agent talks to BYOK backends using the **OpenAI Chat Completions tools protocol** — the same surface OpenRouter (and other OpenAI-compatible gateways) expose. This service is not a thin pass-through: each upstream (Codex Responses websocket, Gemini/Antigravity, Claude Code CLI) speaks a different tool dialect, so the API **normalizes inbound Cursor tools**, **adapts them per provider**, and **re-emits Cursor-safe `delta.tool_calls` SSE**.
+**Short answer:** Cursor Agent talks to custom OpenAI endpoints using Chat Completions **tools** — the same shape OpenRouter and other OpenAI-compatible APIs use. Open Chat API accepts that wire format, translates it for Codex / Claude Code / Antigravity, then streams Cursor-safe `delta.tool_calls` so Agent mode can run tools locally and continue the chat.
 
-This page is the contract + implementation map. Source of truth for behavior is the Go code cited below; keep this doc aligned when the wire format changes.
+Tools still run **inside Cursor** (read file, shell, etc.). This service never executes your workspace tools; it only carries the protocol.
 
-## Goals (what “like OpenRouter” means here)
+Use this page when you need the exact request/response contracts or when changing the adapters in Go.
 
-| Goal | Contract |
-| --- | --- |
-| Cursor can discover/complete with tools | Accept Chat Completions `tools` / `tool_choice` / `parallel_tool_calls` |
-| Cursor can run Agent loops | Stream `delta.tool_calls`, finish with `finish_reason:"tool_calls"`, accept `role:"tool"` continuations |
-| Upstream credentials stay CLI/OAuth | No OpenAI `sk-`; tools still execute **inside Cursor**, not in this proxy |
-| Stable multi-turn IDs | Pair assistant `tool_calls[].id` with `tool_call_id` across turns (with Codex 64-char hashing) |
-| Custom/freeform tools still work in BYOK | Default `CODEX_CUSTOM_TOOL_WIRE=function` so Cursor’s parser does not drop `type:"custom"` |
+## What Cursor needs from a BYOK endpoint
 
-Non-goals:
+Cursor Agent only works against a backend that:
 
-- Implementing `/v1/responses` (Cursor may probe it; this service does not).
-- Running Cursor’s local tools server-side.
-- Request-level round-robin of tool turns across Codex shards (affinity is sticky per chat).
+1. Accepts `tools`, `tool_choice`, and `parallel_tool_calls` on `POST /v1/chat/completions`
+2. Streams complete `delta.tool_calls` frames and ends with `finish_reason: "tool_calls"`
+3. Accepts follow-ups with `assistant.tool_calls` plus matching `role: "tool"` results
+4. Keeps tool-call IDs stable across turns
+5. Speaks `type: "function"` tool calls by default (Cursor’s BYOK parser drops `type: "custom"`)
 
-## End-to-end Agent loop
+Open Chat API does that while authenticating upstream with local CLI/OAuth — not OpenAI `sk-` keys.
+
+**Out of scope**
+
+- `/v1/responses` (Cursor may probe it; we don’t implement it)
+- Running Cursor’s tools on the server
+- Spreading one chat’s tool turns across random Codex shards (routing is sticky per chat)
+
+## How an Agent turn flows
 
 ```mermaid
 sequenceDiagram
   participant Cursor
-  participant API as open-chat-api
+  participant API as Open Chat API
   participant Up as Upstream (Codex / Gemini / Claude)
 
-  Cursor->>API: POST /v1/chat/completions<br/>tools + messages (Chat Completions)
-  Note over API: tools_present → faithful=false (minimal mode)
-  API->>API: Normalize tools / manage context / queue
+  Cursor->>API: POST /v1/chat/completions<br/>tools + messages
+  Note over API: Client tools → minimal mode
+  API->>API: Normalize tools, context, queue
   API->>Up: Provider-specific tool request
   Up-->>API: Provider tool events
   API->>API: Accumulate complete tool calls
-  API-->>Cursor: SSE role chunk
-  API-->>Cursor: SSE delta.tool_calls (complete frames)
+  API-->>Cursor: SSE role + delta.tool_calls
   API-->>Cursor: finish_reason=tool_calls + [DONE]
-  Note over Cursor: Execute tools locally
-  Cursor->>API: Continuation: assistant.tool_calls + role:tool results
-  API->>Up: Provider continuation (paired call IDs)
+  Note over Cursor: Run tools locally
+  Cursor->>API: Continuation with role:tool results
+  API->>Up: Paired call IDs
   Up-->>API: Final assistant text
   API-->>Cursor: SSE content + finish_reason=stop
 ```
 
-## Inbound contract (Cursor → API)
+## Requests from Cursor
 
-### Request fields
+### Fields that matter
 
-`POST /v1/chat/completions` body (relevant fields):
-
-| Field | Cursor Agent expectation | API behavior |
+| Field | What Cursor sends | What we do |
 | --- | --- | --- |
-| `tools` | Nested Chat Completions shape | Accepted; classified as `nested` / `flat` / `mixed` for diagnostics |
-| `tool_choice` | `"auto"` / `"none"` / `"required"` or forced function object | Passed / flattened per provider |
-| `parallel_tool_calls` | Often `true` | Logged; honored where upstream allows |
-| `messages[]` | Includes `assistant.tool_calls` and `role:"tool"` | Translated into provider history |
-| `stream` | Usually `true` for Agent | Streaming uses Cursor-safe accumulator (below) |
+| `tools` | Nested Chat Completions functions | Accept; log as nested / flat / mixed |
+| `tool_choice` | `auto` / `none` / `required` or a forced function | Pass through / flatten per provider |
+| `parallel_tool_calls` | Often `true` | Honor when the upstream allows |
+| `messages` | Prior `tool_calls` + `role: "tool"` | Map into provider history |
+| `stream` | Usually `true` in Agent | Use the Cursor-safe SSE accumulator |
 
-Nested tool (what Cursor sends):
+Typical nested tool from Cursor:
 
 ```json
 {
@@ -77,7 +84,7 @@ Nested tool (what Cursor sends):
 }
 ```
 
-Custom / freeform tool (also accepted):
+Custom / freeform tools are also accepted:
 
 ```json
 {
@@ -90,27 +97,20 @@ Custom / freeform tool (also accepted):
 }
 ```
 
-Wire classification lives in [`internal/server/cursor_wire.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/cursor_wire.go) (`tool_wire=nested|flat|mixed|none`).
+Wire sniffing lives in [`internal/server/cursor_wire.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/cursor_wire.go).
 
-### Faithful vs minimal mode
+### Why “faithful” Codex mode turns off
 
-When the client sends `tools` (Cursor Agent always does):
+When the client sends `tools` (Agent always does), we default to **minimal mode** (`faithful=false`). Faithful mode injects the captured Codex CLI tool profile, which clashes with Cursor’s own tools and tends to fail upstream. You can force `"faithful": true` in the JSON body, but Agent shouldn’t.
 
-- Default: `faithful=false`, `prewarm=false` — **minimal mode**.
-- Faithful Codex mode injects the captured CLI profile/tools and conflicts with client tool definitions; it is **disabled automatically** unless the client forces `"faithful": true`.
+Tool-capable requests also go through the agent queue (`CODEX_AGENT_QUEUE_KEY_MODE=cursor` by default) and optional context compaction on long histories.
 
-See [`internal/server/server.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/server.go) (`toolsPresent` → `faithful := defaultBool(req.Faithful, !toolsPresent)`).
-
-Tool-capable requests also enter the agent queue (`CODEX_AGENT_QUEUE_KEY_MODE=cursor` by default) and optional context compaction for long histories.
-
-### Continuation messages
+### Continuations after a tool runs
 
 After Cursor executes tools, the next request must include:
 
-1. Prior assistant message with `tool_calls` (same `id`s Cursor received).
-2. One `role:"tool"` message per result with matching `tool_call_id` and string/structured `content`.
-
-Example skeleton:
+1. The prior assistant message with the same `tool_calls` IDs
+2. One `role: "tool"` message per result, with matching `tool_call_id`
 
 ```json
 {
@@ -135,108 +135,61 @@ Example skeleton:
 }
 ```
 
-Turn classification (`tool_generating`, `tool_result_continuation`, `final_prose_continuation`, `simple_no_tool`) drives queue priority experiments — see `internal/server/turn_classification.go`.
+## Responses Cursor can parse
 
-## Outbound contract (API → Cursor)
+### Streaming (the important path)
 
-### Streaming shape (Cursor-safe)
+Cursor’s BYOK parser is picky. We don’t forward every upstream argument fragment as a tiny OpenAI delta. We:
 
-Cursor’s BYOK Chat Completions parser is strict. This API does **not** forward upstream argument fragments as many tiny OpenAI tool deltas. Instead:
+1. Emit `delta.role = "assistant"`
+2. Accumulate each tool call until name + arguments are complete
+3. Emit **one** full `delta.tool_calls` frame per call
+4. Emit `finish_reason: "tool_calls"`
+5. End with `data: [DONE]`
 
-1. Emit one role chunk: `delta.role = "assistant"`.
-2. Accumulate each tool call to completion (name + full arguments / custom input).
-3. Emit **one complete** `delta.tool_calls` frame per tool call.
-4. Emit `finish_reason: "tool_calls"`.
-5. Terminate with `data: [DONE]`.
+Each tool-call delta must include:
 
-Each emitted tool-call delta must be Cursor-safe:
-
-| Field | Requirement |
+| Field | Rule |
 | --- | --- |
-| `index` | Stable OpenAI index (first-seen order) |
-| `id` | Non-empty (upstream `call_id` or deterministic fallback `call_<stream>_<index>`) |
-| `type` | `"function"` by default for BYOK (see custom wire below) |
+| `index` | Stable, first-seen order |
+| `id` | Non-empty |
+| `type` | `"function"` by default for BYOK |
 | `function.name` | Non-empty |
-| `function.arguments` | Complete string; for `function` type must be **valid JSON** (default `"{}"`) |
+| `function.arguments` | Full string; valid JSON for function tools (default `"{}"`) |
 
-Empty tool-call deltas are dropped. Invalid accumulated function JSON fails the stream with an error chunk instead of a fake `tool_calls` finish.
+Empty tool deltas are dropped. Bad JSON arguments become an error chunk, not a fake `tool_calls` finish.
 
-Tests encode this contract as `assertExactCursorToolSSE` in [`internal/server/server_test.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/server_test.go). Implementation: [`internal/server/stream_processor.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/stream_processor.go).
+Implemented in [`internal/server/stream_processor.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/server/stream_processor.go); locked in by `assertExactCursorToolSSE` in the server tests.
 
-Example streaming frames (conceptual):
+### Custom tools and `CODEX_CUSTOM_TOOL_WIRE`
 
-```text
-data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+Some upstreams emit freeform **custom** tool calls (for example `apply_patch`). Cursor BYOK drops `type: "custom"`, so the default is to rewrite them as functions:
 
-data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"go.mod\"}"}}]}}]}
-
-data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
-
-data: [DONE]
-```
-
-### Non-streaming shape
-
-`choices[0].message.tool_calls[]` populated; `finish_reason` is `"tool_calls"`. Same custom→function downgrade applies via `openAIToolCalls` in `server.go`.
-
-### Custom tool wire (`CODEX_CUSTOM_TOOL_WIRE`)
-
-Codex/Gemini can produce **custom** (freeform text) tool calls (`apply_patch`-style). Cursor BYOK’s chat-completions parser **drops `type:"custom"`**.
-
-| Env value | Emitted wire |
+| `CODEX_CUSTOM_TOOL_WIRE` | Wire to Cursor |
 | --- | --- |
-| `function` (default, compose default) | Downgrade: `type:"function"`, freeform text in `function.arguments` |
-| `custom` | Preserve: `type:"custom"`, `custom.name` + `custom.input` |
+| `function` (default) | `type: "function"`, freeform text in `function.arguments` |
+| `custom` | Keep `type: "custom"` with `custom.name` / `custom.input` |
 
-Compose sets `CODEX_CUSTOM_TOOL_WIRE=function` so Cursor Agent works without client changes.
+## How each upstream is adapted
 
-## Provider adaptations
+### Codex / ChatGPT
 
-### Codex / ChatGPT (Responses API)
-
-**Inbound tools:** Chat Completions nested tools → flat Responses tools:
+Chat Completions nested tools become flat Responses tools:
 
 ```text
 {"type":"function","function":{"name":"X","parameters":{...}}}
   → {"type":"function","name":"X","parameters":{...}}
 ```
 
-Implemented by `normalizeToolsForCodex` / `normalizeToolChoiceForCodex` in [`internal/codex/builder.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/codex/builder.go). Already-flat tools pass through.
-
-**History:**
-
-- Assistant `tool_calls` → Responses `function_call` items (`call_id`, `name`, `arguments`).
-- `role:"tool"` → `function_call_output` items paired by `call_id`.
-
-**`call_id` limit:** Codex enforces **≤ 64 characters**. Cursor can emit longer IDs; `normalizeCallID` SHA-256-hexes overlong IDs deterministically so the assistant call and tool output stay paired.
-
-**Upstream events → internal deltas:** See [`docs/codex-tool-events.md`](https://github.com/teslashibe/open-chat-api/blob/main/docs/codex-tool-events.md) and [`internal/codex/events.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/codex/events.go):
-
-- `response.output_item.added` (`function_call` / `custom_tool_call`)
-- `response.function_call_arguments.delta` / `.done`
-- `response.custom_tool_call_input.delta` / `.done`
-- Compatibility aliases (`response.tool_call.*`, etc.)
-
-Those become internal `StreamEvent.ToolCallDelta` values; the stream processor then emits Cursor-safe OpenAI frames.
+History maps `tool_calls` → `function_call` and `role: "tool"` → `function_call_output`. Codex caps `call_id` at **64 characters**; longer Cursor IDs are hashed so the pair still matches. Event shapes: [`docs/codex-tool-events.md`](https://github.com/teslashibe/open-chat-api/blob/main/docs/codex-tool-events.md).
 
 ### Gemini / Antigravity
 
-**Inbound tools:** Nested `function` / `custom` / flat tools → Gemini `functionDeclarations` ([`internal/gemini/builder.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/gemini/builder.go)).
+Tools become Gemini `functionDeclarations`. Rejected JSON Schema keywords are stripped; custom tools get an `input: string` fallback when needed. Same Cursor-facing SSE rules on the way out.
 
-- JSON Schema keywords Gemini rejects are stripped (`$schema`, `additionalProperties`, `$defs`, …).
-- Custom tools get an `input: string` schema fallback when parameters are empty.
-- Names marked `type:"custom"` are tracked; streamed Gemini function calls for those names are re-tagged `custom` and arguments unwrapped via `{"input":"..."}` when present ([`internal/gemini/events.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/gemini/events.go)).
+### Claude Code
 
-**Outbound:** Same Cursor SSE accumulator / custom-wire downgrade as Codex.
-
-### Claude Code CLI
-
-Claude Code does not natively speak Cursor’s Chat Completions tool protocol. The API injects a **prompt-level Cursor tool protocol** and parses model output back into OpenAI tool calls.
-
-**Injected instructions** ([`internal/claude/tools.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/claude/tools.go)):
-
-- Cursor (not Claude Code) executes tools.
-- Model must emit a fenced block and no other text when it needs workspace state:
+Claude Code doesn’t speak Chat Completions tools natively. We inject a small **Cursor tool protocol** into the prompt and parse fenced blocks back into OpenAI tool calls:
 
 ````text
 ```cursor_tool_call
@@ -244,78 +197,38 @@ Claude Code does not natively speak Cursor’s Chat Completions tool protocol. T
 ```
 ````
 
-- For custom tools, use `"input"` (freeform) instead of `"arguments"`.
-- Available tools are listed as JSON after the instructions.
+The bridge scans content and reasoning so those fences never leak as chat text. Disabled entirely when `GATEWAY_PROVIDERS` omits `claude`.
 
-**Bridge** ([`internal/claude/tool_bridge.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/claude/tool_bridge.go)):
+## Config that affects Agent tools
 
-- Scans content **and** reasoning streams so fences never leak as prose.
-- Supports multiple tool calls per turn (incrementing index).
-- Tolerates unfenced bare JSON lines **only if** the `name` is a registered tool.
-- Emits internal `ToolCallDelta` with deterministic `call_claude_<hash>` IDs, then the shared stream processor emits Cursor-safe SSE.
-
-When `GATEWAY_PROVIDERS` omits `claude`, this entire surface is disabled.
-
-## OpenAI type contracts (Go)
-
-Defined in [`internal/openai/openai.go`](https://github.com/teslashibe/open-chat-api/blob/main/internal/openai/openai.go):
-
-| Type | Role |
-| --- | --- |
-| `ChatCompletionRequest.Tools` / `ToolChoice` / `ParallelToolCalls` | Inbound Cursor fields |
-| `ChatMessage.ToolCalls` / `ToolCallID` | History + continuation |
-| `ToolCall` / `ToolCallCustom` / `ToolCallFunction` | Non-stream assistant tool calls |
-| `ToolCallDelta` / `ToolCallFunctionDelta` | Streaming `delta.tool_calls` |
-| `ChatDelta.ReasoningContent` | Optional reasoning channel (kept separate from tool frames) |
-
-Internal provider events use `codex.ToolCallDelta` / `codex.ToolCall` as the common intermediate representation before OpenAI encoding.
-
-## Configuration knobs
-
-| Setting | Default | Effect on Cursor tools |
+| Setting | Default | Effect |
 | --- | --- | --- |
-| `CODEX_CUSTOM_TOOL_WIRE` | `function` | Downgrade custom → function for BYOK |
-| `CODEX_AGENT_QUEUE_*` | queue on, per-key=1 | Serialize overlapping Agent turns per chat |
-| `CODEX_CONTEXT_MANAGEMENT_*` | enabled | Compact long tool histories without breaking call/result pairs |
-| `CODEX_LOG_BODY_SHAPE` | compose often `true` | Redacted tool counts / emit diagnostics |
-| `CODEX_LOG_CODEX_TOOL_EVENTS` | `false` | Per-fragment Codex tool event shapes (no arg contents) |
-| `GATEWAY_PROVIDERS` | `codex,gemini,claude` | Which surfaces can serve tool turns |
+| `CODEX_CUSTOM_TOOL_WIRE` | `function` | Keep Cursor’s parser happy with custom tools |
+| `CODEX_AGENT_QUEUE_*` | on, per-key `1` | One active Agent stream per chat |
+| `CODEX_CONTEXT_MANAGEMENT_*` | enabled | Compact long tool histories without breaking pairs |
+| `GATEWAY_PROVIDERS` | `codex,gemini,claude` | Which surfaces serve tool turns |
 
-## Validation checklist
+## How to verify it works
 
-1. Start API + tunnel ([BYOK + ngrok](./byok-ngrok)).
-2. New Cursor Agent chat: `List the files in this repo.`
-3. Server logs show `tools_present=true`, queue acquire/release, and (with body-shape logging) `tool_call_emit` / `response_tool_calls=true`.
-4. Stream capture (optional mitm via `tools/cursor_header_capture.py`) should show:
-   - `tool_frames=<n>`, `empty_tool_frames=0`
-   - `finish=tool_calls`, `done=True`
-   - `tool_ids_present=True`, `tool_names_present=True`, `tool_args_json_valid=True`
-5. Continuations: several tool rounds in the same chat without Cursor falling back to another provider.
-6. Unit/integration: `go test ./internal/server ./internal/codex ./internal/claude ./internal/gemini`.
+1. Start the API with ngrok ([BYOK setup](./byok-ngrok)) — not localhost.
+2. New Agent chat: `List the files in this repo.`
+3. Logs should show `tools_present=true` and queue acquire/release.
+4. Several tool rounds in the same chat should keep going without Cursor switching providers.
+5. `go test ./internal/server ./internal/codex ./internal/claude ./internal/gemini`
 
-Deeper Codex event notes: [`docs/codex-tool-events.md`](https://github.com/teslashibe/open-chat-api/blob/main/docs/codex-tool-events.md).
+## Code map
 
-## Implementation map
-
-| Concern | Primary files |
+| Area | Files |
 | --- | --- |
-| Request wire summary | `internal/server/cursor_wire.go` |
-| Faithful/minimal + routing | `internal/server/server.go` |
-| Cursor-safe SSE accumulation | `internal/server/stream_processor.go` |
-| OpenAI JSON contracts | `internal/openai/openai.go` |
-| Codex tool normalize + call_id | `internal/codex/builder.go` |
-| Codex WS event parse | `internal/codex/events.go` |
-| Gemini tools / custom names | `internal/gemini/builder.go`, `events.go` |
-| Claude fence protocol | `internal/claude/tools.go`, `tool_bridge.go` |
-| Contract tests | `internal/server/server_test.go` (`assertExactCursorToolSSE`) |
+| Request wire | `internal/server/cursor_wire.go` |
+| Minimal mode + routing | `internal/server/server.go` |
+| Cursor-safe SSE | `internal/server/stream_processor.go` |
+| OpenAI types | `internal/openai/openai.go` |
+| Codex normalize + call IDs | `internal/codex/builder.go`, `events.go` |
+| Gemini tools | `internal/gemini/builder.go`, `events.go` |
+| Claude fence bridge | `internal/claude/tools.go`, `tool_bridge.go` |
+| Contract tests | `internal/server/server_test.go` |
 
-## Modifying the API safely
+## Changing this safely
 
-When changing tool behavior:
-
-1. **Preserve the Cursor SSE contract** — one complete tool frame per call; never emit empty `delta.tool_calls`; keep `finish_reason:"tool_calls"` before `[DONE]`.
-2. **Keep custom→function default** unless you are targeting a client that understands `type:"custom"`.
-3. **Pair call IDs** across assistant → tool → upstream (`normalizeCallID` for Codex).
-4. **Do not re-enable faithful Codex tools** for Cursor Agent requests that already send `tools`.
-5. **Update tests** in `assertExactCursorToolSSE` / provider builder tests, and this page + `docs/codex-tool-events.md` if event shapes change.
-6. **Never log** tool arguments, schemas, or prompt text in production logs — redacted field names/counts only.
+Keep the Cursor SSE contract (one complete tool frame, no empty `delta.tool_calls`, `finish_reason: "tool_calls"` before `[DONE]`). Leave the custom→function default unless your client understands `type: "custom"`. Pair call IDs across turns. Don’t re-enable faithful Codex tools for Agent requests that already send `tools`. Update tests and this page when wire shapes change — and never log tool arguments or prompt text.
