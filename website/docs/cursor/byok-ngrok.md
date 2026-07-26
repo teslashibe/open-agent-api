@@ -31,15 +31,15 @@ Confirm the API locally first (curl only):
 curl -s http://127.0.0.1:8088/health
 ```
 
-## Preferred: pinned free ngrok domain
+## Preferred: your free ngrok domain
 
-Default reserved domain in this repo:
+Reserve a free domain in the [ngrok dashboard](https://dashboard.ngrok.com/), then set `NGROK_DOMAIN` to that hostname (example placeholder):
 
 ```text
 YOUR_SUBDOMAIN.ngrok-free.dev
 ```
 
-Override with `NGROK_DOMAIN` if you use your own reserved domain.
+Do not commit a personal reserved domain into this repo.
 
 ### Background via Docker (recommended)
 

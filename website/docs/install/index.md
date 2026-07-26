@@ -96,7 +96,7 @@ Localhost is fine for `curl` and OpenAI SDKs on the same machine. **Cursor BYOK 
 
 ## 6. Use with Cursor (ngrok required)
 
-Cursor routes BYOK through its cloud and blocks private networks (`Access to private networks is forbidden`). Expose the API with the pinned free ngrok domain:
+Cursor routes BYOK through its cloud and blocks private networks (`Access to private networks is forbidden`). Expose the API with your own ngrok domain (Cursor BYOK cannot use localhost):
 
 ```bash
 # Need an ngrok authtoken: https://dashboard.ngrok.com/get-started/your-authtoken
