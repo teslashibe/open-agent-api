@@ -25,7 +25,7 @@ If you set `GATEWAY_BEARER_SECRET`, `/v1/*` needs `Authorization: Bearer …`. H
 ```json
 {
   "status": "ok",
-  "contract_version": "1.0.0",
+  "contract_version": "1.1.0",
   "build": {"version": "v0.1.0", "commit": "6fba3e4", "build_date": "2026-07-26T20:04:11Z", "go_version": "go1.24.0", "modified": false}
 }
 ```
@@ -76,7 +76,7 @@ Success responses are guaranteed to have been validated against your schema befo
   "operation": "report_summary",
   "schema_version": "v1",
   "model_policy_version": "3f1c…",
-  "contract_version": "1.0.0",
+  "contract_version": "1.1.0",
   "build": {"…": "…"}
 }
 ```
@@ -96,8 +96,13 @@ Branch on `error.code`, never on `error.message`.
 | `timeout` | 504 | `deadline_ms` elapsed |
 | `upstream_error` | 502 | Any other upstream failure |
 | `output_validation_failed` | 422 | Model output was not parseable JSON, or did not satisfy your schema |
+| `idempotency_conflict` | 409 | `idempotency_key` reused, within its TTL, with different inference parameters |
 
 `output_validation_failed` is deliberately a 4xx: the gateway worked, the model did not comply. Retry with a fresh `idempotency_key`.
+
+`idempotency_conflict` is also deterministic and makes **no upstream call**: the key is already bound to another request. Send the original parameters, or use a fresh key.
+
+Codes are additive. `contract_version` is `1.1.0`; treat an unrecognized `error.code` as its HTTP status class rather than failing to parse.
 
 ### Supported schema subset
 
@@ -112,6 +117,8 @@ Two strict-mode rules apply to every object: `additionalProperties` must be pres
 ### Idempotency
 
 A response is replayed (`"idempotent_replay": true`) only when the caller, `operation`, input checksum, `schema_version`, `model_policy_version`, **and** `idempotency_key` all match. Change any of them and the inference re-runs. Concurrent duplicates single-flight — one upstream call, everyone gets the same answer. Failures are never stored, so a retry after an error really retries.
+
+A stored response is also **bound to the request that produced it**. The key carries a fingerprint over `model` (as sent and as resolved), the effective `reasoning_effort` and `verbosity`, the effective `max_output_tokens`, the schema body, `schema_version`, `model_policy_version`, `operation`, the caller, and the input. Reuse the same key with any of those changed and you get `409 idempotency_conflict` — no upstream call, no bill, and never a response produced by another model. `deadline_ms`, `schema_name`, and `request_id` are deliberately **not** part of the fingerprint: they do not change the inference, so a retry may vary them freely. The schema body is canonicalized before hashing, so re-serializing an identical schema (different key order or whitespace) is a replay, not a conflict.
 
 By default the store is **process-local** (`STRUCTURED_IDEMPOTENCY_BACKEND=memory`): replay lives in one pod's memory and is lost on restart. That's fine for the single-replica default.
 
@@ -129,6 +136,10 @@ Then a stored response replays across pods and survives a restart for the whole 
 
 The shared volume must have POSIX `rename`/`link` semantics (a `ReadWriteMany` PVC). Replay after a completed request is exact; concurrent single-flight across pods is best-effort — see [issue-120-validation.md](https://github.com/teslashibe/open-agent-api/blob/main/docs/issue-120-validation.md) for the exact bound.
 
+The gateway **preflights that directory at startup** and refuses to start if it is absent or unwritable: it creates the directory, then writes, `fsync`s, renames, and hard-links a scratch file, which is exactly what storing a record and taking a reservation need. The error names the directory and `STRUCTURED_IDEMPOTENCY_DIR`. Previously a bad mount degraded silently to a process-local store, which on more than one replica means duplicate keys bypass single-flight and get billed twice. `backend=file` is logged only after the preflight passes.
+
+Bumping the durable record format invalidates records written by an older build: the first request per live key after such an upgrade calls upstream once more, bounded by `STRUCTURED_IDEMPOTENCY_TTL`. That is deliberate — a record from before this release carries no fingerprint, so replaying it could not be proven safe.
+
 ### Admission and models
 
 Structured traffic has its own queue budget (`STRUCTURED_MAX_ACTIVE`, `STRUCTURED_MAX_ACTIVE_PER_KEY`, `STRUCTURED_QUEUE_LIMIT`, `STRUCTURED_QUEUE_TIMEOUT`) so it can never starve Cursor/agent traffic. The rest of the knobs: `STRUCTURED_MAX_DEADLINE`, `STRUCTURED_MAX_OUTPUT_TOKENS`, `STRUCTURED_IDEMPOTENCY_TTL`, `STRUCTURED_IDEMPOTENCY_BACKEND`, `STRUCTURED_IDEMPOTENCY_DIR`, `STRUCTURED_REPLICAS`, and `STRUCTURED_MODELS` (each also a `--structured-*` flag). Extraction requests carry no tools, skip the captured Codex CLI profile and scaffold, and never prewarm a connection.
@@ -137,7 +148,7 @@ The allowlist is Codex-only by default (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6
 
 ### Metrics
 
-`codex_chat_api_structured_latency_seconds`, `codex_chat_api_structured_tokens_total`, `codex_chat_api_structured_failures_total`, `codex_chat_api_structured_validation_total`, `codex_chat_api_structured_idempotency_total` (`result` is `local_hit`, `store_hit`, `miss`, or `backend_error`), and `codex_chat_api_structured_inflight`, plus queue waits under `provider="structured"`.
+`codex_chat_api_structured_latency_seconds`, `codex_chat_api_structured_tokens_total`, `codex_chat_api_structured_failures_total`, `codex_chat_api_structured_validation_total` (`result` is `valid`, `invalid`, `unparsable`, or `unknown` — `unknown` is a label the gateway did not recognize, never a real schema failure), `codex_chat_api_structured_idempotency_total` (`result` is `local_hit`, `store_hit`, `miss`, `backend_error`, or `conflict`), and `codex_chat_api_structured_inflight`, plus queue waits under `provider="structured"`.
 
 ## Response compression
 

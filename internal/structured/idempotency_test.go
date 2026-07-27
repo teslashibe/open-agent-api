@@ -9,6 +9,28 @@ import (
 	"time"
 )
 
+// testFingerprint stands in for the canonical request fingerprint the server
+// derives. Tests that exercise the binding itself use two distinct values; the
+// rest use this one so every stored record is bound to something, exactly as it
+// is in production.
+const testFingerprint = "fingerprint-base"
+
+func baseFingerprint() Fingerprint {
+	return Fingerprint{
+		Caller:             "tenant-a",
+		Operation:          "summary",
+		Model:              "gpt-5.6-sol",
+		ResolvedModel:      "gpt-5.6-sol",
+		ReasoningEffort:    "medium",
+		Verbosity:          "low",
+		SchemaVersion:      "v1",
+		ModelPolicyVersion: "policy-1",
+		InputChecksum:      InputChecksum("hello"),
+		SchemaChecksum:     SchemaChecksum([]byte(`{"type":"object"}`)),
+		MaxOutputTokens:    512,
+	}
+}
+
 func baseKeyParts() KeyParts {
 	return KeyParts{
 		Caller:             "tenant-a",
@@ -74,11 +96,11 @@ func TestStoreReplaysStoredResponse(t *testing.T) {
 		return Response{UpstreamResponseID: "resp-1"}, nil
 	}
 
-	first, replay, err := store.Do(context.Background(), "k", fn)
+	first, replay, err := store.Do(context.Background(), "k", testFingerprint, fn)
 	if err != nil || replay || first.UpstreamResponseID != "resp-1" {
 		t.Fatalf("first = %#v replay=%v err=%v", first, replay, err)
 	}
-	second, replay, err := store.Do(context.Background(), "k", fn)
+	second, replay, err := store.Do(context.Background(), "k", testFingerprint, fn)
 	if err != nil || !replay || second.UpstreamResponseID != "resp-1" {
 		t.Fatalf("second = %#v replay=%v err=%v", second, replay, err)
 	}
@@ -98,10 +120,10 @@ func TestStoreDoesNotCacheFailures(t *testing.T) {
 		return Response{UpstreamResponseID: "resp-2"}, nil
 	}
 
-	if _, _, err := store.Do(context.Background(), "k", fn); err == nil {
+	if _, _, err := store.Do(context.Background(), "k", testFingerprint, fn); err == nil {
 		t.Fatal("Do() hid the first failure")
 	}
-	response, replay, err := store.Do(context.Background(), "k", fn)
+	response, replay, err := store.Do(context.Background(), "k", testFingerprint, fn)
 	if err != nil || replay || response.UpstreamResponseID != "resp-2" {
 		t.Fatalf("retry = %#v replay=%v err=%v", response, replay, err)
 	}
@@ -124,7 +146,7 @@ func TestStoreSingleFlightsConcurrentDuplicates(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			_, replay, err := store.Do(context.Background(), "k", func() (Response, error) {
+			_, replay, err := store.Do(context.Background(), "k", testFingerprint, func() (Response, error) {
 				atomic.AddInt32(&calls, 1)
 				<-release
 				return Response{UpstreamResponseID: "resp"}, nil
@@ -163,15 +185,15 @@ func TestStoreExpiresEntries(t *testing.T) {
 		return Response{}, nil
 	}
 
-	if _, _, err := store.Do(context.Background(), "k", fn); err != nil {
+	if _, _, err := store.Do(context.Background(), "k", testFingerprint, fn); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(59 * time.Second)
-	if _, replay, _ := store.Do(context.Background(), "k", fn); !replay {
+	if _, replay, _ := store.Do(context.Background(), "k", testFingerprint, fn); !replay {
 		t.Fatal("entry expired before its TTL")
 	}
 	now = now.Add(2 * time.Second)
-	if _, replay, _ := store.Do(context.Background(), "k", fn); replay {
+	if _, replay, _ := store.Do(context.Background(), "k", testFingerprint, fn); replay {
 		t.Fatal("entry replayed after its TTL")
 	}
 	if calls != 2 {
@@ -183,7 +205,7 @@ func TestStoreIsBounded(t *testing.T) {
 	store := NewIdempotencyStore(time.Hour, 4, nil)
 	for i := 0; i < 32; i++ {
 		key := "k" + itoa(i)
-		if _, _, err := store.Do(context.Background(), key, func() (Response, error) {
+		if _, _, err := store.Do(context.Background(), key, testFingerprint, func() (Response, error) {
 			return Response{}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -198,7 +220,7 @@ func TestStoreWithoutKeyAlwaysRuns(t *testing.T) {
 	store := NewIdempotencyStore(time.Minute, 4, nil)
 	calls := 0
 	for i := 0; i < 3; i++ {
-		if _, replay, _ := store.Do(context.Background(), "", func() (Response, error) {
+		if _, replay, _ := store.Do(context.Background(), "", testFingerprint, func() (Response, error) {
 			calls++
 			return Response{}, nil
 		}); replay {
@@ -262,7 +284,7 @@ func TestStoreDegradesWhenTheBackendFails(t *testing.T) {
 	store.WithObserver(func(result string) { results[result]++ })
 
 	var calls int32
-	response, replay, err := store.Do(context.Background(), "k", upstreamOnce(&calls, "resp-1"))
+	response, replay, err := store.Do(context.Background(), "k", testFingerprint, upstreamOnce(&calls, "resp-1"))
 	if err != nil || replay || response.UpstreamResponseID != "resp-1" {
 		t.Fatalf("degraded call = %#v replay=%v err=%v", response, replay, err)
 	}
@@ -278,11 +300,98 @@ func TestStoreDegradesWhenTheBackendFails(t *testing.T) {
 
 	// The process-local layer still replays, so a degraded backend costs
 	// durability, not correctness within the pod.
-	if _, replay, err := store.Do(context.Background(), "k", upstreamOnce(&calls, "resp-2")); err != nil || !replay {
+	if _, replay, err := store.Do(context.Background(), "k", testFingerprint, upstreamOnce(&calls, "resp-2")); err != nil || !replay {
 		t.Fatalf("local replay after a backend failure replay=%v err=%v", replay, err)
 	}
 	if results[IdempotencyLocalHit] != 1 {
 		t.Fatalf("outcomes = %v, want one local_hit", results)
+	}
+}
+
+// AC4: reusing a live key with a different fingerprint is a deterministic
+// conflict. No upstream call, no stored record, and no replay of a response
+// produced under different parameters.
+func TestStoreConflictsOnADivergentFingerprint(t *testing.T) {
+	store := NewIdempotencyStore(time.Minute, 8, nil)
+	results := map[string]int{}
+	store.WithObserver(func(result string) { results[result]++ })
+	var calls int32
+
+	if _, _, err := store.Do(context.Background(), "k", "fingerprint-a", upstreamOnce(&calls, "resp-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	response, replay, err := store.Do(context.Background(), "k", "fingerprint-b", upstreamOnce(&calls, "resp-2"))
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("divergent fingerprint = %#v replay=%v err=%v, want ErrIdempotencyConflict", response, replay, err)
+	}
+	if replay || response.UpstreamResponseID != "" {
+		t.Fatalf("a conflict leaked a response: %#v replay=%v", response, replay)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (a conflict must not call upstream)", got)
+	}
+	if results[IdempotencyConflict] != 1 {
+		t.Fatalf("outcomes = %v, want one conflict", results)
+	}
+
+	// The original binding survives the conflict: an identical retry still
+	// replays without another bill.
+	replayed, replay, err := store.Do(context.Background(), "k", "fingerprint-a", upstreamOnce(&calls, "resp-3"))
+	if err != nil || !replay || replayed.UpstreamResponseID != "resp-1" {
+		t.Fatalf("identical retry after a conflict = %#v replay=%v err=%v", replayed, replay, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
+// A duplicate that arrives while a divergent call is still in flight must
+// conflict rather than join the single-flight and be handed the answer to a
+// different question.
+func TestStoreConflictsWithAnInFlightDivergentCall(t *testing.T) {
+	store := NewIdempotencyStore(time.Minute, 8, nil)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var calls int32
+
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		if _, _, err := store.Do(context.Background(), "k", "fingerprint-a", func() (Response, error) {
+			atomic.AddInt32(&calls, 1)
+			close(started)
+			<-release
+			return Response{UpstreamResponseID: "resp-leader"}, nil
+		}); err != nil {
+			t.Errorf("leader Do() error = %v", err)
+		}
+	}()
+
+	<-started
+	_, _, err := store.Do(context.Background(), "k", "fingerprint-b", upstreamOnce(&calls, "resp-divergent"))
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("in-flight divergent duplicate err = %v, want ErrIdempotencyConflict", err)
+	}
+	close(release)
+	<-leaderDone
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
+// Without a key there is nothing to bind, so a fingerprint cannot conflict.
+func TestStoreWithoutKeyNeverConflicts(t *testing.T) {
+	store := NewIdempotencyStore(time.Minute, 4, nil)
+	var calls int32
+	for _, fingerprint := range []string{"fingerprint-a", "fingerprint-b"} {
+		if _, _, err := store.Do(context.Background(), "", fingerprint, upstreamOnce(&calls, "resp")); err != nil {
+			t.Fatalf("keyless Do(%s) error = %v", fingerprint, err)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
 	}
 }
 

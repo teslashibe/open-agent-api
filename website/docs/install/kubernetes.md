@@ -114,6 +114,7 @@ spec:
 Requirements and caveats:
 
 - The PVC must be **`ReadWriteMany`** with POSIX `rename`/`link` semantics. An `emptyDir` survives a container restart but not a pod reschedule, and is not shared between replicas.
+- **An unusable PVC now fails startup.** With `STRUCTURED_INFERENCE_ENABLED=true` and the file backend, the pod preflights the directory (create, write, `fsync`, `rename`, `link`) before it binds a listener and exits non-zero with an error naming `STRUCTURED_IDEMPOTENCY_DIR` if any step fails. A mis-mounted, read-only, or wrong-`fsGroup` volume is a `CrashLoopBackOff` you can see, not a pod that quietly serves with a process-local store and double-bills duplicate keys. Check the readiness of the PVC (and that `securityContext.fsGroup` lets the gateway user write it) before rolling out.
 - Records hold the extracted `data` payload **at rest**. The gateway writes `0700` directories and `0600` files and expires entries after `STRUCTURED_IDEMPOTENCY_TTL` (default `10m`), but treat the volume as sensitive and back it with encrypted storage.
 - Replay of a completed request is exact across pods. Concurrent single-flight is best-effort on a network filesystem; the residual window is bounded by `STRUCTURED_MAX_DEADLINE` and documented in [`docs/issue-120-validation.md`](https://github.com/teslashibe/open-agent-api/blob/main/docs/issue-120-validation.md).
 - The store bounds itself by entry count, and sweeps expired records on every write, so the volume does not grow without limit.

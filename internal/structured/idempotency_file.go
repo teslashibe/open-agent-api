@@ -49,6 +49,15 @@ const (
 	// fileDirMode keeps records readable only by the gateway user: a record
 	// holds the full extracted payload. Files are 0600 via os.CreateTemp.
 	fileDirMode = 0o700
+	// filePreflightDir is the scratch subdirectory Preflight works in. It is
+	// removed on the way out, and living under the configured directory means
+	// the probe exercises the real volume rather than a temp filesystem that
+	// happens to be local.
+	filePreflightDir = ".preflight"
+	// preflightEnvHint names the knob an operator has to change. The error text
+	// carries only this and the configured path — never a record body, a key, or
+	// anything derived from a credential.
+	preflightEnvHint = "STRUCTURED_IDEMPOTENCY_DIR"
 )
 
 // fileSafeKey is the shape a key must have to be used verbatim as a filename.
@@ -95,6 +104,68 @@ func NewFileBackend(dir string, ttl time.Duration, maxEntries int, now func() ti
 		owner:         fmt.Sprintf("%s-%d", hostname, os.Getpid()),
 		sweepInterval: interval,
 	}, nil
+}
+
+// Preflight proves the configured directory can actually support this backend,
+// so an absent or unwritable volume fails startup instead of silently degrading
+// to a process-local store — which, on more than one replica, would let a
+// duplicate bypass single-flight and be billed twice.
+//
+// It exercises exactly the syscalls the backend depends on, in that order:
+// create the directory, create a temp file, write, fsync, rename it into place,
+// hard-link it (what claimLock relies on, and the semantic a weak network
+// filesystem is most likely to break), then unlink both. A backend that passes
+// this can store a record and take a reservation; one that fails cannot.
+//
+// Construction stays lazy: Preflight is a separate, explicit step so a caller
+// that does not need the guarantee — the memory path, a unit test — is
+// unaffected.
+func (b *FileBackend) Preflight() error {
+	if b == nil {
+		return errors.New("structured idempotency preflight: no file backend configured")
+	}
+	probe := filepath.Join(b.dir, filePreflightDir)
+	if err := os.MkdirAll(probe, fileDirMode); err != nil {
+		return b.preflightError("create directory", err)
+	}
+	// Leave nothing behind on any exit path, including a failure partway
+	// through: the probe directory is scratch, never a record.
+	defer func() { _ = os.RemoveAll(probe) }()
+
+	temp, err := os.CreateTemp(probe, fileTempPattern)
+	if err != nil {
+		return b.preflightError("create temp file", err)
+	}
+	tempName := temp.Name()
+	if err := writeAndSync(temp, []byte("preflight\n")); err != nil {
+		return b.preflightError("write and fsync", err)
+	}
+
+	record := filepath.Join(probe, "probe"+fileRecordSuffix)
+	if err := os.Rename(tempName, record); err != nil {
+		return b.preflightError("rename into place", err)
+	}
+	lock := filepath.Join(probe, "probe"+fileLockSuffix)
+	if err := os.Link(record, lock); err != nil {
+		return b.preflightError("hard link", err)
+	}
+	if err := os.Remove(lock); err != nil {
+		return b.preflightError("unlink", err)
+	}
+	if err := os.Remove(record); err != nil {
+		return b.preflightError("unlink", err)
+	}
+	return nil
+}
+
+// preflightError names the failing stage, the configured directory, and the
+// setting to fix. Everything interpolated is either a constant or a path the
+// operator supplied, so the message is safe to log and to surface at startup.
+func (b *FileBackend) preflightError(stage string, err error) error {
+	return fmt.Errorf(
+		"structured idempotency preflight: %s: dir %q is unusable; point %s at a writable shared volume: %w",
+		stage, b.dir, preflightEnvHint, err,
+	)
 }
 
 // Dir reports the backing directory. It exists for startup logging and tests.
@@ -325,6 +396,13 @@ func readLockField(path, prefix string) (string, bool) {
 	return "", false
 }
 
+// decodeIdempotencyRecord accepts only the current record version. That rule is
+// what makes the v1 → v2 transition safe in both directions: a version 1 record
+// carries no fingerprint, so nothing proves which parameters produced it, and
+// replaying it is exactly what issue 124 forbids. Load treats it as a miss and
+// unlinks it — one extra upstream call per live key at rollout, bounded by the
+// TTL, and never a wrong replay. A rolled-back pod applies the same rule to the
+// v2 records it cannot fully understand.
 func decodeIdempotencyRecord(raw []byte) (IdempotencyRecord, bool) {
 	var record IdempotencyRecord
 	if err := json.Unmarshal(raw, &record); err != nil {

@@ -51,13 +51,13 @@ func TestFileBackendReplaysAcrossStores(t *testing.T) {
 	var calls int32
 
 	podA := newFileStore(t, dir, nil)
-	first, replay, err := podA.Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-1"))
+	first, replay, err := podA.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-1"))
 	if err != nil || replay {
 		t.Fatalf("pod A = %#v replay=%v err=%v", first, replay, err)
 	}
 
 	podB := newFileStore(t, dir, nil)
-	second, replay, err := podB.Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-2"))
+	second, replay, err := podB.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-2"))
 	if err != nil || !replay {
 		t.Fatalf("pod B = %#v replay=%v err=%v, want a replay", second, replay, err)
 	}
@@ -75,7 +75,7 @@ func TestFileBackendSurvivesRestart(t *testing.T) {
 	var calls int32
 
 	before := newFileStore(t, dir, nil)
-	if _, _, err := before.Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-1")); err != nil {
+	if _, _, err := before.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-1")); err != nil {
 		t.Fatal(err)
 	}
 	// The process goes away; only the volume survives.
@@ -86,7 +86,7 @@ func TestFileBackendSurvivesRestart(t *testing.T) {
 	if after.Len() != 0 {
 		t.Fatalf("restarted store already has %d local entries", after.Len())
 	}
-	response, replay, err := after.Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-2"))
+	response, replay, err := after.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-2"))
 	if err != nil || !replay || response.UpstreamResponseID != "resp-1" {
 		t.Fatalf("after restart = %#v replay=%v err=%v", response, replay, err)
 	}
@@ -102,16 +102,16 @@ func TestFileBackendExpiresRecords(t *testing.T) {
 	var calls int32
 
 	first := newFileStore(t, dir, clock)
-	if _, _, err := first.Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-1")); err != nil {
+	if _, _, err := first.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-1")); err != nil {
 		t.Fatal(err)
 	}
 
 	now = now.Add(59 * time.Second)
-	if _, replay, _ := newFileStore(t, dir, clock).Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-2")); !replay {
+	if _, replay, _ := newFileStore(t, dir, clock).Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-2")); !replay {
 		t.Fatal("record expired before its TTL")
 	}
 	now = now.Add(2 * time.Second)
-	if _, replay, _ := newFileStore(t, dir, clock).Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-3")); replay {
+	if _, replay, _ := newFileStore(t, dir, clock).Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-3")); replay {
 		t.Fatal("record replayed after its TTL")
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -124,14 +124,14 @@ func TestFileBackendDoesNotPersistFailures(t *testing.T) {
 	dir := t.TempDir()
 	store := newFileStore(t, dir, nil)
 
-	if _, _, err := store.Do(context.Background(), crossProcessKey, func() (Response, error) {
+	if _, _, err := store.Do(context.Background(), crossProcessKey, testFingerprint, func() (Response, error) {
 		return Response{}, errors.New("upstream boom")
 	}); err == nil {
 		t.Fatal("Do() hid the failure")
 	}
 
 	var calls int32
-	response, replay, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-retry"))
+	response, replay, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-retry"))
 	if err != nil || replay || response.UpstreamResponseID != "resp-retry" {
 		t.Fatalf("retry on another pod = %#v replay=%v err=%v", response, replay, err)
 	}
@@ -156,7 +156,7 @@ func TestFileBackendTreatsCorruptRecordsAsMisses(t *testing.T) {
 			dir := t.TempDir()
 			var calls int32
 			store := newFileStore(t, dir, nil)
-			if _, _, err := store.Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-1")); err != nil {
+			if _, _, err := store.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-1")); err != nil {
 				t.Fatal(err)
 			}
 			paths := recordFiles(t, dir, ".json")
@@ -167,7 +167,7 @@ func TestFileBackendTreatsCorruptRecordsAsMisses(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			response, replay, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-2"))
+			response, replay, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-2"))
 			if err != nil || replay {
 				t.Fatalf("corrupt record = %#v replay=%v err=%v, want a fresh call", response, replay, err)
 			}
@@ -192,7 +192,7 @@ func TestFileBackendSingleFlightsAcrossStores(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			_, replay, err := stores[index%len(stores)].Do(context.Background(), crossProcessKey, func() (Response, error) {
+			_, replay, err := stores[index%len(stores)].Do(context.Background(), crossProcessKey, testFingerprint, func() (Response, error) {
 				atomic.AddInt32(&calls, 1)
 				<-release
 				return Response{UpstreamResponseID: "resp-shared"}, nil
@@ -258,13 +258,13 @@ func TestFileBackendStealsLapsedReservations(t *testing.T) {
 func TestStoreObservesStoreHits(t *testing.T) {
 	dir := t.TempDir()
 	var calls int32
-	if _, _, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-1")); err != nil {
+	if _, _, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-1")); err != nil {
 		t.Fatal(err)
 	}
 
 	results := map[string]int{}
 	next := newFileStore(t, dir, nil).WithObserver(func(result string) { results[result]++ })
-	if _, replay, err := next.Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-2")); err != nil || !replay {
+	if _, replay, err := next.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-2")); err != nil || !replay {
 		t.Fatalf("replay=%v err=%v", replay, err)
 	}
 	if results[IdempotencyStoreHit] != 1 {
@@ -346,7 +346,7 @@ func TestFileBackendBoundsTheDirectory(t *testing.T) {
 	store := NewIdempotencyStoreWithBackend(time.Hour, 4, nil, backend)
 	for i := 0; i < 32; i++ {
 		key := "key" + itoa(i)
-		if _, _, err := store.Do(context.Background(), key, func() (Response, error) {
+		if _, _, err := store.Do(context.Background(), key, testFingerprint, func() (Response, error) {
 			return Response{UpstreamResponseID: key}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -371,7 +371,7 @@ func TestFileBackendReplaysAcrossProcesses(t *testing.T) {
 		}
 		store := NewIdempotencyStoreWithBackend(time.Minute, 8, nil, backend)
 		var calls int32
-		if _, _, err := store.Do(context.Background(), crossProcessKey, upstreamOnce(&calls, crossProcessAnswer)); err != nil {
+		if _, _, err := store.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, crossProcessAnswer)); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -386,7 +386,7 @@ func TestFileBackendReplaysAcrossProcesses(t *testing.T) {
 	}
 
 	var calls int32
-	response, replay, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, upstreamOnce(&calls, "resp-parent"))
+	response, replay, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-parent"))
 	if err != nil || !replay {
 		t.Fatalf("parent = %#v replay=%v err=%v, want the child's record", response, replay, err)
 	}
@@ -395,6 +395,189 @@ func TestFileBackendReplaysAcrossProcesses(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Fatalf("upstream calls in the parent = %d, want 0", got)
+	}
+}
+
+// AC1: a usable directory passes and leaves no scratch behind.
+func TestFileBackendPreflightAcceptsAUsableDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "created", "by", "preflight")
+	backend, err := NewFileBackend(dir, time.Minute, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Preflight(); err != nil {
+		t.Fatalf("Preflight() on a usable dir error = %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("Preflight() did not create the directory: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Preflight() left %v behind", entries)
+	}
+	// It has to be repeatable: every pod runs it at startup on the same volume.
+	if err := backend.Preflight(); err != nil {
+		t.Fatalf("second Preflight() error = %v", err)
+	}
+}
+
+// AC1, AC2: an unusable directory fails closed with an actionable, secret-free
+// message. Both shapes an operator actually hits are covered: a parent that
+// cannot be traversed to create the directory, and a directory that exists but
+// cannot be written.
+func TestFileBackendPreflightFailsClosedOnAnUnusableDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		// Root bypasses the permission bits these cases rely on, so the
+		// assertions would pass without testing anything.
+		t.Skip("permission-based preflight failures are not observable as root")
+	}
+
+	for name, build := range map[string]func(t *testing.T) string{
+		"missing parent": func(t *testing.T) string {
+			parent := t.TempDir()
+			if err := os.Chmod(parent, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+			return filepath.Join(parent, "absent", "nested")
+		},
+		"read-only directory": func(t *testing.T) string {
+			dir := t.TempDir()
+			if err := os.Chmod(dir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+			return dir
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := build(t)
+			backend, err := NewFileBackend(dir, time.Minute, 8, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			preflightErr := backend.Preflight()
+			if preflightErr == nil {
+				t.Fatal("Preflight() on an unusable dir error = nil, want a failure")
+			}
+			message := preflightErr.Error()
+			if !strings.Contains(message, dir) {
+				t.Fatalf("error %q does not name the configured dir %q", message, dir)
+			}
+			if !strings.Contains(message, "STRUCTURED_IDEMPOTENCY_DIR") {
+				t.Fatalf("error %q does not name the setting to fix", message)
+			}
+			// The message is logged at startup, so it must carry nothing from a
+			// record or a credential.
+			for _, forbidden := range []string{"upstream_response_id", "Bearer", "authorization", crossProcessKey} {
+				if strings.Contains(message, forbidden) {
+					t.Fatalf("error %q leaked %q", message, forbidden)
+				}
+			}
+		})
+	}
+}
+
+// AC5: a record written by the previous format carries no fingerprint, so
+// nothing proves which parameters produced it. It is a miss and is unlinked —
+// never a replay, and never a conflict that would wedge the key for its TTL.
+func TestFileBackendTreatsVersionOneRecordsAsAMiss(t *testing.T) {
+	dir := t.TempDir()
+	backend, err := NewFileBackend(dir, time.Minute, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The version 1 shape, verbatim: no fingerprint field at all.
+	legacy := struct {
+		Version  int       `json:"version"`
+		Response Response  `json:"response"`
+		Stored   time.Time `json:"stored"`
+		Expires  time.Time `json:"expires"`
+	}{
+		Version:  1,
+		Response: Response{UpstreamResponseID: "resp-v1", Data: json.RawMessage(`{"title":"legacy"}`)},
+		Stored:   time.Now(),
+		Expires:  time.Now().Add(time.Hour),
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := backend.recordPath(crossProcessKey)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, loadErr := backend.Load(crossProcessKey); ok || loadErr != nil {
+		t.Fatalf("Load() of a v1 record ok=%v err=%v, want a clean miss", ok, loadErr)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the v1 record was not discarded (stat err = %v)", err)
+	}
+
+	// End to end: the store re-runs once and republishes at the current
+	// version, bound to a fingerprint.
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calls int32
+	store := NewIdempotencyStoreWithBackend(time.Minute, 8, nil, backend)
+	response, replay, err := store.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-v2"))
+	if err != nil || replay || response.UpstreamResponseID != "resp-v2" {
+		t.Fatalf("v1 record = %#v replay=%v err=%v, want a fresh call", response, replay, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+	republished, ok, err := backend.Load(crossProcessKey)
+	if err != nil || !ok {
+		t.Fatalf("republished Load() ok=%v err=%v", ok, err)
+	}
+	if republished.Version != IdempotencyRecordVersion || republished.Fingerprint != testFingerprint {
+		t.Fatalf("republished record = %#v, want version %d bound to %q", republished, IdempotencyRecordVersion, testFingerprint)
+	}
+}
+
+// AC4 across processes: a durable record bound to other parameters conflicts on
+// a second pod instead of replaying or re-calling upstream.
+func TestFileBackendConflictsOnADivergentFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	var calls int32
+
+	podA := newFileStore(t, dir, nil)
+	if _, _, err := podA.Do(context.Background(), crossProcessKey, "fingerprint-a", upstreamOnce(&calls, "resp-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A separate store has no local entry, so this can only come from the
+	// durable record.
+	podB := newFileStore(t, dir, nil)
+	response, replay, err := podB.Do(context.Background(), crossProcessKey, "fingerprint-b", upstreamOnce(&calls, "resp-2"))
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("pod B = %#v replay=%v err=%v, want ErrIdempotencyConflict", response, replay, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (a conflict must not call upstream)", got)
+	}
+
+	// The record is intact: the matching retry still replays on pod B.
+	replayed, replay, err := newFileStore(t, dir, nil).Do(context.Background(), crossProcessKey, "fingerprint-a", upstreamOnce(&calls, "resp-3"))
+	if err != nil || !replay || replayed.UpstreamResponseID != "resp-1" {
+		t.Fatalf("matching retry = %#v replay=%v err=%v", replayed, replay, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+	// No reservation was taken, so nothing is left holding the key.
+	if locks := recordFiles(t, dir, ".lock"); len(locks) != 0 {
+		t.Fatalf("leftover reservations after a conflict = %v", locks)
 	}
 }
 

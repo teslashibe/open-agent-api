@@ -54,12 +54,28 @@ const (
 	// additive: the call still reports its own terminal outcome, because a
 	// backend fault degrades to running fn and never becomes a new error class.
 	IdempotencyBackendError = "backend_error"
+	// IdempotencyConflict is a key reused with a different request fingerprint.
+	// It is terminal: no upstream call is made and nothing is stored.
+	IdempotencyConflict = "conflict"
+)
+
+// ErrIdempotencyConflict is returned when a live key is reused with a different
+// canonical request fingerprint. It is a contract error so the HTTP surface can
+// map it straight onto a deterministic 409 without inventing a second
+// vocabulary.
+var ErrIdempotencyConflict = NewError(
+	CodeIdempotencyConflict,
+	"idempotency_key was already used with different request parameters",
 )
 
 // IdempotencyRecordVersion is the current durable record format. A record
 // written with any other version is treated as a miss, so a rollback never
 // replays a body it cannot fully understand.
-const IdempotencyRecordVersion = 1
+//
+// Version 2 adds Fingerprint. A version 1 record carries no fingerprint, so its
+// binding to a set of request parameters is unprovable; it is a miss and is
+// unlinked rather than replayed. See docs/issue-124-validation.md.
+const IdempotencyRecordVersion = 2
 
 // IdempotencyRecord is the durable form of a stored success. Version guards the
 // on-disk format so an old pod reading a newer record treats it as a miss
@@ -69,6 +85,10 @@ type IdempotencyRecord struct {
 	Response Response  `json:"response"`
 	Stored   time.Time `json:"stored"`
 	Expires  time.Time `json:"expires"`
+	// Fingerprint binds the key to the canonical request parameters that
+	// produced Response. A reuse whose fingerprint differs is a conflict, never
+	// a replay.
+	Fingerprint string `json:"fingerprint"`
 }
 
 // IdempotencyBackend is the durable layer behind the process-local store. It is
@@ -149,10 +169,15 @@ func itoa(value int) string {
 }
 
 type idempotencyEntry struct {
-	ready    chan struct{}
-	response Response
-	err      error
-	expires  time.Time
+	ready chan struct{}
+	// fingerprint is set once, under s.mu, before the entry is published and is
+	// never mutated. It lets an in-process hit — including a waiter on a call
+	// that is still in flight — conflict on divergent parameters, so the binding
+	// does not depend on a durable backend being configured.
+	fingerprint string
+	response    Response
+	err         error
+	expires     time.Time
 }
 
 // IdempotencyStore is a bounded, TTL'd, single-flight response cache. Only
@@ -245,7 +270,12 @@ func (s *IdempotencyStore) observeResult(result string) {
 // backend configured that guarantee extends across processes: a local miss
 // first asks the backend, and only the process holding the backend reservation
 // calls upstream.
-func (s *IdempotencyStore) Do(ctx context.Context, key string, fn func() (Response, error)) (Response, bool, error) {
+//
+// fingerprint is the canonical identity of the inference being asked for (see
+// Fingerprint). Reusing a live key with a different fingerprint returns
+// ErrIdempotencyConflict before any reservation is taken and before fn runs, so
+// a mismatched replay costs neither a wrong answer nor a second bill.
+func (s *IdempotencyStore) Do(ctx context.Context, key, fingerprint string, fn func() (Response, error)) (Response, bool, error) {
 	if s == nil || key == "" {
 		response, err := fn()
 		return response, false, err
@@ -255,7 +285,15 @@ func (s *IdempotencyStore) Do(ctx context.Context, key string, fn func() (Respon
 		s.mu.Lock()
 		entry, ok := s.entries[key]
 		if ok && !s.expiredLocked(entry) {
+			stored := entry.fingerprint
 			s.mu.Unlock()
+			// Check before waiting: a duplicate with divergent parameters must
+			// conflict rather than join the single-flight and be handed an
+			// answer to a different question.
+			if stored != fingerprint {
+				s.observeResult(IdempotencyConflict)
+				return Response{}, false, ErrIdempotencyConflict
+			}
 			select {
 			case <-entry.ready:
 			case <-ctx.Done():
@@ -273,13 +311,13 @@ func (s *IdempotencyStore) Do(ctx context.Context, key string, fn func() (Respon
 		if ok {
 			s.removeLocked(key)
 		}
-		entry = &idempotencyEntry{ready: make(chan struct{}), expires: s.now().Add(s.ttl)}
+		entry = &idempotencyEntry{ready: make(chan struct{}), fingerprint: fingerprint, expires: s.now().Add(s.ttl)}
 		s.insertLocked(key, entry)
 		s.mu.Unlock()
 
 		// Every field written here is published to other goroutines by the
 		// close below, which they only observe through entry.ready.
-		response, replay, err := s.resolve(ctx, key, entry, fn)
+		response, replay, err := s.resolve(ctx, key, fingerprint, entry, fn)
 		entry.response = response
 		entry.err = err
 		close(entry.ready)
@@ -292,7 +330,7 @@ func (s *IdempotencyStore) Do(ctx context.Context, key string, fn func() (Respon
 
 // resolve is the leader path for one key: consult the durable backend, take the
 // cross-process reservation, and only then call upstream.
-func (s *IdempotencyStore) resolve(ctx context.Context, key string, entry *idempotencyEntry, fn func() (Response, error)) (Response, bool, error) {
+func (s *IdempotencyStore) resolve(ctx context.Context, key, fingerprint string, entry *idempotencyEntry, fn func() (Response, error)) (Response, bool, error) {
 	if s.backend == nil {
 		response, err := fn()
 		s.observeResult(IdempotencyMiss)
@@ -307,13 +345,24 @@ func (s *IdempotencyStore) resolve(ctx context.Context, key string, entry *idemp
 		return record.Response, true, nil
 	}
 
+	// resolveRecord folds the fingerprint check into every durable hit. A record
+	// bound to different parameters is a conflict, never a replay and never a
+	// reason to call upstream a second time under the same key.
+	resolveRecord := func(record IdempotencyRecord) (Response, bool, error) {
+		if record.Fingerprint != fingerprint {
+			s.observeResult(IdempotencyConflict)
+			return Response{}, false, ErrIdempotencyConflict
+		}
+		return replayFrom(record)
+	}
+
 	// wait is local to this call: every waiter starts at the floor, so a fast
 	// peer is still noticed within 10 ms.
 	wait := idempotencyPollInterval
 	for {
 		// A record written by another pod, or by this pod before a restart.
 		if record, ok := s.load(key); ok {
-			return replayFrom(record)
+			return resolveRecord(record)
 		}
 
 		release, acquired, err := s.backend.Reserve(key, s.now().Add(s.reservationTTL))
@@ -322,7 +371,7 @@ func (s *IdempotencyStore) resolve(ctx context.Context, key string, entry *idemp
 			// see: run without cross-process single-flight and still try to
 			// publish the result.
 			s.observeResult(IdempotencyBackendError)
-			return s.runAndStore(key, func(bool) {}, fn)
+			return s.runAndStore(key, fingerprint, func(bool) {}, fn)
 		}
 		if acquired {
 			// The previous owner publishes its record and only then drops the
@@ -330,9 +379,9 @@ func (s *IdempotencyStore) resolve(ctx context.Context, key string, entry *idemp
 			// reservation right after that release must still be a replay.
 			if record, ok := s.load(key); ok {
 				release(false)
-				return replayFrom(record)
+				return resolveRecord(record)
 			}
-			return s.runAndStore(key, release, fn)
+			return s.runAndStore(key, fingerprint, release, fn)
 		}
 
 		// Another process owns this key. Wait for its record rather than
@@ -351,7 +400,7 @@ func (s *IdempotencyStore) resolve(ctx context.Context, key string, entry *idemp
 
 // runAndStore calls upstream once and persists only a success, so a failure
 // stays retryable for every replica.
-func (s *IdempotencyStore) runAndStore(key string, release func(committed bool), fn func() (Response, error)) (Response, bool, error) {
+func (s *IdempotencyStore) runAndStore(key, fingerprint string, release func(committed bool), fn func() (Response, error)) (Response, bool, error) {
 	response, err := fn()
 	if err != nil {
 		release(false)
@@ -360,10 +409,11 @@ func (s *IdempotencyStore) runAndStore(key string, release func(committed bool),
 	}
 	stored := s.now()
 	if storeErr := s.backend.Store(key, IdempotencyRecord{
-		Version:  IdempotencyRecordVersion,
-		Response: response,
-		Stored:   stored,
-		Expires:  stored.Add(s.ttl),
+		Version:     IdempotencyRecordVersion,
+		Response:    response,
+		Stored:      stored,
+		Expires:     stored.Add(s.ttl),
+		Fingerprint: fingerprint,
 	}); storeErr != nil {
 		// The response is still correct and still replayable in this process;
 		// only the durable copy was lost.

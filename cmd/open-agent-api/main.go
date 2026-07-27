@@ -27,6 +27,12 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Fail closed before anything binds a listener: idempotency storage that
+	// cannot be written is a silent double-billing risk across replicas, not a
+	// degraded-but-serving condition.
+	if err := server.PreflightStructuredIdempotency(cfg); err != nil {
+		return err
+	}
 
 	metrics := metricspkg.New(cfg.MetricsEnabled)
 	codexService, err := buildCodexService(cfg, metrics)

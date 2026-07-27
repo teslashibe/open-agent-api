@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -847,6 +849,207 @@ func TestStructuredInferenceRecordsMetrics(t *testing.T) {
 }
 
 // AC8, AC13: with the feature off the route does not exist at all.
+// Issue 124 AC4: reusing an idempotency_key with materially different
+// inference parameters is a deterministic 409 with no upstream call — never a
+// replay of a response produced by another model, and never a second bill.
+func TestStructuredInferenceConflictsOnChangedParameters(t *testing.T) {
+	for name, mutate := range map[string]func(*structuredRequestBody){
+		"model":             func(b *structuredRequestBody) { b.Model = "gpt-5.6-terra" },
+		"reasoning effort":  func(b *structuredRequestBody) { b.ReasoningEffort = "high" },
+		"verbosity":         func(b *structuredRequestBody) { b.Verbosity = "high" },
+		"max output tokens": func(b *structuredRequestBody) { b.MaxOutputTokens = 64 },
+		"schema body": func(b *structuredRequestBody) {
+			b.Schema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["title","score"],"properties":{"title":{"type":"string"},"score":{"type":"number"}}}`)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls int32
+			service := fakeCodexService{
+				complete: func(context.Context, codex.Request) (codex.Completion, error) {
+					atomic.AddInt32(&calls, 1)
+					return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel, ID: "resp-original"}, nil
+				},
+			}
+			cfg := structuredTestConfig()
+			cfg.StructuredModels = []string{openai.DefaultModel, "gpt-5.6-terra"}
+			app := New(cfg, WithCodexService(service), WithLogOutput(nil))
+
+			decodeStructuredSuccess(t, postStructured(t, app, structuredBody()))
+
+			conflicting := structuredBody()
+			mutate(&conflicting)
+			decodeStructuredError(t, postStructured(t, app, conflicting), http.StatusConflict, structured.CodeIdempotencyConflict)
+			if got := atomic.LoadInt32(&calls); got != 1 {
+				t.Fatalf("upstream calls = %d, want 1 (a conflict must make no upstream call)", got)
+			}
+
+			// The original key still replays: a conflict rejects the divergent
+			// request, it does not poison the binding.
+			replayed := decodeStructuredSuccess(t, postStructured(t, app, structuredBody()))
+			if !replayed.IdempotentReplay || replayed.UpstreamResponseID != "resp-original" {
+				t.Fatalf("identical retry after a conflict = %#v, want the stored replay", replayed)
+			}
+			if got := atomic.LoadInt32(&calls); got != 1 {
+				t.Fatalf("upstream calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+// The binding is durable, not just process-local: pod B must reject a divergent
+// reuse of a key pod A bound, which is the case that would otherwise hand back
+// a response produced by another model.
+func TestStructuredInferenceConflictsAcrossReplicas(t *testing.T) {
+	dir := t.TempDir()
+	cfg := structuredTestConfig()
+	cfg.StructuredIdempotencyBackend = config.IdempotencyBackendFile
+	cfg.StructuredIdempotencyDir = dir
+	cfg.StructuredModels = []string{openai.DefaultModel, "gpt-5.6-terra"}
+
+	var callsA, callsB int32
+	appA := New(cfg, WithCodexService(fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			atomic.AddInt32(&callsA, 1)
+			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel, ID: "resp-pod-a"}, nil
+		},
+	}), WithLogOutput(nil))
+	appB := New(cfg, WithCodexService(fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			atomic.AddInt32(&callsB, 1)
+			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel, ID: "resp-pod-b"}, nil
+		},
+	}), WithLogOutput(nil))
+
+	decodeStructuredSuccess(t, postStructured(t, appA, structuredBody()))
+
+	divergent := structuredBody()
+	divergent.Model = "gpt-5.6-terra"
+	decodeStructuredError(t, postStructured(t, appB, divergent), http.StatusConflict, structured.CodeIdempotencyConflict)
+	if got := atomic.LoadInt32(&callsB); got != 0 {
+		t.Fatalf("pod B upstream calls = %d, want 0", got)
+	}
+
+	// An identical retry on pod B still replays pod A's stored response.
+	replayed := decodeStructuredSuccess(t, postStructured(t, appB, structuredBody()))
+	if !replayed.IdempotentReplay || replayed.UpstreamResponseID != "resp-pod-a" {
+		t.Fatalf("pod B identical retry = %#v, want pod A's stored response", replayed)
+	}
+	if got := atomic.LoadInt32(&callsA); got != 1 {
+		t.Fatalf("pod A upstream calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&callsB); got != 0 {
+		t.Fatalf("pod B upstream calls = %d, want 0", got)
+	}
+}
+
+// A re-serialized but semantically identical schema is a retry, not a conflict:
+// key order and whitespace are not part of what the caller asked for.
+func TestStructuredInferenceReplaysReformattedSchemas(t *testing.T) {
+	var calls int32
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			atomic.AddInt32(&calls, 1)
+			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel, ID: "resp-original"}, nil
+		},
+	}
+	app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(nil))
+
+	decodeStructuredSuccess(t, postStructured(t, app, structuredBody()))
+
+	reformatted := structuredBody()
+	reformatted.Schema = json.RawMessage("{\n  \"properties\": {\n    \"score\": {\"type\": \"integer\"},\n    \"title\": {\"type\": \"string\"}\n  },\n  \"required\": [\"title\", \"score\"],\n  \"additionalProperties\": false,\n  \"type\": \"object\"\n}")
+	response := decodeStructuredSuccess(t, postStructured(t, app, reformatted))
+	if !response.IdempotentReplay {
+		t.Fatal("a reformatted but identical schema was treated as a conflict")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
+// Issue 124 AC1: an enabled multi-replica gateway whose shared directory is
+// unusable must fail startup rather than serve with a process-local store.
+func TestPreflightStructuredIdempotencyFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based preflight failures are not observable as root")
+	}
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	cfg := structuredTestConfig()
+	cfg.StructuredIdempotencyBackend = config.IdempotencyBackendFile
+	cfg.StructuredIdempotencyDir = filepath.Join(parent, "unmounted", "idempotency")
+	cfg.StructuredReplicas = 3
+
+	err := PreflightStructuredIdempotency(cfg)
+	if err == nil {
+		t.Fatal("PreflightStructuredIdempotency() error = nil, want a startup failure")
+	}
+	if !strings.Contains(err.Error(), cfg.StructuredIdempotencyDir) || !strings.Contains(err.Error(), "STRUCTURED_IDEMPOTENCY_DIR") {
+		t.Fatalf("error = %q, want it to name the dir and the setting", err)
+	}
+
+	// A usable directory passes, and so does every configuration that does not
+	// depend on the shared volume.
+	usable := cfg
+	usable.StructuredIdempotencyDir = t.TempDir()
+	if err := PreflightStructuredIdempotency(usable); err != nil {
+		t.Fatalf("PreflightStructuredIdempotency() on a usable dir error = %v", err)
+	}
+	dark := cfg
+	dark.StructuredEnabled = false
+	if err := PreflightStructuredIdempotency(dark); err != nil {
+		t.Fatalf("PreflightStructuredIdempotency() with structured off error = %v", err)
+	}
+	if err := PreflightStructuredIdempotency(structuredTestConfig()); err != nil {
+		t.Fatalf("PreflightStructuredIdempotency() on the memory backend error = %v", err)
+	}
+}
+
+// Issue 124 AC2: backend=file is claimed only after the preflight succeeds. An
+// unusable directory says backend=memory and why, so an operator never reads a
+// durability guarantee the process does not have.
+func TestStructuredIdempotencyBackendLogClaimsFileOnlyAfterPreflight(t *testing.T) {
+	usableDir := t.TempDir()
+	usable := structuredTestConfig()
+	usable.StructuredIdempotencyBackend = config.IdempotencyBackendFile
+	usable.StructuredIdempotencyDir = usableDir
+
+	var usableLogs bytes.Buffer
+	New(usable, WithCodexService(staticStructuredService(structuredTestOutput)), WithLogOutput(&usableLogs))
+	if !strings.Contains(usableLogs.String(), "structured_idempotency_backend backend=file") {
+		t.Fatalf("startup log = %q, want backend=file for a usable dir", usableLogs.String())
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based preflight failures are not observable as root")
+	}
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	broken := usable
+	broken.StructuredIdempotencyDir = filepath.Join(parent, "unmounted", "idempotency")
+	var brokenLogs bytes.Buffer
+	New(broken, WithCodexService(staticStructuredService(structuredTestOutput)), WithLogOutput(&brokenLogs))
+
+	line := brokenLogs.String()
+	if strings.Contains(line, "backend=file") {
+		t.Fatalf("startup log = %q, want no backend=file claim for an unusable dir", line)
+	}
+	if !strings.Contains(line, "structured_idempotency_backend backend=memory reason=") {
+		t.Fatalf("startup log = %q, want backend=memory with a reason", line)
+	}
+	if !strings.Contains(line, "STRUCTURED_IDEMPOTENCY_DIR") {
+		t.Fatalf("startup log = %q, want the actionable setting name", line)
+	}
+}
+
 func TestStructuredInferenceDisabledByDefault(t *testing.T) {
 	cfg := config.Defaults()
 	if cfg.StructuredEnabled {
