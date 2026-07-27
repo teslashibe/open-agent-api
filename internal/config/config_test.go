@@ -794,8 +794,6 @@ func TestStructuredInferenceDefaultsAreDark(t *testing.T) {
 		cfg.StructuredQueueTimeout != DefaultStructuredQueueTimeout ||
 		cfg.StructuredMaxDeadline != DefaultStructuredMaxDeadline ||
 		cfg.StructuredIdempotencyTTL != DefaultStructuredIdempotencyTTL ||
-		cfg.StructuredIdempotencyBackend != IdempotencyBackendMemory ||
-		cfg.StructuredIdempotencyDir != "" ||
 		cfg.StructuredReplicas != DefaultStructuredReplicas {
 		t.Fatalf("structured defaults = %#v", cfg)
 	}
@@ -812,9 +810,7 @@ func TestLoadStructuredEnvironmentAndFlags(t *testing.T) {
 	t.Setenv("STRUCTURED_QUEUE_TIMEOUT", "11s")
 	t.Setenv("STRUCTURED_MAX_DEADLINE", "90s")
 	t.Setenv("STRUCTURED_IDEMPOTENCY_TTL", "2m")
-	t.Setenv("STRUCTURED_IDEMPOTENCY_BACKEND", "file")
-	t.Setenv("STRUCTURED_IDEMPOTENCY_DIR", "/var/lib/open-agent-api/structured-idempotency")
-	t.Setenv("STRUCTURED_REPLICAS", "3")
+	t.Setenv("STRUCTURED_REPLICAS", "1")
 	t.Setenv("STRUCTURED_MODELS", "gpt-5.6-sol, gpt-5.6-terra ,gpt-5.6-sol")
 	chdir(t, t.TempDir())
 
@@ -824,39 +820,15 @@ func TestLoadStructuredEnvironmentAndFlags(t *testing.T) {
 	}
 	if !cfg.StructuredEnabled || cfg.StructuredMaxActive != 9 || cfg.StructuredMaxActivePerKey != 3 ||
 		cfg.StructuredQueueLimit != 7 || cfg.StructuredQueueTimeout != 11*time.Second ||
-		cfg.StructuredMaxDeadline != 90*time.Second ||
-		cfg.StructuredIdempotencyTTL != 2*time.Minute ||
-		cfg.StructuredIdempotencyBackend != IdempotencyBackendFile ||
-		cfg.StructuredIdempotencyDir != "/var/lib/open-agent-api/structured-idempotency" ||
-		cfg.StructuredReplicas != 3 {
+		cfg.StructuredMaxDeadline != 90*time.Second || cfg.StructuredIdempotencyTTL != 2*time.Minute ||
+		cfg.StructuredReplicas != 1 {
 		t.Fatalf("structured config from environment = %#v", cfg)
 	}
-	if len(cfg.StructuredModels) != 2 || cfg.StructuredModels[0] != "gpt-5.6-sol" || cfg.StructuredModels[1] != "gpt-5.6-terra" {
-		t.Fatalf("StructuredModels = %v, want the trimmed de-duplicated list", cfg.StructuredModels)
-	}
-
-	cfg, err = Load([]string{
-		"--structured-enabled=false",
-		"--structured-max-active=2",
-		"--structured-models=gpt-5.6-luna",
-		"--structured-idempotency-backend=memory",
-		"--structured-idempotency-dir=",
-		"--structured-replicas=1",
-	})
-	if err != nil {
-		t.Fatalf("Load() with flags error = %v", err)
-	}
-	if cfg.StructuredEnabled || cfg.StructuredMaxActive != 2 ||
-		cfg.StructuredIdempotencyBackend != IdempotencyBackendMemory ||
-		cfg.StructuredIdempotencyDir != "" || cfg.StructuredReplicas != 1 {
-		t.Fatalf("structured config from flags = %#v", cfg)
-	}
-	if len(cfg.StructuredModels) != 1 || cfg.StructuredModels[0] != "gpt-5.6-luna" {
-		t.Fatalf("StructuredModels = %v, want the flag override", cfg.StructuredModels)
+	if len(cfg.StructuredModels) != 2 {
+		t.Fatalf("StructuredModels = %v", cfg.StructuredModels)
 	}
 }
 
-// Issue 126 AC2: Codex Responses honours no output-token cap, so the knob that
 // promised one is gone. Neither the environment variable nor the flag may be
 // recognized again: a stale deploy that still sets it must not silently be
 // believed, and the flag must fail loudly rather than be quietly accepted.
@@ -881,119 +853,46 @@ func TestLoadNoLongerRecognizesTheStructuredOutputTokenKnob(t *testing.T) {
 	}
 }
 
-// Issue 120 AC1, AC5: the durable-store guard is fail-closed. A multi-replica
 // structured deployment on the process-local store is rejected at load time,
 // and the message names both remedies.
-func TestLoadRejectsMultiReplicaWithoutADurableIdempotencyStore(t *testing.T) {
+func TestLoadRejectsNonSingleReplicaStructuredGateway(t *testing.T) {
 	t.Setenv("STRUCTURED_INFERENCE_ENABLED", "true")
 	t.Setenv("STRUCTURED_REPLICAS", "2")
 	chdir(t, t.TempDir())
-
 	_, err := Load(nil)
 	if err == nil {
-		t.Fatal("Load() error = nil, want the multi-replica guard to fail closed")
+		t.Fatal("Load() error = nil, want single-replica guard")
 	}
-	for _, want := range []string{"STRUCTURED_IDEMPOTENCY_BACKEND=file", "STRUCTURED_IDEMPOTENCY_DIR", "single replica"} {
+	for _, want := range []string{"exactly 1", "maxSurge=0", "Recreate"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error = %q, want it to mention %q", err, want)
+			t.Fatalf("error = %q, want %q", err, want)
 		}
-	}
-
-	// The same deployment with a shared directory is allowed.
-	t.Setenv("STRUCTURED_IDEMPOTENCY_BACKEND", "file")
-	t.Setenv("STRUCTURED_IDEMPOTENCY_DIR", t.TempDir())
-	cfg, err := Load(nil)
-	if err != nil {
-		t.Fatalf("Load() with the file backend error = %v", err)
-	}
-	if cfg.IdempotencyBackend() != IdempotencyBackendFile {
-		t.Fatalf("IdempotencyBackend() = %q, want file", cfg.IdempotencyBackend())
 	}
 }
 
-// The guard only binds a deployment that has actually turned the endpoint on:
-// a dark gateway keeps every existing configuration valid.
-func TestMultiReplicaGuardOnlyAppliesWhenStructuredIsEnabled(t *testing.T) {
+func TestStructuredReplicaGuardAppliesEvenWhenEndpointIsDark(t *testing.T) {
 	cfg := Defaults()
-	cfg.StructuredReplicas = 4
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() with structured off error = %v", err)
-	}
-	cfg.StructuredEnabled = true
+	cfg.StructuredReplicas = 0
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() error = nil, want the guard once structured is enabled")
+		t.Fatal("Validate() accepted zero replicas")
 	}
-}
-
-// AC1/AC2: the guard reads a declared replica count, so the limits it cannot
-// see have to be said out loud instead of silently assumed away.
-func TestStructuredIdempotencyWarningsCoverRollingUpdates(t *testing.T) {
-	dark := Defaults()
-	if warnings := dark.StructuredIdempotencyWarnings(); len(warnings) != 0 {
-		t.Fatalf("warnings with structured off = %v, want none", warnings)
-	}
-
-	memory := Defaults()
-	memory.StructuredEnabled = true
-	warnings := memory.StructuredIdempotencyWarnings()
-	if len(warnings) != 1 {
-		t.Fatalf("memory-backend warnings = %v, want exactly one", warnings)
-	}
-	for _, want := range []string{"process-local", "rolling update", "maxSurge", "STRUCTURED_REPLICAS=1", "STRUCTURED_IDEMPOTENCY_BACKEND=file", "Recreate"} {
-		if !strings.Contains(warnings[0], want) {
-			t.Fatalf("memory warning = %q, want it to mention %q", warnings[0], want)
-		}
-	}
-
-	file := memory
-	file.StructuredIdempotencyBackend = IdempotencyBackendFile
-	file.StructuredIdempotencyDir = t.TempDir()
-	if err := file.Validate(); err != nil {
-		t.Fatalf("Validate() with the file backend error = %v", err)
-	}
-	warnings = file.StructuredIdempotencyWarnings()
-	if len(warnings) != 1 {
-		t.Fatalf("file-backend warnings = %v, want exactly one", warnings)
-	}
-	for _, want := range []string{"declared count", "HPA", "drift"} {
-		if !strings.Contains(warnings[0], want) {
-			t.Fatalf("file warning = %q, want it to mention %q", warnings[0], want)
-		}
-	}
-
-	// Warnings are advisory only: nothing they describe changes what validates.
-	if err := memory.Validate(); err != nil {
-		t.Fatalf("Validate() with the memory backend error = %v, want warnings not to reject", err)
+	cfg.StructuredReplicas = 1
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
 // A zero-value backend means the default, so a hand-built Config still passes.
-func TestIdempotencyBackendNormalizesTheConfiguredValue(t *testing.T) {
-	for value, want := range map[string]string{
-		"":       IdempotencyBackendMemory,
-		"  ":     IdempotencyBackendMemory,
-		"FILE":   IdempotencyBackendFile,
-		" file ": IdempotencyBackendFile,
-		"memory": IdempotencyBackendMemory,
-	} {
-		cfg := Config{StructuredIdempotencyBackend: value}
-		if got := cfg.IdempotencyBackend(); got != want {
-			t.Fatalf("IdempotencyBackend(%q) = %q, want %q", value, got, want)
-		}
-	}
-}
 
 func TestLoadInvalidStructuredValues(t *testing.T) {
 	for name, env := range map[string][2]string{
-		"enabled":                    {"STRUCTURED_INFERENCE_ENABLED", "sometimes"},
-		"max active":                 {"STRUCTURED_MAX_ACTIVE", "many"},
-		"queue timeout":              {"STRUCTURED_QUEUE_TIMEOUT", "soon"},
-		"zero max active":            {"STRUCTURED_MAX_ACTIVE", "0"},
-		"zero deadline":              {"STRUCTURED_MAX_DEADLINE", "0s"},
-		"zero ttl":                   {"STRUCTURED_IDEMPOTENCY_TTL", "0s"},
-		"unknown backend":            {"STRUCTURED_IDEMPOTENCY_BACKEND", "redis"},
-		"file backend without a dir": {"STRUCTURED_IDEMPOTENCY_BACKEND", "file"},
-		"negative replicas":          {"STRUCTURED_REPLICAS", "-1"},
+		"enabled":           {"STRUCTURED_INFERENCE_ENABLED", "sometimes"},
+		"max active":        {"STRUCTURED_MAX_ACTIVE", "many"},
+		"queue timeout":     {"STRUCTURED_QUEUE_TIMEOUT", "soon"},
+		"zero max active":   {"STRUCTURED_MAX_ACTIVE", "0"},
+		"zero deadline":     {"STRUCTURED_MAX_DEADLINE", "0s"},
+		"zero ttl":          {"STRUCTURED_IDEMPOTENCY_TTL", "0s"},
+		"negative replicas": {"STRUCTURED_REPLICAS", "-1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(env[0], env[1])

@@ -39,11 +39,8 @@ services:
       STRUCTURED_MAX_ACTIVE_PER_KEY: "${STRUCTURED_MAX_ACTIVE_PER_KEY:-}"
       STRUCTURED_QUEUE_LIMIT: "${STRUCTURED_QUEUE_LIMIT:-}"
       STRUCTURED_MODELS: "${STRUCTURED_MODELS:-}"
-      # Idempotency: "memory" is process-local. Switch to "file" and share the
-      # directory between replicas to make replay durable across restarts; more
-      # than one replica on "memory" is refused at startup.
-      STRUCTURED_IDEMPOTENCY_BACKEND: "${STRUCTURED_IDEMPOTENCY_BACKEND:-memory}"
-      STRUCTURED_IDEMPOTENCY_DIR: "${STRUCTURED_IDEMPOTENCY_DIR:-/var/lib/open-agent-api/structured-idempotency}"
+      # Idempotency is memory-only. Keep exactly one replica and configure
+      # Kubernetes with maxSurge: 0 or strategy: Recreate.
       STRUCTURED_IDEMPOTENCY_TTL: "${STRUCTURED_IDEMPOTENCY_TTL:-}"
       STRUCTURED_REPLICAS: "${STRUCTURED_REPLICAS:-1}"
       # 240s: deep-reasoning turns pause >90s without streaming; healthy
@@ -78,9 +75,6 @@ services:
       # corrupted"). Auth comes from CLAUDE_CODE_OAUTH_TOKEN (.env); the
       # container CLI maintains its own config in its own HOME.
       - "agent-queue-locks:/var/lib/open-agent-api/agent-locks"
-      # Structured idempotency records; only written when
-      # STRUCTURED_IDEMPOTENCY_BACKEND=file. Holds extracted payloads at rest.
-      - "structured-idempotency:/var/lib/open-agent-api/structured-idempotency"
     ports:
       - "127.0.0.1:${CODEX_CHAT_API_PORT:-8088}:8088"
     healthcheck:
@@ -93,4 +87,3 @@ services:
 
 volumes:
   agent-queue-locks:
-  structured-idempotency:

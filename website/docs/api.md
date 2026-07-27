@@ -142,41 +142,25 @@ A response is replayed (`"idempotent_replay": true`) only when the caller, `oper
 
 A stored response is also **bound to the request that produced it**. The key carries a fingerprint over `model` (as sent and as resolved), the effective `reasoning_effort` and `verbosity`, the schema body, `schema_version`, `model_policy_version`, `operation`, the caller, and the input. Reuse the same key with any of those changed and you get `409 idempotency_conflict` — no upstream call, no bill, and never a response produced by another model. `deadline_ms`, `schema_name`, and `request_id` are deliberately **not** part of the fingerprint: they do not change the inference, so a retry may vary them freely. The schema body is canonicalized before hashing, so re-serializing an identical schema (different key order or whitespace) is a replay, not a conflict.
 
-By default the store is **process-local** (`STRUCTURED_IDEMPOTENCY_BACKEND=memory`): replay lives in one pod's memory and is lost on restart. That's fine for the single-replica default.
+The store is memory-only and process-local: replay lives in the gateway process and is lost on restart. `STRUCTURED_REPLICAS` must be exactly `1`; startup rejects any other value. Kubernetes must also use `maxSurge: 0` or `strategy: Recreate`, because a nominally single-replica rolling update can run the old and new process simultaneously.
 
-Single-flight on the memory backend is per **process**, not per replica count, and a rolling update runs the old and new pod at once — so even at `STRUCTURED_REPLICAS=1` a duplicate key can reach two processes during a deploy unless you use the file backend or `maxSurge: 0` / `strategy: Recreate` (see [Kubernetes](./install/kubernetes#structured-inference-across-replicas)). The gateway logs a `structured_idempotency_warning` line at startup whenever structured inference is enabled on the memory backend.
-
-For anything bigger, point every replica at one shared directory:
-
-```bash
-STRUCTURED_IDEMPOTENCY_BACKEND=file
-STRUCTURED_IDEMPOTENCY_DIR=/var/lib/open-agent-api/structured-idempotency
-STRUCTURED_REPLICAS=2
-```
-
-Then a stored response replays across pods and survives a restart for the whole `STRUCTURED_IDEMPOTENCY_TTL` — one upstream call, one bill, one body. The gateway **fails closed**: `STRUCTURED_REPLICAS > 1` with the memory backend is refused at startup rather than silently double-calling upstream.
-
-The shared volume must have POSIX `rename`/`link` semantics (a `ReadWriteMany` PVC). Replay after a completed request is exact; concurrent single-flight across pods is best-effort — see [issue-120-validation.md](https://github.com/teslashibe/open-agent-api/blob/main/docs/issue-120-validation.md) for the exact bound.
-
-The gateway **preflights that directory at startup** and refuses to start if it is absent or unwritable: it creates the directory, then writes, `fsync`s, renames, and hard-links a scratch file, which is exactly what storing a record and taking a reservation need. The error names the directory and `STRUCTURED_IDEMPOTENCY_DIR`. Previously a bad mount degraded silently to a process-local store, which on more than one replica means duplicate keys bypass single-flight and get billed twice. `backend=file` is logged only after the preflight passes.
-
-Bumping the durable record format invalidates records written by an older build: the first request per live key after such an upgrade calls upstream once more, bounded by `STRUCTURED_IDEMPOTENCY_TTL`. That is deliberate — a record from before this release carries no fingerprint, so replaying it could not be proven safe. The `2.0.0` contract bumps the record format again (version 2 → 3) because a version 2 fingerprint hashed the removed output cap: without the bump an identical retry of a live key would compute a different fingerprint and get a `409` that wedges the key for its whole TTL.
+A completed response is stored only when upstream succeeds; failures remain retryable. The bounded store removes expired records opportunistically. It never evicts an unexpired or in-flight binding: if all capacity is live, a new unique key gets `503 unavailable` with `Retry-After`, while existing keys continue to replay or join their in-flight request.
 
 :::warning Release condition
 
-Do not enable structured inference on the memory backend unless the deployment sets `maxSurge: 0` (or `strategy: Recreate`), so no two processes ever serve the same key at once. Otherwise use `STRUCTURED_IDEMPOTENCY_BACKEND=file` on `ReadWriteMany` storage. On the memory backend under a default rolling update, a duplicate key can reach the old and new pod during a deploy and be billed twice.
+Enable structured inference only on one replica with `maxSurge: 0` (or `strategy: Recreate`) so no two processes ever serve the same key at once.
 
 :::
 
 ### Admission and models
 
-Structured traffic has its own queue budget (`STRUCTURED_MAX_ACTIVE`, `STRUCTURED_MAX_ACTIVE_PER_KEY`, `STRUCTURED_QUEUE_LIMIT`, `STRUCTURED_QUEUE_TIMEOUT`) so it can never starve Cursor/agent traffic. The rest of the knobs: `STRUCTURED_MAX_DEADLINE`, `STRUCTURED_IDEMPOTENCY_TTL`, `STRUCTURED_IDEMPOTENCY_BACKEND`, `STRUCTURED_IDEMPOTENCY_DIR`, `STRUCTURED_REPLICAS`, and `STRUCTURED_MODELS` (each also a `--structured-*` flag). Extraction requests carry no tools, skip the captured Codex CLI profile and scaffold, and never prewarm a connection.
+Structured traffic has its own queue budget (`STRUCTURED_MAX_ACTIVE`, `STRUCTURED_MAX_ACTIVE_PER_KEY`, `STRUCTURED_QUEUE_LIMIT`, `STRUCTURED_QUEUE_TIMEOUT`) so it can never starve Cursor/agent traffic. The rest of the knobs: `STRUCTURED_MAX_DEADLINE`, `STRUCTURED_IDEMPOTENCY_TTL`, `STRUCTURED_REPLICAS`, and `STRUCTURED_MODELS` (each also a `--structured-*` flag). Extraction requests carry no tools, skip the captured Codex CLI profile and scaffold, and never prewarm a connection.
 
 The allowlist is Codex-only by default (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` and their effort variants); override it with `STRUCTURED_MODELS`. Gemini and Claude Code aliases return `unsupported_model` because they do not honour strict `json_schema` output.
 
 ### Metrics
 
-`codex_chat_api_structured_latency_seconds`, `codex_chat_api_structured_tokens_total`, `codex_chat_api_structured_failures_total`, `codex_chat_api_structured_validation_total` (`result` is `valid`, `invalid`, `unparsable`, or `unknown` — `unknown` is a label the gateway did not recognize, never a real schema failure), `codex_chat_api_structured_idempotency_total` (`result` is `local_hit`, `store_hit`, `miss`, `backend_error`, or `conflict`), and `codex_chat_api_structured_inflight`, plus queue waits under `provider="structured"`.
+`codex_chat_api_structured_latency_seconds`, `codex_chat_api_structured_tokens_total`, `codex_chat_api_structured_failures_total`, `codex_chat_api_structured_validation_total` (`result` is `valid`, `invalid`, `unparsable`, or `unknown` — `unknown` is a label the gateway did not recognize, never a real schema failure), `codex_chat_api_structured_idempotency_total` (`result` is `local_hit`, `miss`, `conflict`, or `capacity`), and `codex_chat_api_structured_inflight`, plus queue waits under `provider="structured"`.
 
 ## Response compression
 

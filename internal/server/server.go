@@ -56,6 +56,8 @@ type options struct {
 	structuredIdempotency *structured.IdempotencyStore
 }
 
+var structuredIdempotencyEntries = structured.DefaultIdempotencyEntries
+
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
 // so heavy traffic to one upstream never starves the others.
 func (o options) agentQueueFor(provider string) *agentQueue {
@@ -102,73 +104,12 @@ func withLocalCheck(isLocal func(*fiber.Ctx) bool) Option {
 	}
 }
 
-// PreflightStructuredIdempotency fails closed on idempotency storage that
-// cannot do its job. It is called from main before anything binds a listener,
-// so a gateway with structured inference enabled and an absent or unwritable
-// shared directory exits with an actionable error instead of starting up and
-// silently degrading to a process-local store — the failure mode that lets a
-// duplicate bypass single-flight and be billed twice across replicas.
-//
-// It returns nil for every configuration that does not depend on the shared
-// directory: structured inference off, or the memory backend (which
-// Config.Validate already refuses for more than one replica). The error names
-// the directory and the setting to change, and carries no request or auth
-// material.
-func PreflightStructuredIdempotency(cfg config.Config) error {
-	if !cfg.StructuredEnabled || cfg.IdempotencyBackend() != config.IdempotencyBackendFile {
-		return nil
-	}
-	backend, err := structured.NewFileBackend(
-		cfg.StructuredIdempotencyDir,
-		cfg.StructuredIdempotencyTTL,
-		structured.DefaultIdempotencyEntries,
-		nil,
-	)
-	if err != nil {
-		return err
-	}
-	return backend.Preflight()
-}
-
-// newStructuredIdempotencyStore builds the configured idempotency store. The
-// file backend makes replay durable across restarts and shared by every replica
-// mounting the same directory; "memory" keeps the original process-local store.
-// Config.Validate already fails closed on a multi-replica memory deployment, so
-// the only fallback here is a hand-built Config with no directory.
 func newStructuredIdempotencyStore(cfg config.Config, opts options) *structured.IdempotencyStore {
-	memory := func() *structured.IdempotencyStore {
-		return structured.NewIdempotencyStore(cfg.StructuredIdempotencyTTL, structured.DefaultIdempotencyEntries, opts.now)
+	if cfg.StructuredEnabled {
+		logLine(opts, "structured_idempotency backend=memory scope=process-local replicas=1 rollout_requirement=%q\n",
+			"maxSurge=0 or strategy Recreate")
 	}
-	// The guard fails closed on a declared multi-replica memory deployment, but
-	// a declared count is not a detected one. Say so out loud at startup, on a
-	// greppable prefix, so the remaining limits are an operator decision rather
-	// than a silent assumption.
-	for _, warning := range cfg.StructuredIdempotencyWarnings() {
-		logLine(opts, "structured_idempotency_warning detail=%q\n", warning)
-	}
-	if cfg.IdempotencyBackend() != config.IdempotencyBackendFile {
-		return memory()
-	}
-	backend, err := structured.NewFileBackend(cfg.StructuredIdempotencyDir, cfg.StructuredIdempotencyTTL, structured.DefaultIdempotencyEntries, opts.now)
-	if err != nil {
-		logLine(opts, "structured_idempotency_backend backend=memory reason=%s\n", err)
-		return memory()
-	}
-	// Claim backend=file only once the directory has proven it supports the
-	// write/fsync/rename/link semantics the backend needs. PreflightStructuredIdempotency
-	// already failed the process closed before this point for an enabled
-	// gateway; this repeats the check so a hand-built Config, or a volume that
-	// went away between startup and here, degrades loudly instead of logging a
-	// durability guarantee it does not have.
-	if preflightErr := backend.Preflight(); preflightErr != nil {
-		logLine(opts, "structured_idempotency_backend backend=memory reason=%s\n", preflightErr)
-		return memory()
-	}
-	logLine(opts, "structured_idempotency_backend backend=file dir=%s ttl=%s replicas=%d\n",
-		backend.Dir(), cfg.StructuredIdempotencyTTL, cfg.StructuredReplicas)
-	return structured.
-		NewIdempotencyStoreWithBackend(cfg.StructuredIdempotencyTTL, structured.DefaultIdempotencyEntries, opts.now, backend).
-		WithReservationTTL(cfg.StructuredMaxDeadline)
+	return structured.NewIdempotencyStore(cfg.StructuredIdempotencyTTL, structuredIdempotencyEntries, opts.now)
 }
 
 func New(cfg config.Config, setters ...Option) *fiber.App {

@@ -71,70 +71,28 @@ An init container seeds Codex/Gemini files into a writable `emptyDir` HOME so OA
 - `GEMINI_AUTH_PATH=/home/codex/.gemini/antigravity_oauth_creds.json`
 - Single replica on purpose: agent queues protect shared upstream accounts; more replicas multiply concurrency against the same OAuth pools
 
-## Structured inference across replicas
+## Structured inference deployment
 
-`POST /v1/structured/inference` ships dark (`STRUCTURED_INFERENCE_ENABLED=false`). Its idempotency store is process-local by default, so scaling past one replica needs a shared durable store — otherwise two pods can both call upstream for one `idempotency_key`.
-
-The gateway refuses to start with `STRUCTURED_INFERENCE_ENABLED=true`, `STRUCTURED_REPLICAS > 1`, and the memory backend. Either keep the single replica, or mount a shared volume:
-
-```yaml
-env:
-  - name: STRUCTURED_INFERENCE_ENABLED
-    value: "true"
-  - name: STRUCTURED_IDEMPOTENCY_BACKEND
-    value: "file"
-  - name: STRUCTURED_IDEMPOTENCY_DIR
-    value: /var/lib/open-agent-api/structured-idempotency
-  - name: STRUCTURED_REPLICAS
-    value: "2"
-volumeMounts:
-  - name: structured-idempotency
-    mountPath: /var/lib/open-agent-api/structured-idempotency
-volumes:
-  - name: structured-idempotency
-    persistentVolumeClaim:
-      claimName: structured-idempotency   # ReadWriteMany
-```
-
-### Rolling updates and the declared replica count
-
-The startup guard reads `STRUCTURED_REPLICAS`, which is a **declared** count, not a detected one. The gateway does not discover its peers, so anything that raises real concurrency without changing that value — an HPA scaling up, a surge pod during a rolling update, a stray process on the same volume — is invisible to it. Keep the declared value at or above the real concurrency.
-
-The sharpest case is a rolling update. With the default `maxSurge: 25%` the new pod starts before the old one terminates, so **two processes run at once even at `STRUCTURED_REPLICAS=1`**. On the memory backend their idempotency stores are independent, and a Report Studio retry landing on the new pod during that window issues a second upstream call. The gateway logs a `structured_idempotency_warning` line at startup whenever structured inference is enabled on the memory backend; treat it as a deployment requirement, not noise.
-
-:::warning Release condition
-
-Structured inference is not cleared for release in any other shape. Enable it **only** with the file backend on `ReadWriteMany` storage, or on the memory backend with `maxSurge: 0` (or `strategy: Recreate`). The memory backend under a default rolling update double-bills duplicate keys, and the startup guard cannot detect it — the declared replica count is still `1`.
-
-:::
-
-Pick one of the two safe shapes when enabling structured inference:
-
-- **File backend on a shared `ReadWriteMany` PVC** (above). Single-flight and replay span processes, so a surge pod is fine.
-- **Memory backend with no overlap.** Force the old pod to terminate before the new one starts:
+Structured inference is a deliberately single-replica gateway. Set `replicas: 1` and prevent rollout overlap:
 
 ```yaml
 spec:
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
-  # or, equivalently for a single replica:
-  # strategy:
-  #   type: Recreate
+  template:
+    spec:
+      containers:
+        - name: open-agent-api
+          env:
+            - name: STRUCTURED_REPLICAS
+              value: "1"
 ```
 
-  Do not attach an HPA to a memory-backend deployment: it can exceed `STRUCTURED_REPLICAS` without the guard noticing.
-
-Requirements and caveats:
-
-- The PVC must be **`ReadWriteMany`** with POSIX `rename`/`link` semantics. An `emptyDir` survives a container restart but not a pod reschedule, and is not shared between replicas.
-- **An unusable PVC now fails startup.** With `STRUCTURED_INFERENCE_ENABLED=true` and the file backend, the pod preflights the directory (create, write, `fsync`, `rename`, `link`) before it binds a listener and exits non-zero with an error naming `STRUCTURED_IDEMPOTENCY_DIR` if any step fails. A mis-mounted, read-only, or wrong-`fsGroup` volume is a `CrashLoopBackOff` you can see, not a pod that quietly serves with a process-local store and double-bills duplicate keys. Check the readiness of the PVC (and that `securityContext.fsGroup` lets the gateway user write it) before rolling out.
-- Records hold the extracted `data` payload **at rest**. The gateway writes `0700` directories and `0600` files and expires entries after `STRUCTURED_IDEMPOTENCY_TTL` (default `10m`), but treat the volume as sensitive and back it with encrypted storage.
-- Replay of a completed request is exact across pods. Concurrent single-flight is best-effort on a network filesystem; the residual window is bounded by `STRUCTURED_MAX_DEADLINE` and documented in [`docs/issue-120-validation.md`](https://github.com/teslashibe/open-agent-api/blob/main/docs/issue-120-validation.md).
-- The store bounds itself by entry count, and sweeps expired records on every write, so the volume does not grow without limit.
-- A duplicate waiting on a peer's in-flight call polls the volume read-only (one `stat`, no temp file or `fsync`) and backs off from 10 ms to 250 ms, so retries cannot saturate the shared filesystem. The full constraint list is in [`docs/issue-122-validation.md`](https://github.com/teslashibe/open-agent-api/blob/main/docs/issue-122-validation.md).
+`strategy: Recreate` is also valid. Do not attach an HPA or run a second process: idempotency is memory-only and process-local, and startup rejects `STRUCTURED_REPLICAS` values other than `1`.
 
 ## App integration
 

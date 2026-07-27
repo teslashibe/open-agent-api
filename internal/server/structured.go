@@ -422,6 +422,8 @@ func structuredFailure(err error) (*structured.Error, int, time.Duration) {
 			// 409 so a client that only branches on status still distinguishes
 			// "your key means something else" from a retryable failure.
 			return contractErr, fiber.StatusConflict, 0
+		case structured.CodeUnavailable:
+			return contractErr, fiber.StatusServiceUnavailable, defaultStructuredRetryAfter
 		default:
 			return contractErr, fiber.StatusBadGateway, 0
 		}

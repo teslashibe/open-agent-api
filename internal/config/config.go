@@ -56,18 +56,7 @@ const (
 	DefaultStructuredQueueTimeout    = 30 * time.Second
 	DefaultStructuredMaxDeadline     = 5 * time.Minute
 	DefaultStructuredIdempotencyTTL  = 10 * time.Minute
-	// Idempotency stays in memory unless a deploy points it at a shared
-	// directory, so a single-replica gateway keeps today's behavior exactly.
-	DefaultStructuredIdempotencyBackend = IdempotencyBackendMemory
-	DefaultStructuredReplicas           = 1
-)
-
-// Structured idempotency backends. "memory" is process-local; "file" is a
-// shared directory (a ReadWriteMany PVC, or a bind mount under Docker) that
-// makes replay durable across restarts and replicas.
-const (
-	IdempotencyBackendMemory = "memory"
-	IdempotencyBackendFile   = "file"
+	DefaultStructuredReplicas        = 1
 )
 
 // DefaultGatewayProviders enables every provider so the local Cursor workflow
@@ -141,16 +130,8 @@ type Config struct {
 	StructuredMaxDeadline time.Duration
 	// StructuredIdempotencyTTL is how long a stored response can be replayed.
 	StructuredIdempotencyTTL time.Duration
-	// StructuredIdempotencyBackend selects the idempotency store: "memory"
-	// (process-local) or "file" (durable, shared across pods and restarts).
-	StructuredIdempotencyBackend string
-	// StructuredIdempotencyDir is the shared directory backing the file
-	// backend. Every replica must mount the same volume.
-	StructuredIdempotencyDir string
-	// StructuredReplicas is how many gateway replicas share this configuration.
-	// More than one replica with the memory backend is rejected at load time:
-	// process-local idempotency would let two pods both call upstream for the
-	// same key.
+	// StructuredReplicas is required to be exactly one. Idempotency is
+	// process-local, so deployments must also prevent rollout overlap.
 	StructuredReplicas int
 	// StructuredModels overrides the structured-capable model allowlist. Empty
 	// means the built-in allowlist in internal/structured.
@@ -475,12 +456,6 @@ func Load(args []string) (Config, error) {
 			*override.target = parsed
 		}
 	}
-	if value := os.Getenv("STRUCTURED_IDEMPOTENCY_BACKEND"); value != "" {
-		cfg.StructuredIdempotencyBackend = value
-	}
-	if value := os.Getenv("STRUCTURED_IDEMPOTENCY_DIR"); value != "" {
-		cfg.StructuredIdempotencyDir = value
-	}
 	structuredModelsRaw := strings.Join(cfg.StructuredModels, ",")
 	if value := os.Getenv("STRUCTURED_MODELS"); value != "" {
 		structuredModelsRaw = value
@@ -536,9 +511,7 @@ func Load(args []string) (Config, error) {
 	fs.DurationVar(&cfg.StructuredQueueTimeout, "structured-queue-timeout", cfg.StructuredQueueTimeout, "maximum time a structured inference request can wait for admission")
 	fs.DurationVar(&cfg.StructuredMaxDeadline, "structured-max-deadline", cfg.StructuredMaxDeadline, "upper bound applied to the caller-supplied structured deadline_ms")
 	fs.DurationVar(&cfg.StructuredIdempotencyTTL, "structured-idempotency-ttl", cfg.StructuredIdempotencyTTL, "how long a structured response can be replayed for the same idempotency key")
-	fs.StringVar(&cfg.StructuredIdempotencyBackend, "structured-idempotency-backend", cfg.StructuredIdempotencyBackend, "structured idempotency store: memory (process-local) or file (shared directory, durable across pods and restarts)")
-	fs.StringVar(&cfg.StructuredIdempotencyDir, "structured-idempotency-dir", cfg.StructuredIdempotencyDir, "shared directory backing the file idempotency backend; every replica must mount the same volume")
-	fs.IntVar(&cfg.StructuredReplicas, "structured-replicas", cfg.StructuredReplicas, "number of gateway replicas sharing this configuration; more than one requires the file idempotency backend")
+	fs.IntVar(&cfg.StructuredReplicas, "structured-replicas", cfg.StructuredReplicas, "gateway replica count; structured inference requires exactly one replica")
 	fs.StringVar(&structuredModelsRaw, "structured-models", structuredModelsRaw, "comma-separated structured-capable model allowlist (empty uses the built-in list)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -619,8 +592,6 @@ func Defaults() Config {
 		StructuredQueueTimeout:             DefaultStructuredQueueTimeout,
 		StructuredMaxDeadline:              DefaultStructuredMaxDeadline,
 		StructuredIdempotencyTTL:           DefaultStructuredIdempotencyTTL,
-		StructuredIdempotencyBackend:       DefaultStructuredIdempotencyBackend,
-		StructuredIdempotencyDir:           "",
 		StructuredReplicas:                 DefaultStructuredReplicas,
 	}
 	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
@@ -797,58 +768,10 @@ func (c Config) validateStructured() error {
 	if c.StructuredIdempotencyTTL <= 0 {
 		return errors.New("structured idempotency ttl must be positive")
 	}
-	backend := c.IdempotencyBackend()
-	switch backend {
-	case IdempotencyBackendMemory:
-	case IdempotencyBackendFile:
-		if strings.TrimSpace(c.StructuredIdempotencyDir) == "" {
-			return errors.New("structured idempotency backend file requires STRUCTURED_IDEMPOTENCY_DIR")
-		}
-	default:
-		return fmt.Errorf("structured idempotency backend must be %q or %q", IdempotencyBackendMemory, IdempotencyBackendFile)
-	}
-	if c.StructuredReplicas < 0 {
-		return errors.New("structured replicas must be non-negative")
-	}
-	// Fail closed: process-local idempotency across several replicas would let
-	// two pods both call upstream for one key, double-billing the caller and
-	// possibly returning divergent bodies.
-	if c.StructuredEnabled && c.StructuredReplicas > 1 && backend != IdempotencyBackendFile {
-		return errors.New("structured inference with more than one replica needs a durable idempotency store: set STRUCTURED_IDEMPOTENCY_BACKEND=file with a shared STRUCTURED_IDEMPOTENCY_DIR, or run a single replica")
+	if c.StructuredReplicas != 1 {
+		return errors.New("structured replicas must be exactly 1; process-local idempotency requires a single replica with maxSurge=0 or strategy Recreate")
 	}
 	return nil
-}
-
-// StructuredIdempotencyWarnings reports the operational limits an operator has
-// to know about but that must not stop the process. The fail-closed guard in
-// validateStructured only sees the *declared* replica count, so it cannot
-// observe drift: an HPA, a surge pod during a rolling update, or a stray
-// process all raise the real concurrency without changing STRUCTURED_REPLICAS.
-//
-// The warnings are derived, not stored, so a hand-built Config gets the same
-// answer as a parsed one. Nothing here changes which configurations are
-// accepted.
-func (c Config) StructuredIdempotencyWarnings() []string {
-	if !c.StructuredEnabled {
-		return nil
-	}
-	warnings := []string{}
-	if c.IdempotencyBackend() == IdempotencyBackendMemory {
-		warnings = append(warnings, "structured idempotency backend=memory is process-local: single-flight and replay do not span processes. A rolling update runs the old and new pods at once (maxSurge > 0), so a duplicate idempotency_key can reach two processes even at STRUCTURED_REPLICAS=1. Set STRUCTURED_IDEMPOTENCY_BACKEND=file with a shared STRUCTURED_IDEMPOTENCY_DIR, or deploy with maxSurge=0 / strategy: Recreate")
-	} else {
-		warnings = append(warnings, "STRUCTURED_REPLICAS is a declared count, not a detected one: the startup guard cannot observe drift from an HPA, a surge pod, or a stray process, so keep the declared value at or above the real concurrency")
-	}
-	return warnings
-}
-
-// IdempotencyBackend normalizes the configured structured idempotency backend.
-// An empty value means the default, so a hand-built Config keeps working.
-func (c Config) IdempotencyBackend() string {
-	backend := strings.ToLower(strings.TrimSpace(c.StructuredIdempotencyBackend))
-	if backend == "" {
-		return DefaultStructuredIdempotencyBackend
-	}
-	return backend
 }
 
 // ProviderEnabled reports whether a provider is on the gateway allowlist. An
