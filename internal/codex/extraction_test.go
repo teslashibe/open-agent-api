@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 
@@ -22,7 +23,6 @@ func extractionRequest() Request {
 		Verbosity:       "low",
 		Extraction:      true,
 		ResponseFormat:  json.RawMessage(extractionFormat),
-		MaxOutputTokens: 512,
 		// A caller that leaves tools populated must still get a tool-free
 		// extraction payload.
 		Tools:      json.RawMessage(`[{"type":"function","function":{"name":"shell","parameters":{}}}]`),
@@ -30,6 +30,47 @@ func extractionRequest() Request {
 		Faithful:   true,
 		Prewarm:    true,
 	}
+}
+
+// extractionPayloadKeys is the complete set of upstream-supported keys an
+// extraction payload may carry. max_output_tokens is deliberately absent:
+// Codex Responses honours no output-token cap (issue #126).
+var extractionPayloadKeys = []string{
+	"type",
+	"model",
+	"instructions",
+	"input",
+	"stream",
+	"store",
+	"reasoning",
+	"text",
+	"prompt_cache_key",
+}
+
+// assertPayloadKeys fails unless payload's keys are exactly want.
+func assertPayloadKeys(t *testing.T, payload map[string]any, want []string) {
+	t.Helper()
+	expected := make(map[string]bool, len(want))
+	for _, key := range want {
+		expected[key] = true
+		if _, present := payload[key]; !present {
+			t.Fatalf("extraction payload is missing %q: %v", key, sortedKeys(payload))
+		}
+	}
+	for key := range payload {
+		if !expected[key] {
+			t.Fatalf("extraction payload carries unsupported key %q: %#v", key, payload[key])
+		}
+	}
+}
+
+func sortedKeys(payload map[string]any) []string {
+	keys := make([]string, 0, len(payload))
+	for key := range payload {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func TestBuildMinimalEmitsStrictJSONSchemaForExtraction(t *testing.T) {
@@ -57,14 +98,10 @@ func TestBuildMinimalEmitsStrictJSONSchemaForExtraction(t *testing.T) {
 	if _, ok := format["schema"].(map[string]any); !ok {
 		t.Fatalf("format.schema = %#v", format["schema"])
 	}
-	if payload["max_output_tokens"] != 512 {
-		t.Fatalf("max_output_tokens = %v", payload["max_output_tokens"])
-	}
-	for _, forbidden := range []string{"tools", "tool_choice", "parallel_tool_calls", "include", "client_metadata"} {
-		if _, present := payload[forbidden]; present {
-			t.Fatalf("extraction payload unexpectedly includes %q: %#v", forbidden, payload[forbidden])
-		}
-	}
+	// Pin the exact key set: Codex Responses supports no output cap, so an
+	// extraction payload must carry these keys and nothing else. A new key here
+	// is a deliberate contract change, not an accident.
+	assertPayloadKeys(t, payload, extractionPayloadKeys)
 	// The captured CLI profile must never leak into an extraction turn.
 	if payload["instructions"] != "extract strictly" {
 		t.Fatalf("instructions = %v, want only the caller's system message", payload["instructions"])
@@ -75,7 +112,6 @@ func TestBuildMinimalExtractionOmitsUnsetOptionals(t *testing.T) {
 	builder := fixtureBuilder()
 	req := extractionRequest()
 	req.ResponseFormat = nil
-	req.MaxOutputTokens = 0
 
 	payload, err := builder.buildMinimal(req)
 	if err != nil {
@@ -85,9 +121,7 @@ func TestBuildMinimalExtractionOmitsUnsetOptionals(t *testing.T) {
 	if _, present := text["format"]; present {
 		t.Fatalf("text.format = %#v, want absent", text["format"])
 	}
-	if _, present := payload["max_output_tokens"]; present {
-		t.Fatalf("max_output_tokens = %#v, want absent", payload["max_output_tokens"])
-	}
+	assertPayloadKeys(t, payload, extractionPayloadKeys)
 }
 
 func TestBuildMinimalExtractionRejectsInvalidResponseFormat(t *testing.T) {

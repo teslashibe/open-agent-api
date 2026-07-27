@@ -96,9 +96,9 @@ func structuredInference(opts options) fiber.Handler {
 			IdempotencyKey:     req.IdempotencyKey,
 		}.Key()
 		// The key scopes storage; the fingerprint binds that slot to the exact
-		// inference asked for. Effort, verbosity, and the output limit are the
-		// effective values actually sent upstream, so a request that clamps to
-		// the same call is a replay rather than a conflict.
+		// inference asked for. Effort and verbosity are the effective values
+		// actually sent upstream, so a request that resolves to the same call is
+		// a replay rather than a conflict.
 		fingerprint := structured.Fingerprint{
 			Caller:             caller.Value,
 			Operation:          req.Operation,
@@ -110,7 +110,6 @@ func structuredInference(opts options) fiber.Handler {
 			ModelPolicyVersion: policyVersion,
 			InputChecksum:      inputChecksum,
 			SchemaChecksum:     structured.SchemaChecksum(req.Schema),
-			MaxOutputTokens:    structuredOutputTokens(req.MaxOutputTokens, opts.contextConfig.StructuredMaxOutputTokens),
 		}.String()
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
@@ -144,6 +143,7 @@ func structuredInference(opts options) fiber.Handler {
 				logLine(opts, "structured_conflict request_id=%s operation=%s model=%s\n", req.RequestID, req.Operation, model.ID)
 			} else {
 				logLine(opts, "structured_error request_id=%s operation=%s model=%s code=%s\n", req.RequestID, req.Operation, model.ID, contractErr.Code)
+				logStructuredUpstreamError(opts, req, model, err)
 			}
 			opts.metrics.ObserveStructuredLatency(model.ID, string(contractErr.Code), opts.now().Sub(start))
 			return writeStructuredError(c, opts, req.RequestID, contractErr, status, retryAfter)
@@ -190,9 +190,8 @@ func runStructuredInference(
 		Verbosity:       defaultString(req.Verbosity, model.Verbosity),
 		RequestID:       req.RequestID,
 		// Extraction turns off tools, the faithful profile/scaffold, and prewarm.
-		Extraction:      true,
-		ResponseFormat:  format,
-		MaxOutputTokens: structuredOutputTokens(req.MaxOutputTokens, opts.contextConfig.StructuredMaxOutputTokens),
+		Extraction:     true,
+		ResponseFormat: format,
 	}
 
 	completion, err := opts.codexService.Complete(ctx, serviceReq)
@@ -226,6 +225,48 @@ func runStructuredInference(
 		ContractVersion:    structured.ContractVersion,
 		Build:              buildinfo.Get(),
 	}, nil
+}
+
+// maxProviderMessageRunes bounds the provider message written to the log, so a
+// single failure can never dominate a log line or a log budget.
+const maxProviderMessageRunes = 200
+
+// logStructuredUpstreamError records why the provider failed, for an operator
+// who only ever sees the deliberately generic client body. It is a no-op unless
+// the failure actually came from the Codex provider.
+//
+// Redaction discipline: only the provider kind, HTTP status, and Message are
+// logged. Every codex.NewError call site passes a fixed in-repo string, never an
+// upstream body or caller data, and err.Error() is deliberately not used — the
+// wrapped chain can carry upstream detail. Request input, the schema, the model
+// output, and the Authorization header never reach this line; the caller is
+// identified by request_id, which is the caller's own trace identity.
+func logStructuredUpstreamError(opts options, req structured.Request, model structured.ResolvedModel, err error) {
+	serviceErr, ok := codex.ErrorAs(err)
+	if !ok {
+		return
+	}
+	logLine(opts, "structured_upstream_error request_id=%s operation=%s model=%s provider=codex provider_kind=%s provider_status=%d provider_message=%q\n",
+		req.RequestID, req.Operation, model.ID, serviceErr.Kind, serviceErr.Status, sanitizeProviderMessage(serviceErr.Message))
+}
+
+// sanitizeProviderMessage collapses newlines and tabs and truncates, so a future
+// non-constant provider message cannot smuggle multi-line content into the log
+// or forge a second log record.
+func sanitizeProviderMessage(message string) string {
+	collapsed := strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t', '\v', '\f':
+			return ' '
+		}
+		return r
+	}, message)
+	collapsed = strings.TrimSpace(collapsed)
+	runes := []rune(collapsed)
+	if len(runes) > maxProviderMessageRunes {
+		return string(runes[:maxProviderMessageRunes]) + "…"
+	}
+	return collapsed
 }
 
 // structuredResponseFormat builds the upstream strict json_schema text.format
@@ -281,17 +322,6 @@ func structuredDeadline(deadlineMS int, max time.Duration) time.Duration {
 	}
 	requested := time.Duration(deadlineMS) * time.Millisecond
 	if requested > max {
-		return max
-	}
-	return requested
-}
-
-// structuredOutputTokens clamps the caller-supplied output cap.
-func structuredOutputTokens(requested int, max int) int {
-	if max <= 0 {
-		max = math.MaxInt32
-	}
-	if requested <= 0 || requested > max {
 		return max
 	}
 	return requested

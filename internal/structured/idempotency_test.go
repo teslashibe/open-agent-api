@@ -27,7 +27,6 @@ func baseFingerprint() Fingerprint {
 		ModelPolicyVersion: "policy-1",
 		InputChecksum:      InputChecksum("hello"),
 		SchemaChecksum:     SchemaChecksum([]byte(`{"type":"object"}`)),
-		MaxOutputTokens:    512,
 	}
 }
 

@@ -102,7 +102,6 @@ func TestRequestValidateRejectsMalformedEnvelopes(t *testing.T) {
 		"no input":          func(r *Request) { r.Input = "   " },
 		"no schema":         func(r *Request) { r.Schema = nil },
 		"no schema version": func(r *Request) { r.SchemaVersion = "" },
-		"negative tokens":   func(r *Request) { r.MaxOutputTokens = -1 },
 		"negative deadline": func(r *Request) { r.DeadlineMS = -1 },
 		"bad effort":        func(r *Request) { r.ReasoningEffort = "turbo" },
 		"bad verbosity":     func(r *Request) { r.Verbosity = "loud" },

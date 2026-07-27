@@ -55,7 +55,6 @@ const (
 	DefaultStructuredQueueLimit      = 16
 	DefaultStructuredQueueTimeout    = 30 * time.Second
 	DefaultStructuredMaxDeadline     = 5 * time.Minute
-	DefaultStructuredMaxOutputTokens = 32768
 	DefaultStructuredIdempotencyTTL  = 10 * time.Minute
 	// Idempotency stays in memory unless a deploy points it at a shared
 	// directory, so a single-replica gateway keeps today's behavior exactly.
@@ -140,8 +139,6 @@ type Config struct {
 	StructuredQueueTimeout    time.Duration
 	// StructuredMaxDeadline caps the caller-supplied deadline_ms.
 	StructuredMaxDeadline time.Duration
-	// StructuredMaxOutputTokens caps the caller-supplied max_output_tokens.
-	StructuredMaxOutputTokens int
 	// StructuredIdempotencyTTL is how long a stored response can be replayed.
 	StructuredIdempotencyTTL time.Duration
 	// StructuredIdempotencyBackend selects the idempotency store: "memory"
@@ -452,7 +449,6 @@ func Load(args []string) (Config, error) {
 		{"STRUCTURED_MAX_ACTIVE", &cfg.StructuredMaxActive},
 		{"STRUCTURED_MAX_ACTIVE_PER_KEY", &cfg.StructuredMaxActivePerKey},
 		{"STRUCTURED_QUEUE_LIMIT", &cfg.StructuredQueueLimit},
-		{"STRUCTURED_MAX_OUTPUT_TOKENS", &cfg.StructuredMaxOutputTokens},
 		{"STRUCTURED_REPLICAS", &cfg.StructuredReplicas},
 	} {
 		if value := os.Getenv(override.env); value != "" {
@@ -539,7 +535,6 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.StructuredQueueLimit, "structured-queue-limit", cfg.StructuredQueueLimit, "maximum waiting structured inference requests")
 	fs.DurationVar(&cfg.StructuredQueueTimeout, "structured-queue-timeout", cfg.StructuredQueueTimeout, "maximum time a structured inference request can wait for admission")
 	fs.DurationVar(&cfg.StructuredMaxDeadline, "structured-max-deadline", cfg.StructuredMaxDeadline, "upper bound applied to the caller-supplied structured deadline_ms")
-	fs.IntVar(&cfg.StructuredMaxOutputTokens, "structured-max-output-tokens", cfg.StructuredMaxOutputTokens, "upper bound applied to the caller-supplied structured max_output_tokens")
 	fs.DurationVar(&cfg.StructuredIdempotencyTTL, "structured-idempotency-ttl", cfg.StructuredIdempotencyTTL, "how long a structured response can be replayed for the same idempotency key")
 	fs.StringVar(&cfg.StructuredIdempotencyBackend, "structured-idempotency-backend", cfg.StructuredIdempotencyBackend, "structured idempotency store: memory (process-local) or file (shared directory, durable across pods and restarts)")
 	fs.StringVar(&cfg.StructuredIdempotencyDir, "structured-idempotency-dir", cfg.StructuredIdempotencyDir, "shared directory backing the file idempotency backend; every replica must mount the same volume")
@@ -623,7 +618,6 @@ func Defaults() Config {
 		StructuredQueueLimit:               DefaultStructuredQueueLimit,
 		StructuredQueueTimeout:             DefaultStructuredQueueTimeout,
 		StructuredMaxDeadline:              DefaultStructuredMaxDeadline,
-		StructuredMaxOutputTokens:          DefaultStructuredMaxOutputTokens,
 		StructuredIdempotencyTTL:           DefaultStructuredIdempotencyTTL,
 		StructuredIdempotencyBackend:       DefaultStructuredIdempotencyBackend,
 		StructuredIdempotencyDir:           "",
@@ -799,9 +793,6 @@ func (c Config) validateStructured() error {
 	}
 	if c.StructuredMaxDeadline <= 0 {
 		return errors.New("structured max deadline must be positive")
-	}
-	if c.StructuredMaxOutputTokens < 1 {
-		return errors.New("structured max output tokens must be at least 1")
 	}
 	if c.StructuredIdempotencyTTL <= 0 {
 		return errors.New("structured idempotency ttl must be positive")

@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"strconv"
 	"strings"
 )
 
@@ -17,8 +16,8 @@ import (
 // KeyParts scopes *storage*: two requests that differ in caller, operation,
 // input, schema version, or model policy version never share a slot at all. The
 // fingerprint closes the remaining gap: everything that changes the upstream
-// call but is not part of the storage key (model, effort, verbosity, output
-// limit, schema body). The overlap with KeyParts is deliberate — a fingerprint
+// call but is not part of the storage key (model, effort, verbosity, schema
+// body). The overlap with KeyParts is deliberate — a fingerprint
 // that only covered the difference would be unreadable and would silently stop
 // binding if KeyParts ever narrowed.
 //
@@ -50,8 +49,6 @@ type Fingerprint struct {
 	// SchemaChecksum is a checksum of the canonicalized schema body, so a
 	// re-serialized but semantically identical schema is not a conflict.
 	SchemaChecksum string
-	// MaxOutputTokens is the effective, already-clamped output limit.
-	MaxOutputTokens int
 }
 
 // String derives the stored fingerprint. Every component is length-prefixed, on
@@ -70,9 +67,6 @@ func (f Fingerprint) String() string {
 		f.ModelPolicyVersion,
 		f.InputChecksum,
 		f.SchemaChecksum,
-		// strconv, not the internal itoa: a negative limit would otherwise
-		// collapse to the empty string and stop being distinguishable.
-		strconv.Itoa(f.MaxOutputTokens),
 	} {
 		_, _ = hash.Write([]byte(itoa(len(part))))
 		_, _ = hash.Write([]byte{':'})

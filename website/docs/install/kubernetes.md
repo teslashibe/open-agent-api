@@ -92,6 +92,12 @@ The startup guard reads `STRUCTURED_REPLICAS`, which is a **declared** count, no
 
 The sharpest case is a rolling update. With the default `maxSurge: 25%` the new pod starts before the old one terminates, so **two processes run at once even at `STRUCTURED_REPLICAS=1`**. On the memory backend their idempotency stores are independent, and a Report Studio retry landing on the new pod during that window issues a second upstream call. The gateway logs a `structured_idempotency_warning` line at startup whenever structured inference is enabled on the memory backend; treat it as a deployment requirement, not noise.
 
+:::warning Release condition
+
+Structured inference is not cleared for release in any other shape. Enable it **only** with the file backend on `ReadWriteMany` storage, or on the memory backend with `maxSurge: 0` (or `strategy: Recreate`). The memory backend under a default rolling update double-bills duplicate keys, and the startup guard cannot detect it — the declared replica count is still `1`.
+
+:::
+
 Pick one of the two safe shapes when enabling structured inference:
 
 - **File backend on a shared `ReadWriteMany` PVC** (above). Single-flight and replay span processes, so a surge pod is fine.

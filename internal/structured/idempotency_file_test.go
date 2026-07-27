@@ -545,6 +545,76 @@ func TestFileBackendTreatsVersionOneRecordsAsAMiss(t *testing.T) {
 	}
 }
 
+// Issue 126: a version 2 record's fingerprint hashed max_output_tokens, so the
+// identical retry of a live pre-upgrade key computes a different fingerprint
+// under version 3. It must be a clean miss — replaying would hand back a
+// response bound to a fingerprint this build cannot reproduce, and conflicting
+// would wedge the key for its whole TTL.
+func TestFileBackendTreatsVersionTwoRecordsAsAMiss(t *testing.T) {
+	dir := t.TempDir()
+	backend, err := NewFileBackend(dir, time.Minute, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The version 2 shape is byte-identical to version 3; only the meaning of
+	// Fingerprint changed, which is exactly why the version guard is the only
+	// thing that can catch it.
+	legacy := IdempotencyRecord{
+		Version:     2,
+		Response:    Response{UpstreamResponseID: "resp-v2", Data: json.RawMessage(`{"title":"legacy"}`)},
+		Stored:      time.Now(),
+		Expires:     time.Now().Add(time.Hour),
+		Fingerprint: "fingerprint-computed-with-max-output-tokens",
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := backend.recordPath(crossProcessKey)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, loadErr := backend.Load(crossProcessKey); ok || loadErr != nil {
+		t.Fatalf("Load() of a v2 record ok=%v err=%v, want a clean miss", ok, loadErr)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the v2 record was not discarded (stat err = %v)", err)
+	}
+
+	// End to end: one extra upstream call, then the key is republished at the
+	// current version bound to a fingerprint this build can reproduce.
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calls int32
+	store := NewIdempotencyStoreWithBackend(time.Minute, 8, nil, backend)
+	response, replay, err := store.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-v3"))
+	if err != nil || replay || response.UpstreamResponseID != "resp-v3" {
+		t.Fatalf("v2 record = %#v replay=%v err=%v, want a fresh call", response, replay, err)
+	}
+	republished, ok, err := backend.Load(crossProcessKey)
+	if err != nil || !ok {
+		t.Fatalf("republished Load() ok=%v err=%v", ok, err)
+	}
+	if republished.Version != IdempotencyRecordVersion || republished.Fingerprint != testFingerprint {
+		t.Fatalf("republished record = %#v, want version %d bound to %q", republished, IdempotencyRecordVersion, testFingerprint)
+	}
+
+	// The retry after the republish replays, so the miss costs exactly one call.
+	replayed, replay, err := store.Do(context.Background(), crossProcessKey, testFingerprint, upstreamOnce(&calls, "resp-v4"))
+	if err != nil || !replay || replayed.UpstreamResponseID != "resp-v3" {
+		t.Fatalf("retry after republish = %#v replay=%v err=%v", replayed, replay, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
 // AC4 across processes: a durable record bound to other parameters conflicts on
 // a second pod instead of replaying or re-calling upstream.
 func TestFileBackendConflictsOnADivergentFingerprint(t *testing.T) {

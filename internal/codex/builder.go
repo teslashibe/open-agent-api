@@ -136,10 +136,12 @@ func (b requestBuilder) buildMinimal(req Request) (map[string]any, error) {
 		"text":             map[string]any{"verbosity": req.Verbosity},
 		"prompt_cache_key": b.newPromptCache(),
 	}
-	// Extraction turns are structured inference: strict output format, a hard
-	// output cap, and no tool surface at all. Returning here guarantees no
+	// Extraction turns are structured inference: strict output format and no
+	// tool surface at all. Returning here guarantees no
 	// tools/tool_choice/parallel_tool_calls can reach the payload even if a
-	// caller populated them.
+	// caller populated them. Codex Responses supports no output-token cap, so
+	// the extraction payload carries exactly the keys set above plus text.format
+	// and nothing else.
 	if req.Extraction {
 		text := map[string]any{"verbosity": req.Verbosity}
 		if rawJSONPresent(req.ResponseFormat) {
@@ -150,9 +152,6 @@ func (b requestBuilder) buildMinimal(req Request) (map[string]any, error) {
 			text["format"] = format
 		}
 		payload["text"] = text
-		if req.MaxOutputTokens > 0 {
-			payload["max_output_tokens"] = req.MaxOutputTokens
-		}
 		return payload, nil
 	}
 	if rawJSONPresent(req.Tools) {

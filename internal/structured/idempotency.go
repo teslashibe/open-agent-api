@@ -75,7 +75,15 @@ var ErrIdempotencyConflict = NewError(
 // Version 2 adds Fingerprint. A version 1 record carries no fingerprint, so its
 // binding to a set of request parameters is unprovable; it is a miss and is
 // unlinked rather than replayed. See docs/issue-124-validation.md.
-const IdempotencyRecordVersion = 2
+//
+// Version 3 drops max_output_tokens from Fingerprint. The field is unchanged in
+// shape, but every version 2 fingerprint hashed one extra component, so an
+// identical retry of a live pre-upgrade key would otherwise compute a different
+// fingerprint and get a 409 idempotency_conflict that wedges the key for the
+// whole TTL. Treating version 2 as a miss costs at most one extra upstream call
+// per live key, bounded by STRUCTURED_IDEMPOTENCY_TTL — the same trade already
+// recorded for the 1 → 2 bump. See docs/issue-126-validation.md.
+const IdempotencyRecordVersion = 3
 
 // IdempotencyRecord is the durable form of a stored success. Version guards the
 // on-disk format so an old pod reading a newer record treats it as a miss
