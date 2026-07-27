@@ -96,7 +96,9 @@ func TestStructuredMetricsBoundModelAndCodeCardinality(t *testing.T) {
 		`codex_chat_api_structured_latency_seconds_count{model="other",result="success"} 1`,
 		`codex_chat_api_structured_latency_seconds_count{model="gpt-5.6-sol",result="unknown"} 1`,
 		`codex_chat_api_structured_failures_total{code="unknown"} 1`,
-		`codex_chat_api_structured_validation_total{result="invalid"} 1`,
+		// Issue 124 AC6: an unrecognized validation label is "unknown", not a
+		// counted schema failure.
+		`codex_chat_api_structured_validation_total{result="unknown"} 1`,
 		`codex_chat_api_structured_idempotency_total{result="unknown"} 1`,
 	} {
 		if !strings.Contains(body, want) {
@@ -115,6 +117,76 @@ func TestDisabledStructuredMetricsAreNoop(t *testing.T) {
 	m.ObserveStructuredIdempotency("store_hit")
 	m.IncStructuredInflight()
 	m.DecStructuredInflight()
+}
+
+// Issue 124 AC6: a typo or a label added later must land on "unknown". Falling
+// back to "invalid" made a reporting gap indistinguishable from real model
+// non-compliance — the one signal operators judge schema health by.
+func TestStructuredValidationUnknownLabelsDoNotForgeSchemaFailures(t *testing.T) {
+	m := New(true)
+	for _, label := range []string{
+		"vaild",       // typo of "valid"
+		"invald",      // typo of "invalid"
+		"unparsible",  // typo of "unparsable"
+		"truncated",   // a label a later change might add
+		"",            // an unset result
+		"INVALID",     // wrong case
+		" unparsable", // untrimmed
+	} {
+		m.ObserveStructuredValidation(label)
+	}
+
+	body := scrape(t, m)
+	if !strings.Contains(body, `codex_chat_api_structured_validation_total{result="unknown"} 7`) {
+		t.Fatalf("unknown validation labels were not folded onto result=\"unknown\":\n%s", body)
+	}
+	// Crucially, none of them inflated a real outcome.
+	for _, forbidden := range []string{
+		`codex_chat_api_structured_validation_total{result="invalid"}`,
+		`codex_chat_api_structured_validation_total{result="valid"}`,
+		`codex_chat_api_structured_validation_total{result="unparsable"}`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("an unknown label was counted as %s:\n%s", forbidden, body)
+		}
+	}
+
+	// The three real labels still count themselves, unchanged.
+	for _, label := range []string{"valid", "invalid", "unparsable"} {
+		m.ObserveStructuredValidation(label)
+	}
+	body = scrape(t, m)
+	for _, want := range []string{
+		`codex_chat_api_structured_validation_total{result="valid"} 1`,
+		`codex_chat_api_structured_validation_total{result="invalid"} 1`,
+		`codex_chat_api_structured_validation_total{result="unparsable"} 1`,
+		`codex_chat_api_structured_validation_total{result="unknown"} 7`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// The conflict outcome and its contract code are part of the closed label sets,
+// so the 409 path is observable rather than folded into "unknown".
+func TestStructuredConflictLabelsAreCounted(t *testing.T) {
+	m := New(true)
+	m.AllowStructuredModels([]string{"gpt-5.6-sol"})
+	m.ObserveStructuredIdempotency("conflict")
+	m.ObserveStructuredFailure("idempotency_conflict")
+	m.ObserveStructuredLatency("gpt-5.6-sol", "idempotency_conflict", time.Second)
+
+	body := scrape(t, m)
+	for _, want := range []string{
+		`codex_chat_api_structured_idempotency_total{result="conflict"} 1`,
+		`codex_chat_api_structured_failures_total{code="idempotency_conflict"} 1`,
+		`codex_chat_api_structured_latency_seconds_count{model="gpt-5.6-sol",result="idempotency_conflict"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, body)
+		}
+	}
 }
 
 func TestMetricsNormalizeUntrustedLabels(t *testing.T) {

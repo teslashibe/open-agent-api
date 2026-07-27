@@ -85,14 +85,33 @@ func structuredInference(opts options) fiber.Handler {
 		}
 
 		caller := structuredCaller(opts, c)
+		inputChecksum := structured.InputChecksum(req.Input)
+		policyVersion := opts.structuredPolicy.Version()
 		key := structured.KeyParts{
 			Caller:             caller.Value,
 			Operation:          req.Operation,
-			InputChecksum:      structured.InputChecksum(req.Input),
+			InputChecksum:      inputChecksum,
 			SchemaVersion:      req.SchemaVersion,
-			ModelPolicyVersion: opts.structuredPolicy.Version(),
+			ModelPolicyVersion: policyVersion,
 			IdempotencyKey:     req.IdempotencyKey,
 		}.Key()
+		// The key scopes storage; the fingerprint binds that slot to the exact
+		// inference asked for. Effort, verbosity, and the output limit are the
+		// effective values actually sent upstream, so a request that clamps to
+		// the same call is a replay rather than a conflict.
+		fingerprint := structured.Fingerprint{
+			Caller:             caller.Value,
+			Operation:          req.Operation,
+			Model:              req.Model,
+			ResolvedModel:      model.ID,
+			ReasoningEffort:    defaultString(req.ReasoningEffort, model.ReasoningEffort),
+			Verbosity:          defaultString(req.Verbosity, model.Verbosity),
+			SchemaVersion:      req.SchemaVersion,
+			ModelPolicyVersion: policyVersion,
+			InputChecksum:      inputChecksum,
+			SchemaChecksum:     structured.SchemaChecksum(req.Schema),
+			MaxOutputTokens:    structuredOutputTokens(req.MaxOutputTokens, opts.contextConfig.StructuredMaxOutputTokens),
+		}.String()
 
 		ctx, cancel := requestContext(c, opts.requestContext(c))
 		defer cancel()
@@ -113,12 +132,19 @@ func structuredInference(opts options) fiber.Handler {
 		logLine(opts, "structured_admit request_id=%s operation=%s model=%s caller=%s queue_wait_ms=%d deadline_ms=%d\n",
 			req.RequestID, req.Operation, model.ID, caller.Hash, queueWait.Milliseconds(), deadline.Milliseconds())
 
-		response, replay, err := opts.structuredIdempotency.Do(ctx, key, func() (structured.Response, error) {
+		response, replay, err := opts.structuredIdempotency.Do(ctx, key, fingerprint, func() (structured.Response, error) {
 			return runStructuredInference(ctx, opts, req, schema, model, start)
 		})
 		if err != nil {
 			contractErr, status, retryAfter := structuredFailure(err)
-			logLine(opts, "structured_error request_id=%s operation=%s model=%s code=%s\n", req.RequestID, req.Operation, model.ID, contractErr.Code)
+			if contractErr.Code == structured.CodeIdempotencyConflict {
+				// A conflict is a caller mistake, not a gateway or upstream
+				// fault, and it made no upstream call. Its own greppable prefix
+				// keeps it out of the error-rate signal.
+				logLine(opts, "structured_conflict request_id=%s operation=%s model=%s\n", req.RequestID, req.Operation, model.ID)
+			} else {
+				logLine(opts, "structured_error request_id=%s operation=%s model=%s code=%s\n", req.RequestID, req.Operation, model.ID, contractErr.Code)
+			}
 			opts.metrics.ObserveStructuredLatency(model.ID, string(contractErr.Code), opts.now().Sub(start))
 			return writeStructuredError(c, opts, req.RequestID, contractErr, status, retryAfter)
 		}
@@ -315,6 +341,10 @@ func structuredFailure(err error) (*structured.Error, int, time.Duration) {
 			return contractErr, fiber.StatusBadRequest, 0
 		case structured.CodeUnsupportedModel:
 			return contractErr, fiber.StatusNotFound, 0
+		case structured.CodeIdempotencyConflict:
+			// 409 so a client that only branches on status still distinguishes
+			// "your key means something else" from a retryable failure.
+			return contractErr, fiber.StatusConflict, 0
 		default:
 			return contractErr, fiber.StatusBadGateway, 0
 		}

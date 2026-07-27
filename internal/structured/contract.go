@@ -17,7 +17,10 @@ import (
 // ContractVersion is the semantic version of the wire envelope below. Bump the
 // minor for additive fields and the major for anything a consumer could break
 // on. It is echoed on every success and error response.
-const ContractVersion = "1.0.0"
+// 1.1.0 adds the additive error code "idempotency_conflict"; no field changed
+// shape, so a client that branches on HTTP status or ignores unknown codes is
+// unaffected.
+const ContractVersion = "1.1.0"
 
 // Operation is the caller-declared logical operation. It scopes idempotency so
 // two different extractions of the same input never collide.
@@ -101,6 +104,12 @@ const (
 	CodeInvalidRequest ErrorCode = "invalid_request"
 	// CodeUnavailable is the gateway refusing new work (draining).
 	CodeUnavailable ErrorCode = "unavailable"
+	// CodeIdempotencyConflict is an idempotency_key reused, within its TTL and
+	// the same scope, with materially different inference parameters. It is a
+	// deterministic 409: the gateway makes no upstream call and never replays a
+	// response produced under different parameters. Retry with a fresh key, or
+	// send the original parameters.
+	CodeIdempotencyConflict ErrorCode = "idempotency_conflict"
 )
 
 // ErrorResponse is the structured-inference failure envelope.

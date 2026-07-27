@@ -95,11 +95,11 @@ func New(enabled bool) *Metrics {
 	}, []string{"code"})
 	m.structuredValidation = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "codex_chat_api_structured_validation_total",
-		Help: "Structured inference schema validation outcomes.",
+		Help: "Structured inference schema validation outcomes: valid, invalid, unparsable, unknown.",
 	}, []string{"result"})
 	m.structuredIdempotency = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "codex_chat_api_structured_idempotency_total",
-		Help: "Structured inference idempotency outcomes: local_hit, store_hit, miss, backend_error.",
+		Help: "Structured inference idempotency outcomes: local_hit, store_hit, miss, backend_error, conflict.",
 	}, []string{"result"})
 	m.structuredInflight = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "codex_chat_api_structured_inflight",
@@ -255,8 +255,8 @@ func (m *Metrics) ObserveStructuredValidation(result string) {
 }
 
 // ObserveStructuredIdempotency counts one idempotency outcome. The label set is
-// closed — local_hit, store_hit, miss, backend_error — so a durable backend
-// cannot grow cardinality with keys or paths.
+// closed — local_hit, store_hit, miss, backend_error, conflict — so a durable
+// backend cannot grow cardinality with keys or paths.
 func (m *Metrics) ObserveStructuredIdempotency(result string) {
 	if m.Enabled() {
 		m.structuredIdempotency.WithLabelValues(normalizeStructuredIdempotency(result)).Inc()
@@ -309,15 +309,20 @@ func normalizeStructuredCode(value string) string {
 		"output_validation_failed",
 		"invalid_request",
 		"unavailable",
+		"idempotency_conflict",
 	)
 }
 
+// normalizeStructuredValidation keeps the label set closed. The fallback is
+// "unknown", not "invalid": a typo or a newly added label is a reporting gap,
+// and counting it as a real schema failure would manufacture a false alarm on
+// the one metric operators use to judge model compliance.
 func normalizeStructuredValidation(value string) string {
-	return allow(value, "invalid", "valid", "invalid", "unparsable")
+	return allow(value, "unknown", "valid", "invalid", "unparsable")
 }
 
 func normalizeStructuredIdempotency(value string) string {
-	return allow(value, "unknown", "local_hit", "store_hit", "miss", "backend_error")
+	return allow(value, "unknown", "local_hit", "store_hit", "miss", "backend_error", "conflict")
 }
 
 func normalizeProvider(value string) string {
