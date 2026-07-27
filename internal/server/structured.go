@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -74,6 +75,15 @@ func structuredInference(opts options) fiber.Handler {
 			return writeStructuredError(c, opts, req.RequestID, err, fiber.StatusBadRequest, 0)
 		}
 
+		// request_id and operation are caller-controlled and are the only
+		// caller-controlled strings that reach a log field. Sanitize once here
+		// and use the sanitized values everywhere a log record — this handler's,
+		// the queue's, or the codex pool's — can see them. The response envelope
+		// keeps echoing the raw req.RequestID: it is JSON-encoded, so it cannot
+		// forge anything there.
+		logRequestID := sanitizeLogField(req.RequestID)
+		logOperation := sanitizeLogField(req.Operation)
+
 		schema, schemaErr := structured.CompileSchema(req.Schema)
 		if schemaErr != nil {
 			return writeStructuredError(c, opts, req.RequestID, schemaErr, fiber.StatusBadRequest, 0)
@@ -118,10 +128,10 @@ func structuredInference(opts options) fiber.Handler {
 		ctx, cancelDeadline := context.WithTimeout(ctx, deadline)
 		defer cancelDeadline()
 
-		release, queueWait, queueErr := opts.structuredQueue.acquire(ctx, req.RequestID, caller, turnClassSimpleNoTool)
+		release, queueWait, queueErr := opts.structuredQueue.acquire(ctx, logRequestID, caller, turnClassSimpleNoTool)
 		if queueErr != nil {
 			contractErr, status, retryAfter := structuredAdmissionFailure(queueErr)
-			logLine(opts, "structured_shed request_id=%s operation=%s model=%s code=%s\n", req.RequestID, req.Operation, model.ID, contractErr.Code)
+			logLine(opts, "structured_shed request_id=%s operation=%s model=%s code=%s\n", logRequestID, logOperation, model.ID, contractErr.Code)
 			return writeStructuredError(c, opts, req.RequestID, contractErr, status, retryAfter)
 		}
 		defer release()
@@ -129,10 +139,10 @@ func structuredInference(opts options) fiber.Handler {
 		defer opts.metrics.DecStructuredInflight()
 
 		logLine(opts, "structured_admit request_id=%s operation=%s model=%s caller=%s queue_wait_ms=%d deadline_ms=%d\n",
-			req.RequestID, req.Operation, model.ID, caller.Hash, queueWait.Milliseconds(), deadline.Milliseconds())
+			logRequestID, logOperation, model.ID, caller.Hash, queueWait.Milliseconds(), deadline.Milliseconds())
 
 		response, replay, err := opts.structuredIdempotency.Do(ctx, key, fingerprint, func() (structured.Response, error) {
-			return runStructuredInference(ctx, opts, req, schema, model, start)
+			return runStructuredInference(ctx, opts, req, logRequestID, schema, model, start)
 		})
 		if err != nil {
 			contractErr, status, retryAfter := structuredFailure(err)
@@ -140,10 +150,10 @@ func structuredInference(opts options) fiber.Handler {
 				// A conflict is a caller mistake, not a gateway or upstream
 				// fault, and it made no upstream call. Its own greppable prefix
 				// keeps it out of the error-rate signal.
-				logLine(opts, "structured_conflict request_id=%s operation=%s model=%s\n", req.RequestID, req.Operation, model.ID)
+				logLine(opts, "structured_conflict request_id=%s operation=%s model=%s\n", logRequestID, logOperation, model.ID)
 			} else {
-				logLine(opts, "structured_error request_id=%s operation=%s model=%s code=%s\n", req.RequestID, req.Operation, model.ID, contractErr.Code)
-				logStructuredUpstreamError(opts, req, model, err)
+				logLine(opts, "structured_error request_id=%s operation=%s model=%s code=%s\n", logRequestID, logOperation, model.ID, contractErr.Code)
+				logStructuredUpstreamError(opts, logRequestID, logOperation, model, err)
 			}
 			opts.metrics.ObserveStructuredLatency(model.ID, string(contractErr.Code), opts.now().Sub(start))
 			return writeStructuredError(c, opts, req.RequestID, contractErr, status, retryAfter)
@@ -159,7 +169,7 @@ func structuredInference(opts options) fiber.Handler {
 		}
 		opts.metrics.ObserveStructuredLatency(model.ID, "success", opts.now().Sub(start))
 		logLine(opts, "structured_success request_id=%s operation=%s model=%s replay=%t latency_ms=%d\n",
-			req.RequestID, req.Operation, model.ID, replay, response.LatencyMS)
+			logRequestID, logOperation, model.ID, replay, response.LatencyMS)
 		return c.JSON(response)
 	}
 }
@@ -167,10 +177,14 @@ func structuredInference(opts options) fiber.Handler {
 // runStructuredInference performs one upstream call and validates its output.
 // It runs inside the idempotency single-flight, so a concurrent duplicate waits
 // here instead of issuing a second upstream request.
+//
+// logRequestID is the already-sanitized request_id: the codex pool logs
+// codex.Request.RequestID verbatim, so the raw value must not travel that far.
 func runStructuredInference(
 	ctx context.Context,
 	opts options,
 	req structured.Request,
+	logRequestID string,
 	schema *structured.Schema,
 	model structured.ResolvedModel,
 	start time.Time,
@@ -188,7 +202,7 @@ func runStructuredInference(
 		},
 		ReasoningEffort: defaultString(req.ReasoningEffort, model.ReasoningEffort),
 		Verbosity:       defaultString(req.Verbosity, model.Verbosity),
-		RequestID:       req.RequestID,
+		RequestID:       logRequestID,
 		// Extraction turns off tools, the faithful profile/scaffold, and prewarm.
 		Extraction:     true,
 		ResponseFormat: format,
@@ -231,6 +245,46 @@ func runStructuredInference(
 // single failure can never dominate a log line or a log budget.
 const maxProviderMessageRunes = 200
 
+// maxLogFieldRunes bounds a caller-controlled identifier written to a log
+// field. It matches the contract's own maxRequestIDLength/maxOperationLength
+// (128), so a valid identifier is never truncated and only an oversized one is.
+const maxLogFieldRunes = 128
+
+// sanitizeLogValue is the single implementation of "this string is about to
+// become part of a structured log record". It collapses every line-breaking or
+// control rune to a space, trims, and truncates, so no caller-controlled or
+// upstream-controlled value can forge a second record or flood a log budget.
+//
+// Line breaks are the injection vector: one embedded "\n" in request_id would
+// otherwise let a caller append a fully-formed structured_success (or any other)
+// audit line that greps and log ingestion cannot distinguish from a real one.
+// U+2028/U+2029 are not control runes but are line breaks to plenty of log
+// viewers, so they are collapsed too.
+func sanitizeLogValue(value string, maxRunes int) string {
+	collapsed := strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t', '\v', '\f', '\u0085', '\u2028', '\u2029':
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	collapsed = strings.TrimSpace(collapsed)
+	runes := []rune(collapsed)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "…"
+	}
+	return collapsed
+}
+
+// sanitizeLogField sanitizes a caller-controlled identifier (request_id,
+// operation) for a log record.
+func sanitizeLogField(value string) string {
+	return sanitizeLogValue(value, maxLogFieldRunes)
+}
+
 // logStructuredUpstreamError records why the provider failed, for an operator
 // who only ever sees the deliberately generic client body. It is a no-op unless
 // the failure actually came from the Codex provider.
@@ -241,32 +295,25 @@ const maxProviderMessageRunes = 200
 // wrapped chain can carry upstream detail. Request input, the schema, the model
 // output, and the Authorization header never reach this line; the caller is
 // identified by request_id, which is the caller's own trace identity.
-func logStructuredUpstreamError(opts options, req structured.Request, model structured.ResolvedModel, err error) {
+//
+// requestID and operation must already be sanitized (sanitizeLogField); taking
+// strings rather than the whole structured.Request is what keeps the raw
+// caller-controlled values from being reachable here at all.
+func logStructuredUpstreamError(opts options, requestID string, operation string, model structured.ResolvedModel, err error) {
 	serviceErr, ok := codex.ErrorAs(err)
 	if !ok {
 		return
 	}
 	logLine(opts, "structured_upstream_error request_id=%s operation=%s model=%s provider=codex provider_kind=%s provider_status=%d provider_message=%q\n",
-		req.RequestID, req.Operation, model.ID, serviceErr.Kind, serviceErr.Status, sanitizeProviderMessage(serviceErr.Message))
+		requestID, operation, model.ID, serviceErr.Kind, serviceErr.Status, sanitizeProviderMessage(serviceErr.Message))
 }
 
 // sanitizeProviderMessage collapses newlines and tabs and truncates, so a future
 // non-constant provider message cannot smuggle multi-line content into the log
-// or forge a second log record.
+// or forge a second log record. It is sanitizeLogValue at the provider-message
+// bound; there is deliberately only one implementation.
 func sanitizeProviderMessage(message string) string {
-	collapsed := strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\r', '\t', '\v', '\f':
-			return ' '
-		}
-		return r
-	}, message)
-	collapsed = strings.TrimSpace(collapsed)
-	runes := []rune(collapsed)
-	if len(runes) > maxProviderMessageRunes {
-		return string(runes[:maxProviderMessageRunes]) + "…"
-	}
-	return collapsed
+	return sanitizeLogValue(message, maxProviderMessageRunes)
 }
 
 // structuredResponseFormat builds the upstream strict json_schema text.format

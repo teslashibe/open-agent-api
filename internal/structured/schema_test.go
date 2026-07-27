@@ -87,6 +87,68 @@ func TestCompileSchemaRejectsUnsupportedConstructs(t *testing.T) {
 	}
 }
 
+// Issue 130 AC4: the schema bound is explicit and exact. At the cap the schema
+// still compiles; one byte over is invalid_schema, and the whole point of the
+// pre-decode check is that the over-cap document is never parsed.
+func TestCompileSchemaBoundsSchemaSize(t *testing.T) {
+	if MaxSchemaBytes > 256<<10 {
+		t.Fatalf("MaxSchemaBytes = %d, want no more than 256 KiB", MaxSchemaBytes)
+	}
+	if MaxSchemaBytes >= maxInputBytes {
+		t.Fatalf("MaxSchemaBytes = %d, want it below the %d-byte input cap", MaxSchemaBytes, maxInputBytes)
+	}
+
+	atCap := paddedSchema(t, MaxSchemaBytes)
+	if _, err := CompileSchema(json.RawMessage(atCap)); err != nil {
+		t.Fatalf("CompileSchema() at the cap error = %v (%v)", err, err.Details)
+	}
+
+	overCap := paddedSchema(t, MaxSchemaBytes+1)
+	err := mustRejectSchema(t, overCap)
+	if err.Code != CodeInvalidSchema {
+		t.Fatalf("code = %q, want %q", err.Code, CodeInvalidSchema)
+	}
+	if err.Message != "schema exceeds the maximum size" {
+		t.Fatalf("message = %q, want the size message", err.Message)
+	}
+
+	// A syntactically broken document over the cap reports the size, not a
+	// parse error: it is rejected before it is decoded.
+	broken := strings.Repeat("{", MaxSchemaBytes+1)
+	if got := mustRejectSchema(t, broken); got.Message != "schema exceeds the maximum size" {
+		t.Fatalf("over-cap invalid JSON = %q, want the size message (it must not be parsed)", got.Message)
+	}
+}
+
+// mustRejectSchema compiles raw and fails the test unless it was rejected.
+func mustRejectSchema(t *testing.T, raw string) *Error {
+	t.Helper()
+	schema, err := CompileSchema(json.RawMessage(raw))
+	if err == nil {
+		t.Fatalf("CompileSchema() accepted %#v, want a rejection", schema)
+	}
+	return err
+}
+
+// paddedSchema builds a valid strict-subset schema whose encoding is exactly
+// size bytes, padded through the supported "description" keyword.
+func paddedSchema(t *testing.T, size int) string {
+	t.Helper()
+	const (
+		prefix = `{"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"string"}},"description":"`
+		suffix = `"}`
+	)
+	pad := size - len(prefix) - len(suffix)
+	if pad < 0 {
+		t.Fatalf("size %d is smaller than the schema skeleton (%d bytes)", size, len(prefix)+len(suffix))
+	}
+	schema := prefix + strings.Repeat("d", pad) + suffix
+	if len(schema) != size {
+		t.Fatalf("padded schema = %d bytes, want %d", len(schema), size)
+	}
+	return schema
+}
+
 func TestCompileSchemaReportsEveryViolation(t *testing.T) {
 	_, err := CompileSchema(json.RawMessage(`{
 		"type": "object",

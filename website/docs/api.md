@@ -119,6 +119,23 @@ Rejected: `$ref`, `$defs`, `oneOf`, `anyOf`, `allOf`, `not`, `if`/`then`/`else`,
 
 Two strict-mode rules apply to every object: `additionalProperties` must be present and `false`, and every declared property must appear in `required`.
 
+### Limits
+
+Every bound below is checked at admission, before any upstream call.
+
+| Field | Limit | Rejection |
+| --- | --- | --- |
+| `schema` | 256 KiB | `invalid_schema` 400 — `"schema exceeds the maximum size"` |
+| `input` | 1 MiB | `invalid_request` 400 |
+| `request_id` | 128 characters | `invalid_request` 400 |
+| `operation` | 128 characters | `invalid_request` 400 |
+| `idempotency_key` | 200 characters | `invalid_request` 400 |
+| `schema_version` | 64 characters | `invalid_request` 400 |
+
+The `schema` bound is checked **before the document is parsed**, so an over-cap schema costs a length comparison rather than a JSON decode and a compile. 256 KiB is far above any real strict-subset schema; the `input` cap is unchanged and independent.
+
+Caller-controlled identifiers are **echoed verbatim in the response** — `request_id` comes back exactly as you sent it — but are **sanitized in log records**: line breaks, tabs, and control characters collapse to a space and the value is bounded at 128 characters. A log record is always exactly one line per real event, so an embedded newline cannot forge a second `structured_success` (or any other) audit line. If you send an identifier containing whitespace or control characters, correlating your logs with the gateway's is by prefix rather than by exact match.
+
 ### Idempotency
 
 A response is replayed (`"idempotent_replay": true`) only when the caller, `operation`, input checksum, `schema_version`, `model_policy_version`, **and** `idempotency_key` all match. Change any of them and the inference re-runs. Concurrent duplicates single-flight — one upstream call, everyone gets the same answer. Failures are never stored, so a retry after an error really retries.
