@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -587,6 +588,32 @@ func TestStructuredInferenceMemoryBackendStaysProcessLocal(t *testing.T) {
 	second := decodeStructuredSuccess(t, postStructured(t, appB, structuredBody()))
 	if second.IdempotentReplay || atomic.LoadInt32(&callsB) != 1 {
 		t.Fatalf("memory backend replayed across processes (replay=%v calls=%d)", second.IdempotentReplay, callsB)
+	}
+}
+
+// Issue 122 AC2: the process-local limit of the memory backend is stated at
+// startup, not left for an operator to infer from the absence of an error.
+func TestStructuredEnabledMemoryBackendWarnsAtStartup(t *testing.T) {
+	var logs bytes.Buffer
+	New(structuredTestConfig(), WithCodexService(staticStructuredService(structuredTestOutput)), WithLogOutput(&logs))
+
+	line := logs.String()
+	if !strings.Contains(line, "structured_idempotency_warning") {
+		t.Fatalf("startup log = %q, want a structured_idempotency_warning line", line)
+	}
+	for _, want := range []string{"process-local", "rolling update", "maxSurge", "Recreate"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("warning = %q, want it to mention %q", line, want)
+		}
+	}
+
+	// A dark gateway is unchanged: no warning, because nothing can double-call.
+	var dark bytes.Buffer
+	cfg := structuredTestConfig()
+	cfg.StructuredEnabled = false
+	New(cfg, WithCodexService(staticStructuredService(structuredTestOutput)), WithLogOutput(&dark))
+	if strings.Contains(dark.String(), "structured_idempotency_warning") {
+		t.Fatalf("startup log with structured off = %q, want no warning", dark.String())
 	}
 }
 

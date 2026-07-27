@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -269,6 +270,70 @@ func TestStoreObservesStoreHits(t *testing.T) {
 	if results[IdempotencyStoreHit] != 1 {
 		t.Fatalf("outcomes = %v, want one store_hit", results)
 	}
+}
+
+// AC3/AC5: a duplicate that finds a live reservation must cost a stat, not a
+// create/write/fsync/link/unlink round trip. On a shared PVC the waiters are
+// the majority of the traffic for a key, so their poll has to be read-only.
+func TestFileBackendReserveAvoidsWritesWhileALockIsHeld(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Unix(3000, 0)
+	clock := func() time.Time { return now }
+	backend, err := NewFileBackend(dir, time.Minute, 8, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	release, acquired, err := backend.Reserve(crossProcessKey, now.Add(time.Minute))
+	if err != nil || !acquired {
+		t.Fatalf("first Reserve() acquired=%v err=%v", acquired, err)
+	}
+	defer release(true)
+
+	claims := backend.claimAttempts.Load()
+	for i := 0; i < 32; i++ {
+		if _, acquired, err := backend.Reserve(crossProcessKey, now.Add(time.Minute)); err != nil || acquired {
+			t.Fatalf("blocked Reserve() %d acquired=%v err=%v, want a held reservation to block", i, acquired, err)
+		}
+	}
+	if got := backend.claimAttempts.Load(); got != claims {
+		t.Fatalf("claim attempts = %d, want %d: a blocked waiter must not enter the write path", got, claims)
+	}
+	if temps := tempFiles(t, dir); len(temps) != 0 {
+		t.Fatalf("temp files = %v, want none while the reservation is held", temps)
+	}
+
+	// The shortcut must not swallow the steal: once the stamp passes, the
+	// waiter still takes the write path and wins the key.
+	now = now.Add(2 * time.Minute)
+	stolen, acquired, err := backend.Reserve(crossProcessKey, now.Add(time.Minute))
+	if err != nil || !acquired {
+		t.Fatalf("Reserve() after the stamp lapsed acquired=%v err=%v", acquired, err)
+	}
+	stolen(true)
+	if got := backend.claimAttempts.Load(); got <= claims {
+		t.Fatalf("claim attempts = %d, want more than %d: a lapsed lock must be re-claimed", got, claims)
+	}
+}
+
+// tempFiles lists the in-progress writes left in the shard directories. A
+// blocked waiter must create none.
+func tempFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	paths := []string{}
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), ".tmp-") {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return paths
 }
 
 // AC1: a shared volume must not grow without bound.

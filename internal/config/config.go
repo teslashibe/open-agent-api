@@ -828,6 +828,28 @@ func (c Config) validateStructured() error {
 	return nil
 }
 
+// StructuredIdempotencyWarnings reports the operational limits an operator has
+// to know about but that must not stop the process. The fail-closed guard in
+// validateStructured only sees the *declared* replica count, so it cannot
+// observe drift: an HPA, a surge pod during a rolling update, or a stray
+// process all raise the real concurrency without changing STRUCTURED_REPLICAS.
+//
+// The warnings are derived, not stored, so a hand-built Config gets the same
+// answer as a parsed one. Nothing here changes which configurations are
+// accepted.
+func (c Config) StructuredIdempotencyWarnings() []string {
+	if !c.StructuredEnabled {
+		return nil
+	}
+	warnings := []string{}
+	if c.IdempotencyBackend() == IdempotencyBackendMemory {
+		warnings = append(warnings, "structured idempotency backend=memory is process-local: single-flight and replay do not span processes. A rolling update runs the old and new pods at once (maxSurge > 0), so a duplicate idempotency_key can reach two processes even at STRUCTURED_REPLICAS=1. Set STRUCTURED_IDEMPOTENCY_BACKEND=file with a shared STRUCTURED_IDEMPOTENCY_DIR, or deploy with maxSurge=0 / strategy: Recreate")
+	} else {
+		warnings = append(warnings, "STRUCTURED_REPLICAS is a declared count, not a detected one: the startup guard cannot observe drift from an HPA, a surge pod, or a stray process, so keep the declared value at or above the real concurrency")
+	}
+	return warnings
+}
+
 // IdempotencyBackend normalizes the configured structured idempotency backend.
 // An empty value means the default, so a hand-built Config keeps working.
 func (c Config) IdempotencyBackend() string {

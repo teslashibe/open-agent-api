@@ -210,6 +210,50 @@ func TestStoreWithoutKeyAlwaysRuns(t *testing.T) {
 	}
 }
 
+// AC4: a waiter starts at the 10 ms floor so a fast peer is noticed promptly,
+// then backs off toward a bounded ceiling so a long upstream call cannot turn
+// every duplicate into a busy loop over a shared filesystem.
+func TestWaiterPollIntervalBacksOffToABound(t *testing.T) {
+	if idempotencyMaxPollInterval < 250*time.Millisecond || idempotencyMaxPollInterval > 500*time.Millisecond {
+		t.Fatalf("max poll interval = %s, want it within 250ms..500ms", idempotencyMaxPollInterval)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		current time.Duration
+		want    time.Duration
+	}{
+		{name: "below the floor clamps up", current: time.Millisecond, want: idempotencyPollInterval},
+		{name: "floor doubles", current: idempotencyPollInterval, want: 20 * time.Millisecond},
+		{name: "doubles again", current: 20 * time.Millisecond, want: 40 * time.Millisecond},
+		{name: "overshoot clamps to the ceiling", current: 200 * time.Millisecond, want: idempotencyMaxPollInterval},
+		{name: "ceiling is a fixed point", current: idempotencyMaxPollInterval, want: idempotencyMaxPollInterval},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextPollInterval(tc.current); got != tc.want {
+				t.Fatalf("nextPollInterval(%s) = %s, want %s", tc.current, got, tc.want)
+			}
+		})
+	}
+
+	// Walking the sequence proves it is monotonic and converges rather than
+	// growing without bound.
+	wait := idempotencyPollInterval
+	for i := 0; i < 64; i++ {
+		next := nextPollInterval(wait)
+		if next < wait {
+			t.Fatalf("interval shrank from %s to %s at step %d", wait, next, i)
+		}
+		if next > idempotencyMaxPollInterval {
+			t.Fatalf("interval %s at step %d exceeds the %s ceiling", next, i, idempotencyMaxPollInterval)
+		}
+		wait = next
+	}
+	if wait != idempotencyMaxPollInterval {
+		t.Fatalf("settled interval = %s, want the %s ceiling", wait, idempotencyMaxPollInterval)
+	}
+}
+
 // A backend that fails every operation must degrade to running fn, never to a
 // new error class.
 func TestStoreDegradesWhenTheBackendFails(t *testing.T) {

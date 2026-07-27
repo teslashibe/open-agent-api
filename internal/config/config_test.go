@@ -901,6 +901,48 @@ func TestMultiReplicaGuardOnlyAppliesWhenStructuredIsEnabled(t *testing.T) {
 	}
 }
 
+// AC1/AC2: the guard reads a declared replica count, so the limits it cannot
+// see have to be said out loud instead of silently assumed away.
+func TestStructuredIdempotencyWarningsCoverRollingUpdates(t *testing.T) {
+	dark := Defaults()
+	if warnings := dark.StructuredIdempotencyWarnings(); len(warnings) != 0 {
+		t.Fatalf("warnings with structured off = %v, want none", warnings)
+	}
+
+	memory := Defaults()
+	memory.StructuredEnabled = true
+	warnings := memory.StructuredIdempotencyWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("memory-backend warnings = %v, want exactly one", warnings)
+	}
+	for _, want := range []string{"process-local", "rolling update", "maxSurge", "STRUCTURED_REPLICAS=1", "STRUCTURED_IDEMPOTENCY_BACKEND=file", "Recreate"} {
+		if !strings.Contains(warnings[0], want) {
+			t.Fatalf("memory warning = %q, want it to mention %q", warnings[0], want)
+		}
+	}
+
+	file := memory
+	file.StructuredIdempotencyBackend = IdempotencyBackendFile
+	file.StructuredIdempotencyDir = t.TempDir()
+	if err := file.Validate(); err != nil {
+		t.Fatalf("Validate() with the file backend error = %v", err)
+	}
+	warnings = file.StructuredIdempotencyWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("file-backend warnings = %v, want exactly one", warnings)
+	}
+	for _, want := range []string{"declared count", "HPA", "drift"} {
+		if !strings.Contains(warnings[0], want) {
+			t.Fatalf("file warning = %q, want it to mention %q", warnings[0], want)
+		}
+	}
+
+	// Warnings are advisory only: nothing they describe changes what validates.
+	if err := memory.Validate(); err != nil {
+		t.Fatalf("Validate() with the memory backend error = %v, want warnings not to reject", err)
+	}
+}
+
 // A zero-value backend means the default, so a hand-built Config still passes.
 func TestIdempotencyBackendNormalizesTheConfiguredValue(t *testing.T) {
 	for value, want := range map[string]string{
