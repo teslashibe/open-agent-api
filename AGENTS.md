@@ -82,7 +82,7 @@ Full tables: [`internal/openai/models.go`](internal/openai/models.go) and [websi
 **Do:**
 
 - Use only model IDs from `models.go` or live `GET /v1/models`.
-- Run `go test ./...`, `go vet ./...`, `go build ./...` before release.
+- Run `go build ./...`, `go vet ./...`, `gofmt -l $(go list -f '{{.Dir}}' ./...)`, and `go test -race ./...` before release — CI runs exactly these and blocks the image build on them.
 - Keep `website/docs/models/catalog.md` in sync when changing aliases.
 
 **Don't:**

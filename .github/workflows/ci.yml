@@ -1,0 +1,18 @@
+# Run the Go gate on every pull request and on everything that can ship
+# (main, v* tags). docker.yml calls the same reusable workflow before it builds.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    uses: ./.github/workflows/go-checks.yml
