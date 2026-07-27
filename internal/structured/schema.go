@@ -57,10 +57,23 @@ type Schema struct {
 	MaxItems      *int
 }
 
+// MaxSchemaBytes bounds the request "schema" document. It is an explicit,
+// documented limit rather than an implicit one: without it a caller can spend
+// gateway CPU and memory decoding and compiling an arbitrarily deep schema up
+// to the whole request body, and can push that same document upstream inside
+// text.format. 256 KiB is far above any real strict-subset schema and well
+// under the 1 MiB input cap, so the two bounds stay independent.
+const MaxSchemaBytes = 256 << 10
+
 // CompileSchema parses and validates a strict JSON Schema subset document. The
 // root must be an object schema so the response envelope always carries a JSON
 // object in "data".
 func CompileSchema(raw json.RawMessage) (*Schema, *Error) {
+	// Checked before Decode on purpose: an over-cap schema must cost a length
+	// comparison, not a parse.
+	if len(raw) > MaxSchemaBytes {
+		return nil, NewError(CodeInvalidSchema, "schema exceeds the maximum size")
+	}
 	if len(strings.TrimSpace(string(raw))) == 0 {
 		return nil, NewError(CodeInvalidSchema, "schema is empty")
 	}

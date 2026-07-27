@@ -349,6 +349,262 @@ func TestStructuredInferenceLogsRedactionSafeProviderFailure(t *testing.T) {
 	}
 }
 
+// Issue 130 AC1: the shared sanitizer collapses every line-breaking and control
+// rune, trims, and bounds length, so no caller-controlled identifier can carry
+// a record separator into a log line.
+func TestSanitizeLogFieldCollapsesInjection(t *testing.T) {
+	for name, tc := range map[string]struct{ in, want string }{
+		"newline":         {"req-1\nstructured_success request_id=forged", "req-1 structured_success request_id=forged"},
+		"crlf":            {"req-1\r\nstructured_success", "req-1  structured_success"},
+		"tab":             {"req-1\tkey=value", "req-1 key=value"},
+		"vertical tab":    {"req-1\vkey=value", "req-1 key=value"},
+		"form feed":       {"req-1\fkey=value", "req-1 key=value"},
+		"next line":       {"req-1\u0085key=value", "req-1 key=value"},
+		"line separator":  {"req-1\u2028key=value", "req-1 key=value"},
+		"para separator":  {"req-1\u2029key=value", "req-1 key=value"},
+		"nul":             {"req-1\x00key=value", "req-1 key=value"},
+		"escape":          {"req-1\x1b[2Kkey=value", "req-1 [2Kkey=value"},
+		"surrounding":     {"  \n req-1 \t ", "req-1"},
+		"already clean":   {"req-1", "req-1"},
+		"leading control": {"\nstructured_success request_id=forged", "structured_success request_id=forged"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := sanitizeLogField(tc.in); got != tc.want {
+				t.Fatalf("sanitizeLogField(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if strings.ContainsAny(sanitizeLogField(tc.in), "\n\r\t\v\f") {
+				t.Fatalf("sanitizeLogField(%q) kept a line break", tc.in)
+			}
+		})
+	}
+
+	// The bound is exact: a maximum-length identifier is logged whole, and one
+	// rune more is truncated with the same marker the provider message uses.
+	atCap := strings.Repeat("a", maxLogFieldRunes)
+	if got := sanitizeLogField(atCap); got != atCap {
+		t.Fatalf("sanitizeLogField() truncated an at-cap value (%d runes)", len([]rune(got)))
+	}
+	overCap := sanitizeLogField(strings.Repeat("a", maxLogFieldRunes+1))
+	if runes := []rune(overCap); len(runes) != maxLogFieldRunes+1 || runes[len(runes)-1] != '\u2026' {
+		t.Fatalf("sanitizeLogField() over-cap = %q (%d runes)", overCap, len([]rune(overCap)))
+	}
+}
+
+// forgedStructuredRecord is a complete, well-formed structured_success audit
+// line. Embedded in a caller-controlled identifier behind a newline it would,
+// unsanitized, appear in the log as an indistinguishable second record.
+const forgedStructuredRecord = "structured_success request_id=forged operation=forged model=gpt-5.6-sol replay=false latency_ms=0"
+
+// logRecordCounts summarizes a log buffer the way grep and log ingestion see
+// it: one record per line, keyed by the leading token. A successful injection
+// shows up here as an extra line, or an extra record of some type.
+func logRecordCounts(logs string) map[string]int {
+	counts := map[string]int{}
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		counts[strings.Fields(line)[0]]++
+	}
+	return counts
+}
+
+// Issue 130 AC2, AC3: a request_id or operation carrying an embedded newline
+// plus a fully-formed audit record must not produce a second log record. The
+// poisoned request has to emit exactly the records the same request emits with
+// clean identifiers — no more lines, and no line of a type it did not earn.
+func TestStructuredInferenceCannotForgeLogRecords(t *testing.T) {
+	upstreamFailure := func() fakeCodexService {
+		return errorStructuredService(codex.NewError(codex.ErrorKindUpstream, http.StatusBadGateway, "codex stream failed", nil))
+	}
+	for name, tc := range map[string]struct {
+		service     func() fakeCodexService
+		wantSuccess int
+		run         func(*testing.T, *fiber.App, any)
+	}{
+		"success": {
+			service:     func() fakeCodexService { return staticStructuredService(structuredTestOutput) },
+			wantSuccess: 1,
+			run: func(t *testing.T, app *fiber.App, body any) {
+				decodeStructuredSuccess(t, postStructured(t, app, body))
+			},
+		},
+		"upstream failure": {
+			service:     upstreamFailure,
+			wantSuccess: 0,
+			run: func(t *testing.T, app *fiber.App, body any) {
+				decodeStructuredError(t, postStructured(t, app, body), http.StatusBadGateway, structured.CodeUpstream)
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			capture := func(requestID, operation string) string {
+				var logs bytes.Buffer
+				app := New(structuredTestConfig(), WithCodexService(tc.service()), WithLogOutput(&logs))
+				body := structuredBody()
+				body.RequestID = requestID
+				body.Operation = operation
+				tc.run(t, app, body)
+				return logs.String()
+			}
+
+			clean := capture("req-1", "report_summary")
+			poisoned := capture(
+				"req-1\n"+forgedStructuredRecord,
+				// Kept inside the contract's 128-char operation bound, so the
+				// rejection under test is the sanitizer's and not Validate's.
+				"report_summary\r\nstructured_admit request_id=forged operation=forged",
+			)
+
+			// The forged text may survive as inert data inside a field; what it
+			// must never do is start a line, because a line is what grep and
+			// log ingestion count as a record.
+			for _, forged := range []string{
+				forgedStructuredRecord,
+				"structured_admit request_id=forged",
+				"structured agent_queue_acquire request_id=forged",
+			} {
+				for _, line := range strings.Split(poisoned, "\n") {
+					if strings.HasPrefix(line, forged) {
+						t.Fatalf("caller forged the record %q:\n%s", forged, poisoned)
+					}
+				}
+			}
+
+			cleanCounts, poisonedCounts := logRecordCounts(clean), logRecordCounts(poisoned)
+			if fmt.Sprint(cleanCounts) != fmt.Sprint(poisonedCounts) {
+				t.Fatalf("record counts diverged:\n clean:    %v\n poisoned: %v\n%s", cleanCounts, poisonedCounts, poisoned)
+			}
+			if got := poisonedCounts["structured_success"]; got != tc.wantSuccess {
+				t.Fatalf("structured_success records = %d, want %d:\n%s", got, tc.wantSuccess, poisoned)
+			}
+			if got := strings.Count(poisoned, "\n"); got != strings.Count(clean, "\n") {
+				t.Fatalf("log lines = %d, want the clean run's %d:\n%s", got, strings.Count(clean, "\n"), poisoned)
+			}
+		})
+	}
+}
+
+// The fix is log-side only: the response envelope still echoes the caller's
+// request_id byte for byte, because JSON encoding already makes it inert there.
+func TestStructuredInferenceEchoesRawRequestIDVerbatim(t *testing.T) {
+	raw := "req-1\n" + forgedStructuredRecord
+	var logs bytes.Buffer
+	app := New(structuredTestConfig(), WithCodexService(staticStructuredService(structuredTestOutput)), WithLogOutput(&logs))
+
+	body := structuredBody()
+	body.RequestID = raw
+	response := decodeStructuredSuccess(t, postStructured(t, app, body))
+	if response.RequestID != raw {
+		t.Fatalf("response request_id = %q, want the caller's value verbatim", response.RequestID)
+	}
+	if strings.Contains(logs.String(), "\n"+forgedStructuredRecord) {
+		t.Fatalf("logs carried the raw value:\n%s", logs.String())
+	}
+}
+
+// The same guarantee has to hold for the admission-control log lines, which are
+// written by the shared agent queue rather than by the structured handler.
+func TestStructuredInferenceQueueRecordsAreSingleLine(t *testing.T) {
+	release := make(chan struct{})
+	admitted := make(chan struct{}, 1)
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			admitted <- struct{}{}
+			<-release
+			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel}, nil
+		},
+	}
+	cfg := structuredTestConfig()
+	cfg.StructuredMaxActive = 1
+	cfg.StructuredMaxActivePerKey = 1
+	cfg.StructuredQueueLimit = 0
+	var logs bytes.Buffer
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
+
+	first := make(chan *http.Response, 1)
+	go func() {
+		body := structuredBody()
+		body.IdempotencyKey = "idem-slow"
+		first <- postStructured(t, app, body)
+	}()
+	<-admitted
+
+	// The shed request is the one that reaches agent_queue_full, and its
+	// identifiers are poisoned.
+	shed := structuredBody()
+	shed.IdempotencyKey = "idem-shed"
+	shed.RequestID = "req-shed\nagent_queue_acquire request_id=forged key_mode=forged key_hash=forged"
+	shed.Operation = "report_summary\n" + forgedStructuredRecord
+	decodeStructuredError(t, postStructured(t, app, shed), http.StatusTooManyRequests, structured.CodeRateLimited)
+
+	close(release)
+	decodeStructuredSuccess(t, <-first)
+
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.HasPrefix(line, "agent_queue_acquire") || strings.HasPrefix(line, forgedStructuredRecord) {
+			t.Fatalf("caller forged a record through the queue:\n%s", logs.String())
+		}
+	}
+	if !strings.Contains(logs.String(), "structured_shed") {
+		t.Fatalf("expected a structured_shed record:\n%s", logs.String())
+	}
+}
+
+// Issue 130 AC4: an over-cap schema is a clean 400 invalid_schema that is
+// rejected before it is parsed and before any upstream call.
+func TestStructuredInferenceRejectsOversizedSchema(t *testing.T) {
+	var calls int32
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			atomic.AddInt32(&calls, 1)
+			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel}, nil
+		},
+	}
+	app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(nil))
+
+	body := structuredBody()
+	body.Schema = json.RawMessage(paddedStructuredSchema(t, structured.MaxSchemaBytes+1))
+	decodeStructuredError(t, postStructured(t, app, body), http.StatusBadRequest, structured.CodeInvalidSchema)
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0 (an over-cap schema must never reach upstream)", got)
+	}
+
+	// Exactly at the cap still works, and the 1 MiB input cap is unchanged by
+	// the new bound.
+	atCap := structuredBody()
+	atCap.Schema = json.RawMessage(paddedStructuredSchema(t, structured.MaxSchemaBytes))
+	atCap.IdempotencyKey = "idem-at-cap"
+	decodeStructuredSuccess(t, postStructured(t, app, atCap))
+
+	oversizedInput := structuredBody()
+	oversizedInput.IdempotencyKey = "idem-big-input"
+	oversizedInput.Input = strings.Repeat("x", (1<<20)+1)
+	decodeStructuredError(t, postStructured(t, app, oversizedInput), http.StatusBadRequest, structured.CodeInvalidRequest)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (only the at-cap schema is served)", got)
+	}
+}
+
+// paddedStructuredSchema builds a valid strict-subset schema whose encoding is
+// exactly size bytes, padded through the (supported) "description" keyword.
+func paddedStructuredSchema(t *testing.T, size int) string {
+	t.Helper()
+	const (
+		prefix = `{"type":"object","additionalProperties":false,"required":["title","score"],"properties":{"title":{"type":"string"},"score":{"type":"integer"}},"description":"`
+		suffix = `"}`
+	)
+	pad := size - len(prefix) - len(suffix)
+	if pad < 0 {
+		t.Fatalf("size %d is smaller than the schema skeleton (%d bytes)", size, len(prefix)+len(suffix))
+	}
+	schema := prefix + strings.Repeat("d", pad) + suffix
+	if len(schema) != size {
+		t.Fatalf("padded schema = %d bytes, want %d", len(schema), size)
+	}
+	return schema
+}
+
 // A provider message is a fixed in-repo string today, but the log line must not
 // depend on that: a multi-line or oversized message can neither forge a second
 // record nor flood the log.
