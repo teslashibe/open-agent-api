@@ -103,7 +103,7 @@ func TestContract200GoldenRequestAndSuccess(t *testing.T) {
 
 	// Latency and build provenance vary by process. Everything else is stable.
 	actual.LatencyMS, golden.LatencyMS = 0, 0
-	actual.Build, golden.Build = golden.Build, golden.Build
+	actual.Build = golden.Build
 	actualData, goldenData := any(nil), any(nil)
 	if err := json.Unmarshal(actual.Data, &actualData); err != nil {
 		t.Fatal(err)
