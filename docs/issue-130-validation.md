@@ -83,6 +83,36 @@ poisoned — and requires the two runs to produce an identical map of leading-to
 | `go test -count=1 -race ./internal/server ./internal/structured -run 'Structured\|Sanitize\|Schema'` | pass |
 | negative control: `logRequestID := req.RequestID` (sanitizer removed) | `TestStructuredInferenceCannotForgeLogRecords`, `TestStructuredInferenceQueueRecordsAreSingleLine`, and `TestStructuredInferenceEchoesRawRequestIDVerbatim` all fail — the tests test the fix |
 
+## Sign-off sweep
+
+The fix is only complete if `request_id` and `operation` really are the *only*
+caller-controlled strings that reach a log field on this route. Every `req.*`
+read in `internal/server/structured.go` was walked to its sink:
+
+| Caller-controlled value | Where it goes | Why it cannot forge a record |
+| --- | --- | --- |
+| `request_id`, `operation` | the five `logLine` calls, `structured_upstream_error`, `agentQueue.acquire`, `codex.Request.RequestID` | sanitized once after `Validate()` — this change |
+| `request_id`, `idempotency_key`, `operation`, `schema_version` | response envelope | JSON-encoded, so a newline is `\n` in the payload |
+| `input`, `schema`, `idempotency_key`, `schema_version`, `operation` | `KeyParts`/`Fingerprint`, `InputChecksum`, `SchemaChecksum` | hashed or structural; never logged |
+| tenant header / `Authorization` → `structuredCaller` | `caller=%s` on `structured_admit`, `key_mode=`/`key_hash=` on `agent_queue_*` | `agentQueueKey.Hash` is `safeHash(…)` — 16 hex chars; `Mode` is one of three in-repo constants. The raw header stays in `Value`, which no log line reads. |
+| `schema_name` (falls back to `operation`) | upstream `text.format` name | `structuredSchemaName` already restricts to `[A-Za-z0-9_-]`, caps at 64 runes, and defaults to `structured_output`. Never logged. |
+| `model` | `structuredPolicy.Resolve` | the logged `model=%s` is the *resolved* `model.ID` from in-repo policy, not the requested string |
+
+`.docker/pin/` holds a pinned snapshot of this package. It is a separate module
+with its own `go.mod`, so it is outside `go list ./...` and is not built, vetted,
+or tested here — which is exactly why `.github/workflows/go-checks.yml` formats
+via `gofmt -l $(go list -f '{{.Dir}}' ./...)` rather than `gofmt -l .`. It carries
+no traffic; the shipped binary is built from `internal/`.
+
+The negative control was re-established independently of the original run: with
+the collapse in `sanitizeLogValue` stubbed to the identity function,
+`TestSanitizeLogFieldCollapsesInjection`,
+`TestStructuredInferenceCannotForgeLogRecords`,
+`TestStructuredInferenceEchoesRawRequestIDVerbatim`, and
+`TestStructuredInferenceQueueRecordsAreSingleLine` all fail, and the failure
+output shows the forged `structured_success` line standing on its own — including
+one minted through the queue's `agent_queue_acquire`. Restored, all four pass.
+
 ## Residual limits
 
 - **Logged identifiers can now differ from the ones the client sent.** A
