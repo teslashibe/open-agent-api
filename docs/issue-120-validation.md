@@ -146,3 +146,10 @@ anything else), asserted by `TestStructuredMetricsExposeBoundedSurface`,
 - **The store still bounds itself by count, not bytes.** A workload with
   unusually large payloads should lower `STRUCTURED_IDEMPOTENCY_TTL` or size the
   volume accordingly.
+- **`STRUCTURED_REPLICAS` is a declared count, not a detected one.** The guard
+  cannot see an HPA scaling up, a surge pod during a rolling update, or a stray
+  process on the same volume. Issue 122 turns this from a silent assumption into
+  a startup `structured_idempotency_warning` and a deployment requirement
+  (`file` backend, or `maxSurge=0` / `strategy: Recreate` on the memory
+  backend). See [issue-122-validation.md](./issue-122-validation.md). Peer
+  detection remains out of scope.

@@ -86,12 +86,38 @@ volumes:
       claimName: structured-idempotency   # ReadWriteMany
 ```
 
+### Rolling updates and the declared replica count
+
+The startup guard reads `STRUCTURED_REPLICAS`, which is a **declared** count, not a detected one. The gateway does not discover its peers, so anything that raises real concurrency without changing that value — an HPA scaling up, a surge pod during a rolling update, a stray process on the same volume — is invisible to it. Keep the declared value at or above the real concurrency.
+
+The sharpest case is a rolling update. With the default `maxSurge: 25%` the new pod starts before the old one terminates, so **two processes run at once even at `STRUCTURED_REPLICAS=1`**. On the memory backend their idempotency stores are independent, and a Report Studio retry landing on the new pod during that window issues a second upstream call. The gateway logs a `structured_idempotency_warning` line at startup whenever structured inference is enabled on the memory backend; treat it as a deployment requirement, not noise.
+
+Pick one of the two safe shapes when enabling structured inference:
+
+- **File backend on a shared `ReadWriteMany` PVC** (above). Single-flight and replay span processes, so a surge pod is fine.
+- **Memory backend with no overlap.** Force the old pod to terminate before the new one starts:
+
+```yaml
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  # or, equivalently for a single replica:
+  # strategy:
+  #   type: Recreate
+```
+
+  Do not attach an HPA to a memory-backend deployment: it can exceed `STRUCTURED_REPLICAS` without the guard noticing.
+
 Requirements and caveats:
 
 - The PVC must be **`ReadWriteMany`** with POSIX `rename`/`link` semantics. An `emptyDir` survives a container restart but not a pod reschedule, and is not shared between replicas.
 - Records hold the extracted `data` payload **at rest**. The gateway writes `0700` directories and `0600` files and expires entries after `STRUCTURED_IDEMPOTENCY_TTL` (default `10m`), but treat the volume as sensitive and back it with encrypted storage.
 - Replay of a completed request is exact across pods. Concurrent single-flight is best-effort on a network filesystem; the residual window is bounded by `STRUCTURED_MAX_DEADLINE` and documented in [`docs/issue-120-validation.md`](https://github.com/teslashibe/open-agent-api/blob/main/docs/issue-120-validation.md).
 - The store bounds itself by entry count, and sweeps expired records on every write, so the volume does not grow without limit.
+- A duplicate waiting on a peer's in-flight call polls the volume read-only (one `stat`, no temp file or `fsync`) and backs off from 10 ms to 250 ms, so retries cannot saturate the shared filesystem. The full constraint list is in [`docs/issue-122-validation.md`](https://github.com/teslashibe/open-agent-api/blob/main/docs/issue-122-validation.md).
 
 ## App integration
 

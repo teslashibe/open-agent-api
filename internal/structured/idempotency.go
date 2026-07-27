@@ -17,9 +17,28 @@ const DefaultIdempotencyEntries = 1024
 // cannot wedge a key for longer than one request could ever have taken.
 const DefaultIdempotencyReservationTTL = 5 * time.Minute
 
-// idempotencyPollInterval is how often a waiter re-checks a reservation held by
-// another process. It matches the agent queue's distributed lock loop.
+// idempotencyPollInterval is the first delay a waiter takes before re-checking
+// a reservation held by another process. It matches the agent queue's
+// distributed lock loop.
 const idempotencyPollInterval = 10 * time.Millisecond
+
+// idempotencyMaxPollInterval bounds the backoff. A duplicate waiting on a peer
+// polls a shared filesystem, so a long upstream call must not turn into
+// hundreds of stats per second per waiter; a quarter second stays far below
+// STRUCTURED_MAX_DEADLINE while costing at most one extra poll of latency.
+const idempotencyMaxPollInterval = 250 * time.Millisecond
+
+// nextPollInterval doubles the wait and clamps it to the ceiling.
+func nextPollInterval(current time.Duration) time.Duration {
+	if current < idempotencyPollInterval {
+		return idempotencyPollInterval
+	}
+	next := current * 2
+	if next > idempotencyMaxPollInterval {
+		return idempotencyMaxPollInterval
+	}
+	return next
+}
 
 // Idempotency outcome labels. They are a closed set so the metric that consumes
 // them stays bounded.
@@ -288,6 +307,9 @@ func (s *IdempotencyStore) resolve(ctx context.Context, key string, entry *idemp
 		return record.Response, true, nil
 	}
 
+	// wait is local to this call: every waiter starts at the floor, so a fast
+	// peer is still noticed within 10 ms.
+	wait := idempotencyPollInterval
 	for {
 		// A record written by another pod, or by this pod before a restart.
 		if record, ok := s.load(key); ok {
@@ -315,12 +337,15 @@ func (s *IdempotencyStore) resolve(ctx context.Context, key string, entry *idemp
 
 		// Another process owns this key. Wait for its record rather than
 		// issuing a second upstream call; the caller's context bounds the wait
-		// so a wedged peer degrades to a timeout, never a hang.
+		// so a wedged peer degrades to a timeout, never a hang. The interval
+		// backs off toward the ceiling so a long upstream call does not have
+		// every duplicate hammering a shared filesystem.
 		select {
 		case <-ctx.Done():
 			return Response{}, false, ctx.Err()
-		case <-time.After(idempotencyPollInterval):
+		case <-time.After(wait):
 		}
+		wait = nextPollInterval(wait)
 	}
 }
 

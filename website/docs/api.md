@@ -115,6 +115,8 @@ A response is replayed (`"idempotent_replay": true`) only when the caller, `oper
 
 By default the store is **process-local** (`STRUCTURED_IDEMPOTENCY_BACKEND=memory`): replay lives in one pod's memory and is lost on restart. That's fine for the single-replica default.
 
+Single-flight on the memory backend is per **process**, not per replica count, and a rolling update runs the old and new pod at once — so even at `STRUCTURED_REPLICAS=1` a duplicate key can reach two processes during a deploy unless you use the file backend or `maxSurge: 0` / `strategy: Recreate` (see [Kubernetes](./install/kubernetes#structured-inference-across-replicas)). The gateway logs a `structured_idempotency_warning` line at startup whenever structured inference is enabled on the memory backend.
+
 For anything bigger, point every replica at one shared directory:
 
 ```bash

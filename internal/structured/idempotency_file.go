@@ -32,6 +32,10 @@ type FileBackend struct {
 	owner      string
 
 	reservations atomic.Uint64
+	// claimAttempts counts entries into the reservation write path. It is test
+	// observability for the held-lock fast path, not a metric: nothing outside
+	// this package reads it.
+	claimAttempts atomic.Uint64
 
 	sweepMu       sync.Mutex
 	writes        int
@@ -205,6 +209,18 @@ func (b *FileBackend) Reserve(key string, until time.Time) (func(committed bool)
 	// Two attempts: claim, and if a lapsed reservation is in the way, steal it
 	// and claim again. A third party winning the steal simply means we wait.
 	for attempt := 0; attempt < 2; attempt++ {
+		// A duplicate polling a peer's in-flight call is the common case on a
+		// shared volume, and it needs no writes at all. Probe first so a held
+		// reservation costs one stat instead of a create/write/fsync/link/unlink
+		// round trip per poll. The probe is advisory: os.Link inside claimLock
+		// stays the only authority, so losing this race is still a clean
+		// acquired=false.
+		if held, lapsed := b.lockHeld(path); held {
+			if !lapsed {
+				return noop, false, nil
+			}
+			_ = os.Remove(path)
+		}
 		claimed, err := b.claimLock(path, token, until)
 		if err != nil {
 			return noop, false, fmt.Errorf("structured idempotency reserve: %w", err)
@@ -223,11 +239,27 @@ func (b *FileBackend) Reserve(key string, until time.Time) (func(committed bool)
 	return noop, false, nil
 }
 
+// lockHeld is the read-only half of Reserve. exists=false means no reservation
+// file was there to begin with, so the caller falls through to claimLock; a
+// reservation that exists is only stealable once lockLapsed agrees.
+func (b *FileBackend) lockHeld(path string) (exists, lapsed bool) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, false
+		}
+		// A lock we cannot stat is handled by the claim path, which reports the
+		// real error rather than guessing here.
+		return false, false
+	}
+	return true, b.lockLapsed(path)
+}
+
 // claimLock publishes a fully written reservation in one atomic step. Creating
 // the file and then writing it would let a peer observe an empty lock in
 // between and mistake an active reservation for an abandoned one, so the
 // content is written to a temp file and linked into place instead.
 func (b *FileBackend) claimLock(path, token string, until time.Time) (bool, error) {
+	b.claimAttempts.Add(1)
 	temp, err := os.CreateTemp(filepath.Dir(path), fileTempPattern)
 	if err != nil {
 		return false, err

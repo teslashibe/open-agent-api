@@ -111,6 +111,13 @@ func newStructuredIdempotencyStore(cfg config.Config, opts options) *structured.
 	memory := func() *structured.IdempotencyStore {
 		return structured.NewIdempotencyStore(cfg.StructuredIdempotencyTTL, structured.DefaultIdempotencyEntries, opts.now)
 	}
+	// The guard fails closed on a declared multi-replica memory deployment, but
+	// a declared count is not a detected one. Say so out loud at startup, on a
+	// greppable prefix, so the remaining limits are an operator decision rather
+	// than a silent assumption.
+	for _, warning := range cfg.StructuredIdempotencyWarnings() {
+		logLine(opts, "structured_idempotency_warning detail=%q\n", warning)
+	}
 	if cfg.IdempotencyBackend() != config.IdempotencyBackendFile {
 		return memory()
 	}
