@@ -30,10 +30,20 @@ http://codex-chat-api.smore.svc.cluster.local:8088/v1
 ## Image and GitOps
 
 - Image: `ghcr.io/teslashibe/open-agent-api` (plus legacy aliases `open-chat-api` and `codex-chat-api`)
-- CI in this repo (`.github/workflows/docker.yml`) builds/pushes, then pin-bumps k8s-control:
+- CI in this repo (`.github/workflows/docker.yml`) runs the Go gate (build, vet, gofmt, `go test -race`), builds/pushes, verifies the pushed image's provenance over `/health`, then pin-bumps k8s-control:
   - push to `main` → `manifests/dev` tag `sha-<short>`
   - tag `v*` → `manifests/prod` tag `vX.Y.Z`
 - Flux applies the pin from k8s-control
+
+Every shipped image is stamped with the commit it was built from, so a running pod can be tied back to source:
+
+```bash
+kubectl -n smore exec deploy/smore-api -- \
+  curl -sf http://codex-chat-api.smore.svc.cluster.local:8088/health | jq .build
+# → {"version":"sha-6fba3e4","commit":"6fba3e4c…","build_date":"2026-07-26T20:04:11Z",…}
+```
+
+`"commit":"unknown"` means the pod is **not** running a CI-built image.
 
 ## Secrets
 

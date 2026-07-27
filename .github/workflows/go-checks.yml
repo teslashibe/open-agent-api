@@ -1,0 +1,41 @@
+# The Go gate for this repo. Called by ci.yml (pull requests, main, tags) and by
+# docker.yml, which cannot build or push an image unless this passes. One file so
+# the PR checks and the release gate cannot drift apart.
+name: go-checks
+
+on:
+  workflow_call:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # `.docker/pin/` is a separate module with its own go.mod, so it is not in
+      # `go list ./...` and is deliberately not covered here. `gofmt -l .` would
+      # walk into it and fail on files this module does not own.
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2046 # splitting is the point: one arg per package dir
+          files=$(gofmt -l $(go list -f '{{.Dir}}' ./...))
+          if [ -n "$files" ]; then
+            echo "gofmt needed on:" >&2
+            echo "$files" >&2
+            exit 1
+          fi
+
+      - run: go build ./...
+
+      - run: go vet ./...
+
+      # STRUCTURED_LIVE_REQUIRED is deliberately never set: the live upstream
+      # test spends real Codex quota and must stay opt-in.
+      - run: go test -race ./...

@@ -34,8 +34,8 @@ type content struct {
 }
 
 type part struct {
-	Text             string            `json:"text,omitempty"`
-	Thought          bool              `json:"thought,omitempty"`
+	Text    string `json:"text,omitempty"`
+	Thought bool   `json:"thought,omitempty"`
 	// ThoughtSignature is Gemini 3's opaque reasoning key. Required on
 	// functionCall parts when replaying tool-result continuations.
 	ThoughtSignature string            `json:"thoughtSignature,omitempty"`

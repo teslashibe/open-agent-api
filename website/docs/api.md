@@ -26,11 +26,15 @@ If you set `GATEWAY_BEARER_SECRET`, `/v1/*` needs `Authorization: Bearer …`. H
 {
   "status": "ok",
   "contract_version": "2.0.0",
-  "build": {"version": "v0.1.0", "commit": "6fba3e4", "build_date": "2026-07-26T20:04:11Z", "go_version": "go1.24.0", "modified": false}
+  "build": {"version": "v0.1.0", "commit": "6fba3e4c8f1d09a2b5e3771c40a9d8e2f6b10c93", "build_date": "2026-07-26T20:04:11Z", "go_version": "go1.24.0", "modified": false}
 }
 ```
 
-Stamp `version` / `commit` / `build_date` at image build time with the `BUILD_VERSION`, `BUILD_COMMIT`, and `BUILD_DATE` build args (`docker-compose.yml` passes them through from your environment). Without them the gateway falls back to the Go toolchain's VCS stamps.
+`version` / `commit` / `build_date` are stamped at image build time from the `BUILD_VERSION`, `BUILD_COMMIT`, and `BUILD_DATE` build args.
+
+**Images published by CI always carry real values.** `.github/workflows/docker.yml` passes the resolved tag, `github.sha`, and a UTC `BUILD_DATE` (`YYYY-MM-DDTHH:MM:SSZ`) into the build, and a `verify-provenance` job boots the pushed image by digest and fails the run unless `/health` reports that commit — so `"commit": "unknown"` or `"version": "devel"` on a ghcr image cannot ship. `commit` is the full 40-character SHA of the source the image was built from.
+
+Local `docker compose` builds pass the same three args through from your environment (unset by default); with them unset the gateway falls back to the Go toolchain's VCS stamps, and finally to `"devel"` / `"unknown"`.
 
 ## Structured inference
 
