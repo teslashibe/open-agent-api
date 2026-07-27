@@ -40,8 +40,6 @@ type Request struct {
 	// ResponseFormat is the upstream text.format object for extraction turns,
 	// normally a strict json_schema. Ignored unless Extraction is set.
 	ResponseFormat json.RawMessage
-	// MaxOutputTokens bounds upstream output on extraction turns. 0 = unset.
-	MaxOutputTokens int
 }
 
 type Completion struct {

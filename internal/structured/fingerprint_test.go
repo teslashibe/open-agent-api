@@ -25,7 +25,6 @@ func TestFingerprintCoversEveryMaterialParameter(t *testing.T) {
 		"model policy version": func(f *Fingerprint) { f.ModelPolicyVersion = "policy-2" },
 		"input checksum":       func(f *Fingerprint) { f.InputChecksum = InputChecksum("goodbye") },
 		"schema checksum":      func(f *Fingerprint) { f.SchemaChecksum = SchemaChecksum([]byte(`{"type":"array"}`)) },
-		"max output tokens":    func(f *Fingerprint) { f.MaxOutputTokens = 1024 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			fingerprint := baseFingerprint()

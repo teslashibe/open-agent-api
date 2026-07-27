@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -792,7 +793,6 @@ func TestStructuredInferenceDefaultsAreDark(t *testing.T) {
 		cfg.StructuredQueueLimit != DefaultStructuredQueueLimit ||
 		cfg.StructuredQueueTimeout != DefaultStructuredQueueTimeout ||
 		cfg.StructuredMaxDeadline != DefaultStructuredMaxDeadline ||
-		cfg.StructuredMaxOutputTokens != DefaultStructuredMaxOutputTokens ||
 		cfg.StructuredIdempotencyTTL != DefaultStructuredIdempotencyTTL ||
 		cfg.StructuredIdempotencyBackend != IdempotencyBackendMemory ||
 		cfg.StructuredIdempotencyDir != "" ||
@@ -811,7 +811,6 @@ func TestLoadStructuredEnvironmentAndFlags(t *testing.T) {
 	t.Setenv("STRUCTURED_QUEUE_LIMIT", "7")
 	t.Setenv("STRUCTURED_QUEUE_TIMEOUT", "11s")
 	t.Setenv("STRUCTURED_MAX_DEADLINE", "90s")
-	t.Setenv("STRUCTURED_MAX_OUTPUT_TOKENS", "4096")
 	t.Setenv("STRUCTURED_IDEMPOTENCY_TTL", "2m")
 	t.Setenv("STRUCTURED_IDEMPOTENCY_BACKEND", "file")
 	t.Setenv("STRUCTURED_IDEMPOTENCY_DIR", "/var/lib/open-agent-api/structured-idempotency")
@@ -825,7 +824,7 @@ func TestLoadStructuredEnvironmentAndFlags(t *testing.T) {
 	}
 	if !cfg.StructuredEnabled || cfg.StructuredMaxActive != 9 || cfg.StructuredMaxActivePerKey != 3 ||
 		cfg.StructuredQueueLimit != 7 || cfg.StructuredQueueTimeout != 11*time.Second ||
-		cfg.StructuredMaxDeadline != 90*time.Second || cfg.StructuredMaxOutputTokens != 4096 ||
+		cfg.StructuredMaxDeadline != 90*time.Second ||
 		cfg.StructuredIdempotencyTTL != 2*time.Minute ||
 		cfg.StructuredIdempotencyBackend != IdempotencyBackendFile ||
 		cfg.StructuredIdempotencyDir != "/var/lib/open-agent-api/structured-idempotency" ||
@@ -854,6 +853,31 @@ func TestLoadStructuredEnvironmentAndFlags(t *testing.T) {
 	}
 	if len(cfg.StructuredModels) != 1 || cfg.StructuredModels[0] != "gpt-5.6-luna" {
 		t.Fatalf("StructuredModels = %v, want the flag override", cfg.StructuredModels)
+	}
+}
+
+// Issue 126 AC2: Codex Responses honours no output-token cap, so the knob that
+// promised one is gone. Neither the environment variable nor the flag may be
+// recognized again: a stale deploy that still sets it must not silently be
+// believed, and the flag must fail loudly rather than be quietly accepted.
+func TestLoadNoLongerRecognizesTheStructuredOutputTokenKnob(t *testing.T) {
+	t.Setenv("STRUCTURED_INFERENCE_ENABLED", "true")
+	t.Setenv("STRUCTURED_MAX_OUTPUT_TOKENS", "4096")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want a stale environment variable to be ignored", err)
+	}
+	// Reflection, not a compile-time reference: the field is gone, so this is
+	// the only way to keep asserting that it stays gone.
+	if field, ok := reflect.TypeOf(cfg).FieldByName("StructuredMaxOutputTokens"); ok {
+		t.Fatalf("Config still carries StructuredMaxOutputTokens: %#v", field)
+	}
+	// flag.ContinueOnError dumps the usage text to stderr on the way out; the
+	// noise in the test log is the flag package proving the knob is undefined.
+	if _, err := Load([]string{"--structured-max-output-tokens=4096"}); err == nil {
+		t.Fatal("Load() accepted --structured-max-output-tokens, want the removed flag to be rejected")
 	}
 }
 

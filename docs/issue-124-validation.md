@@ -1,5 +1,12 @@
 # Issue 124 Validation
 
+> **Superseded in part by [issue-126-validation.md](./issue-126-validation.md).**
+> The `MaxOutputTokens` fingerprint row and the output-limit clamping example
+> below were removed by issue 126: Codex Responses honours no output-token cap,
+> so the field is gone from the request contract, the configuration, and the
+> fingerprint, and `IdempotencyRecordVersion` moved 2 → 3. The rest of this
+> record stands as written.
+
 Final-validation follow-up from [issue-122-validation.md](./issue-122-validation.md)
 on `feature/rs-gpt-structured-inference`. Three things could fail silently
 before and fail loudly now:
@@ -115,7 +122,6 @@ exact inference:
 | `ResolvedModel` | the alias the policy resolved it to |
 | `ReasoningEffort` | effective value sent upstream (request override, else alias default) |
 | `Verbosity` | effective value sent upstream |
-| `MaxOutputTokens` | effective, already-clamped output limit |
 | `SchemaVersion` | `schema_version` |
 | `SchemaChecksum` | SHA-256 of the **canonicalized** schema body |
 | `ModelPolicyVersion` | `Policy.Version()` at admission |
@@ -134,10 +140,10 @@ The overlap with `KeyParts` is intentional. A fingerprint that covered only the
 *difference* would be unreadable and would silently stop binding if `KeyParts`
 ever narrowed.
 
-**Effective, not raw, values.** Effort, verbosity, and the output limit are
-fingerprinted after resolution and clamping, so two requests that produce the
-same upstream call are a replay rather than a conflict — e.g. two different
-`max_output_tokens` values that both clamp to `STRUCTURED_MAX_OUTPUT_TOKENS`.
+**Effective, not raw, values.** Effort and verbosity are fingerprinted after
+resolution, so two requests that produce the same upstream call are a replay
+rather than a conflict — e.g. a request that omits `reasoning_effort` and one
+that sends the alias default explicitly.
 
 **Schema canonicalization is load-bearing.** Key order and whitespace are not
 part of a schema's meaning. Without canonicalization, a client that

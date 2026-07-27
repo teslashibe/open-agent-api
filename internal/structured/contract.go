@@ -17,10 +17,17 @@ import (
 // ContractVersion is the semantic version of the wire envelope below. Bump the
 // minor for additive fields and the major for anything a consumer could break
 // on. It is echoed on every success and error response.
-// 1.1.0 adds the additive error code "idempotency_conflict"; no field changed
-// shape, so a client that branches on HTTP status or ignores unknown codes is
+// 1.1.0 added the additive error code "idempotency_conflict"; no field changed
+// shape, so a client that branches on HTTP status or ignores unknown codes was
 // unaffected.
-const ContractVersion = "1.1.0"
+// 2.0.0 removes the documented request field "max_output_tokens": Codex
+// Responses has no output-token cap, so the field promised a cost ceiling it
+// could never enforce. A body that still carries it is now ignored by the JSON
+// decoder rather than honoured — no field a client sends is newly rejected, but
+// a documented public field disappearing is a major by this file's own rule.
+// The endpoint ships dark (cfg.StructuredEnabled defaults off), so no released
+// client is affected.
+const ContractVersion = "2.0.0"
 
 // Operation is the caller-declared logical operation. It scopes idempotency so
 // two different extractions of the same input never collide.
@@ -54,8 +61,6 @@ type Request struct {
 	// ReasoningEffort and Verbosity override the alias defaults.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	Verbosity       string `json:"verbosity,omitempty"`
-	// MaxOutputTokens bounds the upstream output.
-	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 	// DeadlineMS bounds the whole request, upstream call included.
 	DeadlineMS int `json:"deadline_ms,omitempty"`
 }
@@ -205,8 +210,6 @@ func (r Request) Validate() *Error {
 		return NewError(CodeInvalidRequest, "schema_version is required")
 	case len(r.SchemaVersion) > maxSchemaVersionLength:
 		return NewError(CodeInvalidRequest, "schema_version is too long")
-	case r.MaxOutputTokens < 0:
-		return NewError(CodeInvalidRequest, "max_output_tokens must be non-negative")
 	case r.DeadlineMS < 0:
 		return NewError(CodeInvalidRequest, "deadline_ms must be non-negative")
 	}

@@ -48,7 +48,6 @@ type structuredRequestBody struct {
 	SchemaVersion   string          `json:"schema_version"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 	Verbosity       string          `json:"verbosity,omitempty"`
-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
 	DeadlineMS      int             `json:"deadline_ms,omitempty"`
 }
 
@@ -62,6 +61,20 @@ func structuredBody() structuredRequestBody {
 		Schema:         json.RawMessage(structuredTestSchema),
 		SchemaVersion:  "v1",
 	}
+}
+
+// structuredBodyMap is structuredBody() as a raw map, for tests that need to
+// send a key the contract no longer defines.
+func structuredBodyMap() map[string]any {
+	raw, err := json.Marshal(structuredBody())
+	if err != nil {
+		panic(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		panic(err)
+	}
+	return body
 }
 
 func staticStructuredService(text string) fakeCodexService {
@@ -188,11 +201,9 @@ func TestStructuredInferenceUsesExtractionMode(t *testing.T) {
 		},
 	}
 	cfg := structuredTestConfig()
-	cfg.StructuredMaxOutputTokens = 4096
 	app := New(cfg, WithCodexService(service), WithLogOutput(nil))
 
 	request := structuredBody()
-	request.MaxOutputTokens = 256
 	request.ReasoningEffort = "high"
 	request.Verbosity = "low"
 	decodeStructuredSuccess(t, postStructured(t, app, request))
@@ -206,9 +217,6 @@ func TestStructuredInferenceUsesExtractionMode(t *testing.T) {
 	if len(seen.Tools) != 0 || len(seen.ToolChoice) != 0 {
 		t.Fatalf("extraction request carried tools: %s %s", seen.Tools, seen.ToolChoice)
 	}
-	if seen.MaxOutputTokens != 256 {
-		t.Fatalf("max_output_tokens = %d, want the caller's 256", seen.MaxOutputTokens)
-	}
 	if seen.ReasoningEffort != "high" || seen.Verbosity != "low" {
 		t.Fatalf("reasoning/verbosity = %q %q", seen.ReasoningEffort, seen.Verbosity)
 	}
@@ -221,31 +229,137 @@ func TestStructuredInferenceUsesExtractionMode(t *testing.T) {
 	}
 }
 
-func TestStructuredInferenceClampsOutputTokensAndDeadline(t *testing.T) {
-	var seen codex.Request
+func TestStructuredInferenceClampsDeadline(t *testing.T) {
 	var deadline time.Time
 	service := fakeCodexService{
-		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
-			seen = req
+		complete: func(ctx context.Context, _ codex.Request) (codex.Completion, error) {
 			deadline, _ = ctx.Deadline()
 			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel}, nil
 		},
 	}
 	cfg := structuredTestConfig()
-	cfg.StructuredMaxOutputTokens = 1024
 	cfg.StructuredMaxDeadline = 2 * time.Second
 	app := New(cfg, WithCodexService(service), WithLogOutput(nil))
 
 	request := structuredBody()
-	request.MaxOutputTokens = 999999
 	request.DeadlineMS = 600000
 	decodeStructuredSuccess(t, postStructured(t, app, request))
 
-	if seen.MaxOutputTokens != 1024 {
-		t.Fatalf("max_output_tokens = %d, want the configured cap 1024", seen.MaxOutputTokens)
-	}
 	if deadline.IsZero() || time.Until(deadline) > 3*time.Second {
 		t.Fatalf("deadline = %s, want the configured 2s cap", time.Until(deadline))
+	}
+}
+
+// Issue 126 AC1/AC2: Codex Responses supports no output-token cap, so the
+// gateway sends no cap upstream and the field is gone from the contract. A body
+// that still carries max_output_tokens is ignored, not honoured and not
+// rejected, so it cannot change the fingerprint either.
+func TestStructuredInferenceSendsNoOutputCapAndIgnoresTheRemovedField(t *testing.T) {
+	var seen codex.Request
+	var calls int32
+	service := fakeCodexService{
+		complete: func(_ context.Context, req codex.Request) (codex.Completion, error) {
+			seen = req
+			atomic.AddInt32(&calls, 1)
+			return codex.Completion{Text: structuredTestOutput, Model: openai.DefaultModel, ID: "resp-original"}, nil
+		},
+	}
+	app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(nil))
+
+	// The removed field is not on structuredRequestBody at all, so send it as a
+	// raw body key: that is exactly the shape a pre-#126 client would send.
+	withRemovedField := structuredBodyMap()
+	withRemovedField["max_output_tokens"] = 256
+	first := decodeStructuredSuccess(t, postStructured(t, app, withRemovedField))
+	if first.IdempotentReplay {
+		t.Fatal("first request reported a replay")
+	}
+	if raw, err := json.Marshal(seen); err != nil {
+		t.Fatal(err)
+	} else if bytes.Contains(raw, []byte("MaxOutputTokens")) || bytes.Contains(raw, []byte("max_output_tokens")) {
+		t.Fatalf("codex request carried an output cap: %s", raw)
+	}
+
+	// An identical retry without the ignored field is still a replay: the
+	// fingerprint never saw it.
+	replayed := decodeStructuredSuccess(t, postStructured(t, app, structuredBody()))
+	if !replayed.IdempotentReplay || replayed.UpstreamResponseID != "resp-original" {
+		t.Fatalf("retry without the ignored field = %#v, want the stored replay", replayed)
+	}
+	// And a retry that varies only the ignored field is a replay too, never a
+	// 409: an ignored field cannot wedge a key.
+	varied := structuredBodyMap()
+	varied["max_output_tokens"] = 999999
+	if got := decodeStructuredSuccess(t, postStructured(t, app, varied)); !got.IdempotentReplay {
+		t.Fatalf("retry varying only the ignored field = %#v, want a replay", got)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
+// Issue 126 AC4: an operator needs the provider failure kind/status/message to
+// diagnose a generic client error, and that line must carry none of the input,
+// schema, model output, or authorization material.
+func TestStructuredInferenceLogsRedactionSafeProviderFailure(t *testing.T) {
+	const (
+		sentinelInput  = "SENTINEL_INPUT_zebra_quartz"
+		sentinelSchema = "sentinel_schema_property_wombat"
+		sentinelOutput = "SENTINEL_OUTPUT_marmoset"
+		sentinelToken  = "sentinel-bearer-krypton"
+	)
+	service := fakeCodexService{
+		complete: func(context.Context, codex.Request) (codex.Completion, error) {
+			return codex.Completion{Text: `{"` + sentinelSchema + `":"` + sentinelOutput + `"}`},
+				codex.NewError(codex.ErrorKindUpstream, http.StatusBadGateway, "codex stream failed", errors.New("upstream said "+sentinelOutput))
+		},
+	}
+	var logs bytes.Buffer
+	cfg := structuredTestConfig()
+	cfg.GatewayBearerSecret = sentinelToken
+	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
+
+	request := structuredBody()
+	request.Input = sentinelInput
+	request.Schema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["` + sentinelSchema + `"],"properties":{"` + sentinelSchema + `":{"type":"string"}}}`)
+	resp := postStructured(t, app, request, map[string]string{"Authorization": "Bearer " + sentinelToken})
+	body := decodeStructuredError(t, resp, http.StatusBadGateway, structured.CodeUpstream)
+
+	// The client body stays generic: no provider vocabulary, no detail.
+	if body.Error.Message != "upstream error" || len(body.Error.Details) != 0 {
+		t.Fatalf("client error body = %#v, want a generic upstream error", body.Error)
+	}
+
+	logged := logs.String()
+	for _, want := range []string{
+		"structured_upstream_error",
+		"provider=codex",
+		"provider_kind=upstream",
+		"provider_status=502",
+		`provider_message="codex stream failed"`,
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("logs missing %q:\n%s", want, logged)
+		}
+	}
+	for _, forbidden := range []string{sentinelInput, sentinelSchema, sentinelOutput, sentinelToken, "Bearer "} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("logs leaked %q:\n%s", forbidden, logged)
+		}
+	}
+}
+
+// A provider message is a fixed in-repo string today, but the log line must not
+// depend on that: a multi-line or oversized message can neither forge a second
+// record nor flood the log.
+func TestSanitizeProviderMessage(t *testing.T) {
+	if got := sanitizeProviderMessage(" upstream\nkind=forged\tstatus=200 "); got != "upstream kind=forged status=200" {
+		t.Fatalf("sanitizeProviderMessage() = %q", got)
+	}
+	long := strings.Repeat("x", maxProviderMessageRunes+50)
+	got := sanitizeProviderMessage(long)
+	if runes := []rune(got); len(runes) != maxProviderMessageRunes+1 || runes[len(runes)-1] != '\u2026' {
+		t.Fatalf("sanitizeProviderMessage() truncation = %q (%d runes)", got, len([]rune(got)))
 	}
 }
 
@@ -854,10 +968,9 @@ func TestStructuredInferenceRecordsMetrics(t *testing.T) {
 // replay of a response produced by another model, and never a second bill.
 func TestStructuredInferenceConflictsOnChangedParameters(t *testing.T) {
 	for name, mutate := range map[string]func(*structuredRequestBody){
-		"model":             func(b *structuredRequestBody) { b.Model = "gpt-5.6-terra" },
-		"reasoning effort":  func(b *structuredRequestBody) { b.ReasoningEffort = "high" },
-		"verbosity":         func(b *structuredRequestBody) { b.Verbosity = "high" },
-		"max output tokens": func(b *structuredRequestBody) { b.MaxOutputTokens = 64 },
+		"model":            func(b *structuredRequestBody) { b.Model = "gpt-5.6-terra" },
+		"reasoning effort": func(b *structuredRequestBody) { b.ReasoningEffort = "high" },
+		"verbosity":        func(b *structuredRequestBody) { b.Verbosity = "high" },
 		"schema body": func(b *structuredRequestBody) {
 			b.Schema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["title","score"],"properties":{"title":{"type":"string"},"score":{"type":"number"}}}`)
 		},
