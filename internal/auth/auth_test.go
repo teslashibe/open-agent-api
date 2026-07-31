@@ -10,7 +10,7 @@ import (
 const secretToken = "secret-access-token"
 
 func TestParseValidAuth(t *testing.T) {
-	creds, err := Parse([]byte(`{"tokens":{"access_token":"` + secretToken + `","account_id":"acct_123"}}`))
+	creds, err := Parse([]byte(`{"tokens":{"access_token":"` + secretToken + `","account_id":"acct_123","refresh_token":"rt-1","expires_at":1780000000}}`))
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
@@ -20,6 +20,12 @@ func TestParseValidAuth(t *testing.T) {
 	}
 	if creds.AccountID != "acct_123" {
 		t.Fatalf("AccountID = %q", creds.AccountID)
+	}
+	if creds.RefreshToken != "rt-1" {
+		t.Fatalf("RefreshToken = %q", creds.RefreshToken)
+	}
+	if creds.Expiry.Unix() != 1780000000 {
+		t.Fatalf("Expiry = %v", creds.Expiry)
 	}
 }
 

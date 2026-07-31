@@ -37,6 +37,7 @@ type ClientConfig struct {
 
 type Client struct {
 	authPath      string
+	tokens        *auth.Source
 	codexHome     string
 	websocketURL  string
 	timeout       time.Duration
@@ -82,6 +83,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 	return &Client{
 		authPath:      cfg.AuthPath,
+		tokens:        auth.NewSource(cfg.AuthPath),
 		codexHome:     cfg.CodexHome,
 		websocketURL:  cfg.WebsocketURL,
 		timeout:       cfg.Timeout,
@@ -202,16 +204,33 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 }
 
 func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, error) {
-	creds, err := auth.Load(c.authPath)
+	creds, err := c.tokens.Get(ctx)
 	if err != nil {
 		return nil, NewError(ErrorKindAuth, http.StatusUnauthorized, "load codex credentials", err)
 	}
 
-	headers := c.headers(creds, faithful, sessionID, kind)
-	conn, resp, err := c.dial(ctx, c.websocketURL, headers)
+	conn, resp, err := c.dial(ctx, c.websocketURL, c.headers(creds, faithful, sessionID, kind))
 	if err == nil {
 		return conn, nil
 	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	// Access token may still look valid but ChatGPT rejected the WS upgrade —
+	// force a refresh once and retry before surfacing auth failure.
+	if isAuthHandshake(resp) {
+		if refreshed, refreshErr := c.tokens.ForceRefresh(ctx); refreshErr == nil {
+			conn, resp, err = c.dial(ctx, c.websocketURL, c.headers(refreshed, faithful, sessionID, kind))
+			if err == nil {
+				return conn, nil
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+	}
+
 	status := http.StatusBadGateway
 	kindErr := ErrorKindUpstream
 	if resp != nil {
@@ -220,15 +239,16 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 			kindErr = ErrorKindAuth
 		}
 	}
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
 	connectErr := NewError(kindErr, status, "connect to codex websocket", err)
 	if resp != nil {
 		retryAfter, resetAt := retryHintFromHeader(resp.Header.Get("Retry-After"), time.Now())
 		connectErr = withRetryHint(connectErr, retryAfter, resetAt)
 	}
 	return nil, connectErr
+}
+
+func isAuthHandshake(resp *http.Response) bool {
+	return resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden)
 }
 
 func (c *Client) headers(creds auth.Credentials, faithful bool, sessionID string, kind requestKind) http.Header {
