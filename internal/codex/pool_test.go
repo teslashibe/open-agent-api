@@ -792,11 +792,52 @@ func TestPooledServiceHonorsRetryHint(t *testing.T) {
 			return poolEvents(StreamEvent{Done: true}), nil
 		}}},
 	)
-	want := now.Add(2 * time.Hour)
+	want := now.Add(2 * time.Minute)
 	err := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", ErrUsageLimitReached)
 	withRetryHint(err, time.Minute, want)
 	if got := pool.coolClient(0, err); !got.Equal(want) {
 		t.Fatalf("cooldown until = %s, want %s", got, want)
+	}
+}
+
+func TestPooledServiceCapsFarFutureRetryHint(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, func() time.Time { return now },
+		PooledClientConfig{Label: "only", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return poolEvents(StreamEvent{Done: true}), nil
+		}}},
+	)
+	err := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", ErrUsageLimitReached)
+	withRetryHint(err, time.Minute, now.Add(7*24*time.Hour))
+
+	want := now.Add(DefaultClientCooldownMax)
+	if got := pool.coolClient(0, err); !got.Equal(want) {
+		t.Fatalf("cooldown until = %s, want capped deadline %s", got, want)
+	}
+}
+
+func TestPooledServiceCanDisableCooldownCap(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	want := now.Add(7 * 24 * time.Hour)
+	pool, err := NewPooledService(PooledServiceConfig{
+		Clients: []PooledClientConfig{{
+			Label: "only",
+			Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				return poolEvents(StreamEvent{Done: true}), nil
+			}},
+		}},
+		UnavailablePolicy: ClientPoolUnavailableFail,
+		LogOutput:         &bytes.Buffer{},
+		CooldownMax:       -1,
+		Now:               func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewPooledService() error = %v", err)
+	}
+	rateLimitErr := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", ErrUsageLimitReached)
+	withRetryHint(rateLimitErr, time.Minute, want)
+	if got := pool.coolClient(0, rateLimitErr); !got.Equal(want) {
+		t.Fatalf("cooldown until = %s, want uncapped deadline %s", got, want)
 	}
 }
 

@@ -42,6 +42,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CLIENT_MAX_INFLIGHT")
 	unsetenv(t, "CODEX_CLIENT_POOL_UNAVAILABLE")
 	unsetenv(t, "CODEX_CLIENT_COOLDOWN_DEFAULT")
+	unsetenv(t, "CODEX_CLIENT_COOLDOWN_MAX")
 	unsetenv(t, "CODEX_METRICS_ENABLED")
 	chdir(t, t.TempDir())
 
@@ -136,6 +137,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.CodexClientCooldownDefault != DefaultCodexClientCooldownDefault {
 		t.Fatalf("CodexClientCooldownDefault = %s, want %s", cfg.CodexClientCooldownDefault, DefaultCodexClientCooldownDefault)
 	}
+	if cfg.CodexClientCooldownMax != DefaultCodexClientCooldownMax {
+		t.Fatalf("CodexClientCooldownMax = %s, want %s", cfg.CodexClientCooldownMax, DefaultCodexClientCooldownMax)
+	}
 	if cfg.MetricsEnabled != DefaultMetricsEnabled {
 		t.Fatalf("MetricsEnabled = %t, want %t", cfg.MetricsEnabled, DefaultMetricsEnabled)
 	}
@@ -206,6 +210,7 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_CLIENT_MAX_INFLIGHT", "4")
 	t.Setenv("CODEX_CLIENT_POOL_UNAVAILABLE", "fallback_first")
 	t.Setenv("CODEX_CLIENT_COOLDOWN_DEFAULT", "17s")
+	t.Setenv("CODEX_CLIENT_COOLDOWN_MAX", "31s")
 	t.Setenv("CODEX_CLIENTS", `[
 		{"label":"primary","codex_home":"/tmp/codex-a","profile_path":"/tmp/profile-a.json","scaffold_path":"/tmp/scaffold-a.json"},
 		{"label":"secondary","auth_path":"/tmp/auth-b.json","profile_path":"/tmp/profile-b.json","scaffold_path":"/tmp/scaffold-b.json"}
@@ -271,6 +276,9 @@ func TestLoadEnvironment(t *testing.T) {
 	if cfg.CodexClientCooldownDefault != 17*time.Second {
 		t.Fatalf("CodexClientCooldownDefault = %s", cfg.CodexClientCooldownDefault)
 	}
+	if cfg.CodexClientCooldownMax != 31*time.Second {
+		t.Fatalf("CodexClientCooldownMax = %s", cfg.CodexClientCooldownMax)
+	}
 	if len(cfg.CodexClients) != 2 {
 		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
 	}
@@ -318,6 +326,7 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--codex-client-max-inflight", "5",
 		"--codex-client-pool-unavailable", "fallback_first",
 		"--codex-client-cooldown-default", "19s",
+		"--codex-client-cooldown-max", "37s",
 		"--codex-clients", `[{"label":"flag-a","codex_home":"/tmp/flag-a"},{"label":"flag-b","auth_path":"/tmp/flag-b-auth.json"}]`,
 	})
 	if err != nil {
@@ -377,6 +386,9 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if cfg.CodexClientCooldownDefault != 19*time.Second {
 		t.Fatalf("CodexClientCooldownDefault = %s", cfg.CodexClientCooldownDefault)
+	}
+	if cfg.CodexClientCooldownMax != 37*time.Second {
+		t.Fatalf("CodexClientCooldownMax = %s", cfg.CodexClientCooldownMax)
 	}
 	if len(cfg.CodexClients) != 2 {
 		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
@@ -604,6 +616,19 @@ func TestLoadInvalidCodexClientCooldownDefault(t *testing.T) {
 
 			if _, err := Load(nil); err == nil {
 				t.Fatal("Load() error = nil, want invalid cooldown error")
+			}
+		})
+	}
+}
+
+func TestLoadInvalidCodexClientCooldownMax(t *testing.T) {
+	for _, value := range []string{"not-a-duration", "1s"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CODEX_CLIENT_COOLDOWN_MAX", value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid cooldown max error")
 			}
 		})
 	}
