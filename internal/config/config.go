@@ -45,6 +45,7 @@ const (
 	DefaultCodexClientMaxInflight             = 2
 	DefaultCodexClientPoolUnavailable         = "fail"
 	DefaultCodexClientCooldownDefault         = 5 * time.Minute
+	DefaultCodexClientCooldownMax             = 15 * time.Minute
 	DefaultMetricsEnabled                     = true
 	DefaultGatewayTenantHeader                = "X-Smore-Tenant-ID"
 	// Structured inference ships dark. The route is not registered unless it is
@@ -112,10 +113,14 @@ type Config struct {
 	CodexClientMaxInflight             int
 	CodexClientPoolUnavailable         string
 	CodexClientCooldownDefault         time.Duration
-	MetricsEnabled                     bool
-	GatewayBearerSecret                string
-	GatewayProviders                   []string
-	GatewayTenantHeader                string
+	// CodexClientCooldownMax caps how long upstream retry/reset hints can
+	// cool a Codex account. Zero is replaced with the default; negative
+	// disables the cap.
+	CodexClientCooldownMax time.Duration
+	MetricsEnabled         bool
+	GatewayBearerSecret    string
+	GatewayProviders       []string
+	GatewayTenantHeader    string
 	// StructuredEnabled registers POST /v1/structured/inference. Default false:
 	// the endpoint is dark until a deploy opts in, so enabling it is a
 	// deliberate act and never a traffic cutover side effect.
@@ -399,6 +404,13 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.CodexClientCooldownDefault = cooldown
 	}
+	if value := os.Getenv("CODEX_CLIENT_COOLDOWN_MAX"); value != "" {
+		cooldown, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CLIENT_COOLDOWN_MAX: %w", err)
+		}
+		cfg.CodexClientCooldownMax = cooldown
+	}
 	if value := os.Getenv("CODEX_METRICS_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -500,6 +512,7 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.CodexClientMaxInflight, "codex-client-max-inflight", cfg.CodexClientMaxInflight, "maximum concurrent requests per Codex client")
 	fs.StringVar(&cfg.CodexClientPoolUnavailable, "codex-client-pool-unavailable", cfg.CodexClientPoolUnavailable, "Codex client pool unavailable policy: fail or fallback_first")
 	fs.DurationVar(&cfg.CodexClientCooldownDefault, "codex-client-cooldown-default", cfg.CodexClientCooldownDefault, "default cooldown for rate-limited Codex clients when no retry hint is available")
+	fs.DurationVar(&cfg.CodexClientCooldownMax, "codex-client-cooldown-max", cfg.CodexClientCooldownMax, "maximum cooldown for Codex clients; caps far-future resets_at so recovered quota is re-probed (negative disables)")
 	fs.BoolVar(&cfg.MetricsEnabled, "metrics-enabled", cfg.MetricsEnabled, "expose Prometheus metrics on /metrics")
 	fs.StringVar(&cfg.GatewayBearerSecret, "gateway-bearer-secret", cfg.GatewayBearerSecret, "shared bearer secret required on /v1 routes (empty disables inbound auth)")
 	fs.StringVar(&providersRaw, "gateway-providers", providersRaw, "comma-separated provider allowlist: codex, gemini, claude (codex is required)")
@@ -579,6 +592,7 @@ func Defaults() Config {
 		CodexClientMaxInflight:             DefaultCodexClientMaxInflight,
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
 		CodexClientCooldownDefault:         DefaultCodexClientCooldownDefault,
+		CodexClientCooldownMax:             DefaultCodexClientCooldownMax,
 		MetricsEnabled:                     DefaultMetricsEnabled,
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 		CustomToolWire:                     DefaultCustomToolWire,
@@ -730,6 +744,11 @@ func (c Config) Validate() error {
 	}
 	if c.CodexClientCooldownDefault <= 0 {
 		return errors.New("codex client cooldown default must be positive")
+	}
+	// Zero means "use DefaultCodexClientCooldownMax" at pool construction.
+	// Negative disables the cap (honor upstream resets_at fully).
+	if c.CodexClientCooldownMax > 0 && c.CodexClientCooldownMax < c.CodexClientCooldownDefault {
+		return errors.New("codex client cooldown max must be >= cooldown default (or negative to disable)")
 	}
 	if err := validateCodexClients(c.CodexClients); err != nil {
 		return err

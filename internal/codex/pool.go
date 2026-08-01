@@ -20,12 +20,18 @@ const (
 	ClientPoolUnavailableFail          = "fail"
 	ClientPoolUnavailableFallbackFirst = "fallback_first"
 	DefaultClientCooldown              = 5 * time.Minute
-	defaultClientMaxInflight           = 2
-	defaultSoftPinCapacity             = 10_000
-	defaultSoftPinTTL                  = 24 * time.Hour
-	unpinReasonAuth                    = "auth"
-	unpinReasonCooldown                = "cooldown"
-	unpinReasonUnavailable             = "unavailable"
+	// DefaultClientCooldownMax caps how long a usage_limit / rate-limit
+	// reset hint can pin an account. Codex sometimes returns a far-future
+	// resets_at (weekly window); trusting that blindly leaves a single-client
+	// pool refusing all traffic for hours even after quota has recovered.
+	// Cap the cooldown and re-probe periodically instead.
+	DefaultClientCooldownMax = 15 * time.Minute
+	defaultClientMaxInflight = 2
+	defaultSoftPinCapacity   = 10_000
+	defaultSoftPinTTL        = 24 * time.Hour
+	unpinReasonAuth          = "auth"
+	unpinReasonCooldown      = "cooldown"
+	unpinReasonUnavailable   = "unavailable"
 )
 
 // ErrClientPoolSaturated marks requests rejected before an upstream call
@@ -38,6 +44,7 @@ type PooledService struct {
 	unavailablePolicy string
 	logOutput         io.Writer
 	cooldownDefault   time.Duration
+	cooldownMax       time.Duration
 	now               func() time.Time
 	metrics           *metricspkg.Metrics
 
@@ -79,8 +86,11 @@ type PooledServiceConfig struct {
 	UnavailablePolicy string
 	LogOutput         io.Writer
 	CooldownDefault   time.Duration
-	Now               func() time.Time
-	Metrics           *metricspkg.Metrics
+	// CooldownMax caps retry/reset hints. Zero means DefaultClientCooldownMax.
+	// Negative disables the cap (honor upstream resets_at fully).
+	CooldownMax time.Duration
+	Now         func() time.Time
+	Metrics     *metricspkg.Metrics
 }
 
 type PooledClientConfig struct {
@@ -131,6 +141,9 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 	if cfg.CooldownDefault <= 0 {
 		cfg.CooldownDefault = DefaultClientCooldown
 	}
+	if cfg.CooldownMax == 0 {
+		cfg.CooldownMax = DefaultClientCooldownMax
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -140,6 +153,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		unavailablePolicy: cfg.UnavailablePolicy,
 		logOutput:         cfg.LogOutput,
 		cooldownDefault:   cfg.CooldownDefault,
+		cooldownMax:       cfg.CooldownMax,
 		now:               cfg.Now,
 		metrics:           cfg.Metrics,
 		cooldowns:         make([]clientCooldown, len(clients)),
@@ -403,9 +417,16 @@ func (p *PooledService) coolClient(index int, err error) time.Time {
 	p.mu.Lock()
 	if p.cooldowns[index].until.After(until) {
 		until = p.cooldowns[index].until
-	} else {
-		p.cooldowns[index] = clientCooldown{until: until, class: class}
 	}
+	// Cap far-future resets_at so a recovered quota is re-probed. Without
+	// this, a single-client pool can stay dark until process restart.
+	if p.cooldownMax > 0 {
+		maxUntil := now.Add(p.cooldownMax)
+		if until.After(maxUntil) {
+			until = maxUntil
+		}
+	}
+	p.cooldowns[index] = clientCooldown{until: until, class: class}
 	p.mu.Unlock()
 	p.metrics.ObservePoolCooldown(p.clients[index].label, string(class))
 	p.logCooldown(index, until)
