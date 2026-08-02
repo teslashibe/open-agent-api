@@ -518,6 +518,7 @@ func TestStructuredInferenceQueueRecordsAreSingleLine(t *testing.T) {
 	cfg.StructuredMaxActive = 1
 	cfg.StructuredMaxActivePerKey = 1
 	cfg.StructuredQueueLimit = 0
+	cfg.StructuredQueueTimeout = 20 * time.Millisecond
 	var logs bytes.Buffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
@@ -529,8 +530,8 @@ func TestStructuredInferenceQueueRecordsAreSingleLine(t *testing.T) {
 	}()
 	<-admitted
 
-	// The shed request is the one that reaches agent_queue_full, and its
-	// identifiers are poisoned.
+	// The timed-out request reaches the queue diagnostics with poisoned
+	// identifiers after soft-waiting instead of failing immediately.
 	shed := structuredBody()
 	shed.IdempotencyKey = "idem-shed"
 	shed.RequestID = "req-shed\nagent_queue_acquire request_id=forged key_mode=forged key_hash=forged"
@@ -794,6 +795,7 @@ func TestStructuredInferenceQueueFullReturns429WithRetryAfter(t *testing.T) {
 	cfg.StructuredMaxActive = 1
 	cfg.StructuredMaxActivePerKey = 1
 	cfg.StructuredQueueLimit = 0
+	cfg.StructuredQueueTimeout = 20 * time.Millisecond
 	app := New(cfg, WithCodexService(service), WithLogOutput(nil))
 
 	first := make(chan *http.Response, 1)

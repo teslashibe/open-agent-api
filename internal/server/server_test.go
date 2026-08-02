@@ -1797,8 +1797,10 @@ func TestAgentQueuePriorityOrdersDifferentKeysViaHandler(t *testing.T) {
 	}
 }
 
-func TestAgentQueueFullReturns429(t *testing.T) {
+func TestAgentQueueFullSoftWaitsForCapacity(t *testing.T) {
 	cfg := agentQueueTestConfig()
+	cfg.AgentMaxActive = 1
+	cfg.AgentMaxActivePerKey = 1
 	cfg.AgentQueueLimit = 0
 	events := make(chan codex.StreamEvent)
 	started := make(chan struct{}, 1)
@@ -1817,16 +1819,13 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first request did not start")
 	}
-	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"},{"role":"user","content":"follow up"}],"tools":[{"type":"function"}]}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	secondDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"},{"role":"user","content":"follow up"}],"tools":[{"type":"function"}]}`)
+	select {
+	case <-secondDone:
+		t.Fatal("second request returned before capacity was released")
+	case <-time.After(25 * time.Millisecond):
 	}
-	body := readString(t, resp.Body)
-	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue full") {
-		t.Fatalf("body = %q, want OpenAI-shaped queue full error", body)
-	}
-	for _, want := range []string{"agent_queue_full request_id=", "key_mode=cursor:conversation_fingerprint", "key_hash=", "limit=0"} {
+	for _, want := range []string{"agent_queue_soft_wait request_id=", "key_mode=cursor:conversation_fingerprint", "key_hash=", "limit=0"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}
@@ -1834,7 +1833,9 @@ func TestAgentQueueFullReturns429(t *testing.T) {
 
 	events <- codex.StreamEvent{Done: true}
 	close(events)
-	resp = waitResponse(t, firstDone)
+	resp := waitResponse(t, firstDone)
+	resp.Body.Close()
+	resp = waitResponse(t, secondDone)
 	resp.Body.Close()
 }
 
