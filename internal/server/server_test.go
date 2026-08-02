@@ -1760,45 +1760,57 @@ func TestAgentQueuePriorityOrdersDifferentKeysViaHandler(t *testing.T) {
 	}
 }
 
-func TestAgentQueueFullReturns429(t *testing.T) {
+func TestAgentQueueSoftWaitsWhenFullThenAcquires(t *testing.T) {
 	cfg := agentQueueTestConfig()
+	cfg.AgentMaxActive = 1
 	cfg.AgentQueueLimit = 0
-	events := make(chan codex.StreamEvent)
-	started := make(chan struct{}, 1)
+	cfg.AgentQueueKeyMode = "header:x-cursor-session-id"
+	releases := map[string]chan struct{}{
+		"first":  make(chan struct{}),
+		"second": make(chan struct{}),
+	}
+	started := make(chan string, 2)
 	service := fakeCodexService{
-		stream: func(ctx context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
-			started <- struct{}{}
-			return events, nil
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			label := strings.TrimSpace(openai.MessageText(req.Messages[0].Content))
+			started <- label
+			select {
+			case <-releases[label]:
+			case <-ctx.Done():
+				return codex.Completion{}, ctx.Err()
+			}
+			return codex.Completion{Text: "ok", Model: req.Model}, nil
 		},
 	}
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
-	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"}],"tools":[{"type":"function"}]}`)
+	firstDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"first"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-a"})
+	if got := waitStartedLabel(t, started, time.Second); got != "first" {
+		t.Fatalf("first started = %q, want first", got)
+	}
+	secondDone := postJSONAsync(t, app, `{"messages":[{"role":"user","content":"second"}],"tools":[{"type":"function"}]}`, map[string]string{"X-Cursor-Session-Id": "session-b"})
+	waitFor(t, time.Second, func() bool {
+		return strings.Contains(logs.String(), "agent_queue_soft_wait") && strings.Contains(logs.String(), "limit=0")
+	}, "second request to soft-wait on full queue")
 	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("first request did not start")
-	}
-	resp := doJSON(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"},{"role":"user","content":"follow up"}],"tools":[{"type":"function"}]}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
-	}
-	body := readString(t, resp.Body)
-	if !strings.Contains(body, `"type":"rate_limit_error"`) || !strings.Contains(body, "agent queue full") {
-		t.Fatalf("body = %q, want OpenAI-shaped queue full error", body)
-	}
-	for _, want := range []string{"agent_queue_full request_id=", "key_mode=cursor:conversation_fingerprint", "key_hash=", "limit=0"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Fatalf("logs = %q, want %q", logs.String(), want)
-		}
+	case got := <-started:
+		t.Fatalf("second started early: %q", got)
+	case <-time.After(80 * time.Millisecond):
 	}
 
-	events <- codex.StreamEvent{Done: true}
-	close(events)
-	resp = waitResponse(t, firstDone)
+	close(releases["first"])
+	resp := waitResponse(t, firstDone)
 	resp.Body.Close()
+	if got := waitStartedLabel(t, started, time.Second); got != "second" {
+		t.Fatalf("second started = %q, want second", got)
+	}
+	close(releases["second"])
+	resp = waitResponse(t, secondDone)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
 }
 
 func TestAgentQueueTimeoutReturns429(t *testing.T) {

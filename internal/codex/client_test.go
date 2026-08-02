@@ -275,6 +275,44 @@ func TestOpenCapturesRetryAfterHeader(t *testing.T) {
 	}
 }
 
+func TestOpenTreatsForbiddenAsRetryableUpstream(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = func(context.Context, string, http.Header) (websocketConn, *http.Response, error) {
+		return nil, &http.Response{StatusCode: http.StatusForbidden}, errors.New("forbidden")
+	}
+
+	_, err := client.open(context.Background(), false, "session-123", requestKindTurn)
+	codexErr, ok := ErrorAs(err)
+	if !ok || codexErr.Kind != ErrorKindUpstream || codexErr.Status != http.StatusForbidden {
+		t.Fatalf("open() error = %#v, want upstream 403", codexErr)
+	}
+	if ClassifyFailure(err) != FailureTransient {
+		t.Fatalf("ClassifyFailure() = %s, want transient", ClassifyFailure(err))
+	}
+}
+
+func TestOpenWithRetryRecoversFromTransientForbidden(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	attempts := 0
+	client.dial = func(context.Context, string, http.Header) (websocketConn, *http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, &http.Response{StatusCode: http.StatusForbidden}, errors.New("forbidden")
+		}
+		return &fakeWebsocketConn{readMessages: [][]byte{[]byte(`{"type":"response.completed","response":{"id":"resp-1","model":"gpt-test"}}`)}}, nil, nil
+	}
+
+	conn, err := client.openWithRetry(context.Background(), false, "session-123", requestKindTurn)
+	if err != nil {
+		t.Fatalf("openWithRetry() error = %v", err)
+	}
+	if conn == nil || attempts != 3 {
+		t.Fatalf("conn=%v attempts=%d, want success after 3 dials", conn != nil, attempts)
+	}
+}
+
 func TestParseStreamEventFailureIsSanitized(t *testing.T) {
 	_, terminal, err := parseStreamEvent([]byte(`{"type":"response.failed","status":500,"error":{"message":"secret-access-token"}}`))
 	if err == nil {

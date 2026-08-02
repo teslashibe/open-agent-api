@@ -272,7 +272,11 @@ func TestAllCoolingRateLimitDoesNotRunModelFallback(t *testing.T) {
 			rateLimitErr := codex.NewError(codex.ErrorKindUpstream, http.StatusTooManyRequests, "too many requests", errors.New("capacity"))
 			pool, err := codex.NewPooledService(codex.PooledServiceConfig{
 				UnavailablePolicy: codex.ClientPoolUnavailableFail,
-				LogOutput:         io.Discard,
+				// Short cooldown so the waiting pool re-probes quickly; the
+				// assertion is that model fallback never runs, not that the
+				// second probe is skipped.
+				CooldownDefault: time.Millisecond,
+				LogOutput:       io.Discard,
 				Clients: []codex.PooledClientConfig{{Label: "only", Service: &streamFuncService{stream: func(req codex.Request) (<-chan codex.StreamEvent, error) {
 					calls++
 					models = append(models, req.Model)
@@ -295,8 +299,13 @@ func TestAllCoolingRateLimitDoesNotRunModelFallback(t *testing.T) {
 				}
 			}
 
-			if calls != 1 || fmt.Sprint(models) != "[gpt-5.5]" {
-				t.Fatalf("calls = %d, models = %v; model fallback must not run", calls, models)
+			if calls < 1 || calls > 2 {
+				t.Fatalf("calls = %d, want 1-2 probes of the same model", calls)
+			}
+			for _, model := range models {
+				if model != "gpt-5.5" {
+					t.Fatalf("models = %v; model fallback must not run", models)
+				}
 			}
 			if strings.Contains(logs.String(), "quota_fallback") {
 				t.Fatalf("logs = %q, ordinary rate limit triggered model fallback", logs.String())

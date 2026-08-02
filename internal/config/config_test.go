@@ -506,11 +506,24 @@ func TestLoadInvalidAgentQueueLimit(t *testing.T) {
 }
 
 func TestLoadInvalidAgentQueueTimeout(t *testing.T) {
-	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "0s")
+	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "-1s")
 	chdir(t, t.TempDir())
 
 	if _, err := Load(nil); err == nil {
 		t.Fatal("Load() error = nil, want invalid agent queue timeout error")
+	}
+}
+
+func TestLoadZeroAgentQueueTimeoutMeansWaitForever(t *testing.T) {
+	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "0s")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentQueueTimeout != 0 {
+		t.Fatalf("AgentQueueTimeout = %s, want 0 (infinite wait)", cfg.AgentQueueTimeout)
 	}
 }
 

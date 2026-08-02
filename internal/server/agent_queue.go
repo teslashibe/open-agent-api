@@ -74,6 +74,9 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 	priority := agentQueuePriority(class)
 
 	start := q.now()
+	// Ignore server deadlines while queued — only a client disconnect may abort.
+	waitCtx, stopWait := clientWaitContext(ctx)
+	defer stopWait()
 	defer func() {
 		result := "acquired"
 		switch {
@@ -89,7 +92,7 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 		q.metrics.ObserveQueueWait(q.provider, result, q.now().Sub(start))
 	}()
 	if !q.enabled {
-		release, err := q.acquireDistributedLock(ctx, requestID, start, key)
+		release, err := q.acquireDistributedLock(waitCtx, requestID, start, key)
 		return release, 0, err
 	}
 
@@ -98,13 +101,33 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 		activeGlobal, activeKey := q.acquireLocked(key)
 		q.mu.Unlock()
 		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=0 active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, activeGlobal, activeKey)
-		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		release, err := q.releaseWithDistributedLock(waitCtx, requestID, start, key, class, priority)
 		return release, 0, err
 	}
-	if len(q.waiters) >= q.limit {
+	// Soft-wait for a queue slot instead of hard-failing Cursor when the
+	// waiter list is temporarily full.
+	for len(q.waiters) >= q.limit {
 		q.mu.Unlock()
-		q.logf("agent_queue_full request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d limit=%d\n", requestID, key.Mode, key.Hash, class, priority, q.limit)
-		return nil, q.now().Sub(start), errAgentQueueFull
+		q.logf("agent_queue_soft_wait request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d limit=%d\n", requestID, key.Mode, key.Hash, class, priority, q.limit)
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return nil, q.now().Sub(start), context.Canceled
+		case <-timer.C:
+		}
+		// timeout <= 0 means wait forever (Cursor must not be shed).
+		if q.timeout > 0 && q.now().Sub(start) >= q.timeout {
+			return nil, q.now().Sub(start), errAgentQueueTimeout
+		}
+		q.mu.Lock()
+		if q.canAcquireLocked(key) && len(q.waiters) == 0 {
+			activeGlobal, activeKey := q.acquireLocked(key)
+			q.mu.Unlock()
+			q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
+			release, err := q.releaseWithDistributedLock(waitCtx, requestID, start, key, class, priority)
+			return release, q.now().Sub(start), err
+		}
 	}
 
 	q.nextSeq++
@@ -115,17 +138,22 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 	q.mu.Unlock()
 	q.logf("agent_queue_wait request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d position=%d\n", requestID, key.Mode, key.Hash, class, priority, position)
 
-	timer := time.NewTimer(q.timeout)
-	defer timer.Stop()
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	if q.timeout > 0 {
+		timer = time.NewTimer(q.timeout)
+		timerC = timer.C
+		defer timer.Stop()
+	}
 
 	select {
 	case <-waiter.ready:
 		activeGlobal, activeKey := q.currentActive(key)
 		wait := q.now().Sub(start)
 		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
-		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		release, err := q.releaseWithDistributedLock(waitCtx, requestID, start, key, class, priority)
 		return release, wait, err
-	case <-timer.C:
+	case <-timerC:
 		if q.removeWaiter(waiter) {
 			wait := q.now().Sub(start)
 			q.logf("agent_queue_timeout request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds())
@@ -134,18 +162,34 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 		activeGlobal, activeKey := q.currentActive(key)
 		wait := q.now().Sub(start)
 		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
-		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		release, err := q.releaseWithDistributedLock(waitCtx, requestID, start, key, class, priority)
 		return release, wait, err
-	case <-ctx.Done():
+	case <-waitCtx.Done():
 		if q.removeWaiter(waiter) {
-			return nil, q.now().Sub(start), ctx.Err()
+			return nil, q.now().Sub(start), context.Canceled
 		}
 		activeGlobal, activeKey := q.currentActive(key)
 		wait := q.now().Sub(start)
 		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
-		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+		release, err := q.releaseWithDistributedLock(waitCtx, requestID, start, key, class, priority)
 		return release, wait, err
 	}
+}
+
+// clientWaitContext ignores parent deadlines so queue waits cannot fail Cursor.
+// It cancels only when the HTTP client disconnects (context.Canceled).
+func clientWaitContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-parent.Done():
+			if errors.Is(parent.Err(), context.Canceled) {
+				cancel()
+			}
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 func (q *agentQueue) releaseWithDistributedLock(ctx context.Context, requestID string, start time.Time, key agentQueueKey, class turnClass, priority int) (func(), error) {

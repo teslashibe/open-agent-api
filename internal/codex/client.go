@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -152,7 +153,11 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		c.prewarm(ctx, req, sessionID)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	// Do not bound the whole turn with CODEX_TIMEOUT. A server deadline abort
+	// kills Cursor mid-wait and breaks the coding session. Admission/connect
+	// retries run until the client disconnects; socket read deadlines still
+	// use c.timeout as an idle-between-frames guard inside readLoop.
+	ctx, cancel := context.WithCancel(ctx)
 
 	var payload map[string]any
 	var kind requestKind = requestKindTurn
@@ -167,7 +172,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		}
 	}
 
-	conn, err := c.open(ctx, req.Faithful, sessionID, kind)
+	conn, err := c.openWithRetry(ctx, req.Faithful, sessionID, kind)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -201,6 +206,52 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 	_, _, _ = conn.ReadMessage()
 }
 
+func (c *Client) openWithRetry(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, error) {
+	backoff := 250 * time.Millisecond
+	// Wait out transient Codex/websocket pressure forever. Only a true client
+	// disconnect (Canceled) may abort — never a server deadline.
+	waitCtx, stopWait := clientWaitContext(ctx)
+	defer stopWait()
+	for {
+		conn, err := c.open(waitCtx, faithful, sessionID, kind)
+		if err == nil {
+			return conn, nil
+		}
+		if errors.Is(waitCtx.Err(), context.Canceled) {
+			return nil, context.Canceled
+		}
+		if !retryableConnectError(err) {
+			return nil, err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return nil, context.Canceled
+		case <-timer.C:
+		}
+		if backoff < 5*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+// clientWaitContext stays alive through parent deadlines so admission/connect
+// retries cannot fail Cursor. It cancels only when the client disconnects.
+func clientWaitContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-parent.Done():
+			if errors.Is(parent.Err(), context.Canceled) {
+				cancel()
+			}
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
 func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, error) {
 	creds, err := auth.Load(c.authPath)
 	if err != nil {
@@ -216,7 +267,10 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 	kindErr := ErrorKindUpstream
 	if resp != nil {
 		status = resp.StatusCode
-		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		// Only a true 401 means credentials are bad. Codex also returns
+		// handshake-time 403s under websocket/session pressure; treating those
+		// as auth makes Cursor show intermittent "authentication failed".
+		if status == http.StatusUnauthorized {
 			kindErr = ErrorKindAuth
 		}
 	}
@@ -229,6 +283,18 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 		connectErr = withRetryHint(connectErr, retryAfter, resetAt)
 	}
 	return nil, connectErr
+}
+
+func retryableConnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch ClassifyFailure(err) {
+	case FailureTransient, FailureRateLimit:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) headers(creds auth.Credentials, faithful bool, sessionID string, kind requestKind) http.Header {

@@ -20,12 +20,15 @@ const (
 	ClientPoolUnavailableFail          = "fail"
 	ClientPoolUnavailableFallbackFirst = "fallback_first"
 	DefaultClientCooldown              = 5 * time.Minute
-	defaultClientMaxInflight           = 2
-	defaultSoftPinCapacity             = 10_000
-	defaultSoftPinTTL                  = 24 * time.Hour
-	unpinReasonAuth                    = "auth"
-	unpinReasonCooldown                = "cooldown"
-	unpinReasonUnavailable             = "unavailable"
+	// DefaultClientCooldownMax caps far-future resets_at so a recovered account
+	// is re-probed instead of staying dark for hours/days.
+	DefaultClientCooldownMax = 15 * time.Minute
+	defaultClientMaxInflight = 2
+	defaultSoftPinCapacity   = 10_000
+	defaultSoftPinTTL        = 24 * time.Hour
+	unpinReasonAuth          = "auth"
+	unpinReasonCooldown      = "cooldown"
+	unpinReasonUnavailable   = "unavailable"
 )
 
 // ErrClientPoolSaturated marks requests rejected before an upstream call
@@ -187,7 +190,7 @@ func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, 
 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	selected, pinned := p.preferredIndex(req)
-	index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+	index, inflight, release, unpin, err := p.acquireAvailableWait(ctx, req, selected)
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +200,77 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 	}
 	p.logSelection(req, index, false, index != selected, pinned && index == selected, inflight)
 	return p.streamAttempt(ctx, req, index, false, release, unpin, refreshPin)
+}
+
+// acquireAvailableWait keeps Cursor/agent requests waiting for a free Codex
+// slot instead of failing hard on temporary saturation or cooldown.
+func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request, selected int) (int, int, func(), *pendingUnpin, error) {
+	backoff := 50 * time.Millisecond
+	// Keep waiting through server deadlines. Only a client disconnect may abort
+	// Cursor admission — returning 429 mid-session breaks the coding loop.
+	waitCtx, stopWait := clientWaitContext(ctx)
+	defer stopWait()
+	for {
+		index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+		if err == nil {
+			return index, inflight, release, unpin, nil
+		}
+		if !waitableAcquireError(err) {
+			return 0, 0, nil, nil, err
+		}
+		if errors.Is(waitCtx.Err(), context.Canceled) {
+			return 0, 0, nil, nil, context.Canceled
+		}
+		wait := backoff
+		if until, ok := p.earliestCooldownExpiry(); ok {
+			if remaining := until.Sub(p.now()); remaining > 0 {
+				wait = remaining
+				if wait > 5*time.Second {
+					wait = 5 * time.Second
+				}
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return 0, 0, nil, nil, context.Canceled
+		case <-timer.C:
+		}
+		if backoff < time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func (p *PooledService) earliestCooldownExpiry() (time.Time, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var earliest time.Time
+	found := false
+	now := p.now()
+	for _, cool := range p.cooldowns {
+		if cool.until.After(now) && (!found || cool.until.Before(earliest)) {
+			earliest = cool.until
+			found = true
+		}
+	}
+	return earliest, found
+}
+
+func waitableAcquireError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrClientPoolSaturated) {
+		return true
+	}
+	switch ClassifyFailure(err) {
+	case FailureRateLimit, FailureQuota, FailureTransient:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin, refreshPin int) (<-chan StreamEvent, error) {
@@ -403,9 +477,12 @@ func (p *PooledService) coolClient(index int, err error) time.Time {
 	p.mu.Lock()
 	if p.cooldowns[index].until.After(until) {
 		until = p.cooldowns[index].until
-	} else {
-		p.cooldowns[index] = clientCooldown{until: until, class: class}
 	}
+	maxUntil := now.Add(DefaultClientCooldownMax)
+	if until.After(maxUntil) {
+		until = maxUntil
+	}
+	p.cooldowns[index] = clientCooldown{until: until, class: class}
 	p.mu.Unlock()
 	p.metrics.ObservePoolCooldown(p.clients[index].label, string(class))
 	p.logCooldown(index, until)

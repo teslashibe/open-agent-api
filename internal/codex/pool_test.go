@@ -743,9 +743,9 @@ func TestPooledServiceSingleClientAndAllCoolingCompatibility(t *testing.T) {
 			if !errors.Is(firstErr, ErrUsageLimitReached) || calls != 1 {
 				t.Fatalf("first Complete() error = %v, calls = %d", firstErr, calls)
 			}
-			_, secondErr := pool.Complete(context.Background(), Request{Model: "gpt-5.6-sol"})
+			_, _, _, _, secondErr := pool.acquireAvailable(Request{Model: "gpt-5.6-sol"}, 0)
 			if !errors.Is(secondErr, ErrUsageLimitReached) || calls != 1 {
-				t.Fatalf("cooling Complete() error = %v, calls = %d", secondErr, calls)
+				t.Fatalf("cooling acquire error = %v, calls = %d", secondErr, calls)
 			}
 
 			_, fallbackErr := pool.Complete(context.Background(), Request{Model: "gpt-5.3-codex-spark", AllowCooling: true})
@@ -774,12 +774,13 @@ func TestPooledServiceAllCoolingPreservesStickyClientFailureClass(t *testing.T) 
 	pool.coolClient(0, rateLimitErr)
 	pool.coolClient(1, poolQuotaError())
 
-	_, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
+	// Stream waits through deadlines; inspect acquire directly for class.
+	_, _, _, _, err := pool.acquireAvailable(requestForPoolIndex(pool, 0), 0)
 	if errors.Is(err, ErrUsageLimitReached) || ClassifyFailure(err) != FailureRateLimit {
 		t.Fatalf("rate-limit shard error = %v, class = %s", err, ClassifyFailure(err))
 	}
 
-	_, err = pool.Complete(context.Background(), requestForPoolIndex(pool, 1))
+	_, _, _, _, err = pool.acquireAvailable(requestForPoolIndex(pool, 1), 1)
 	if !errors.Is(err, ErrUsageLimitReached) || ClassifyFailure(err) != FailureQuota {
 		t.Fatalf("quota shard error = %v, class = %s", err, ClassifyFailure(err))
 	}
@@ -792,11 +793,12 @@ func TestPooledServiceHonorsRetryHint(t *testing.T) {
 			return poolEvents(StreamEvent{Done: true}), nil
 		}}},
 	)
-	want := now.Add(2 * time.Hour)
+	farFuture := now.Add(2 * time.Hour)
+	want := now.Add(DefaultClientCooldownMax)
 	err := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", ErrUsageLimitReached)
-	withRetryHint(err, time.Minute, want)
+	withRetryHint(err, time.Minute, farFuture)
 	if got := pool.coolClient(0, err); !got.Equal(want) {
-		t.Fatalf("cooldown until = %s, want %s", got, want)
+		t.Fatalf("cooldown until = %s, want capped %s (raw reset %s)", got, want, farFuture)
 	}
 }
 
@@ -820,6 +822,56 @@ func TestPooledServiceRotatesRateLimit(t *testing.T) {
 	}
 }
 
+func TestPooledServiceWaitsForSaturatedClientThenAcquires(t *testing.T) {
+	hold := make(chan StreamEvent)
+	var mu sync.Mutex
+	calls := 0
+	pool := newLeaseTestPool(t, 1, &bytes.Buffer{}, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n == 1 {
+				return hold, nil
+			}
+			ch := make(chan StreamEvent, 1)
+			ch <- StreamEvent{Delta: "ok", Done: true}
+			close(ch)
+			return ch, nil
+		}},
+	})
+
+	first, err := pool.Stream(context.Background(), Request{RequestID: "req-hold"})
+	if err != nil {
+		t.Fatalf("first Stream() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := pool.Complete(context.Background(), Request{RequestID: "req-wait"})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("waiter finished early: %v", err)
+	case <-time.After(120 * time.Millisecond):
+	}
+
+	close(hold)
+	drainEvents(first)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiter Complete() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter did not acquire after release")
+	}
+}
+
 func TestPooledServiceRejectsSaturatedClientWithoutUpstreamCall(t *testing.T) {
 	var logs bytes.Buffer
 	upstream := make(chan StreamEvent)
@@ -839,9 +891,10 @@ func TestPooledServiceRejectsSaturatedClientWithoutUpstreamCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Stream() error = %v", err)
 	}
-	_, err = pool.Stream(context.Background(), Request{RequestID: "req-saturated"})
+	// Stream waits forever for capacity; probe acquire for the saturation error.
+	_, _, _, _, err = pool.acquireAvailable(Request{RequestID: "req-saturated"}, 0)
 	if !errors.Is(err, ErrClientPoolSaturated) {
-		t.Fatalf("second Stream() error = %v, want ErrClientPoolSaturated", err)
+		t.Fatalf("saturated acquire error = %v, want ErrClientPoolSaturated", err)
 	}
 	serviceErr, ok := ErrorAs(err)
 	if !ok || serviceErr.Status != http.StatusTooManyRequests || serviceErr.Message != "codex client pool saturated" {
@@ -857,7 +910,7 @@ func TestPooledServiceRejectsSaturatedClientWithoutUpstreamCall(t *testing.T) {
 	close(upstream)
 	drainEvents(events)
 	waitPoolInflight(t, pool, "client-a", 0)
-	for _, want := range []string{"client_label=client-a inflight=1", "codex_client_saturated", "codex_client_pool_saturated", "codex_client_release"} {
+	for _, want := range []string{"client_label=client-a inflight=1", "codex_client_saturated", "codex_client_release"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}

@@ -612,8 +612,8 @@ func (c Config) Validate() error {
 			return errors.New("per-provider agent queue overrides must be non-negative")
 		}
 	}
-	if c.AgentQueueEnabled && c.AgentQueueTimeout <= 0 {
-		return errors.New("agent queue timeout must be positive")
+	if c.AgentQueueEnabled && c.AgentQueueTimeout < 0 {
+		return errors.New("agent queue timeout must be non-negative (0 = wait until client disconnect)")
 	}
 	if c.ContextMaxBytes < 0 {
 		return errors.New("context max bytes must be non-negative")
