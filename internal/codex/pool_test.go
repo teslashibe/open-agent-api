@@ -905,6 +905,51 @@ func TestPooledServiceRejectsSaturatedClientWithoutUpstreamCall(t *testing.T) {
 	}
 }
 
+func TestPooledServiceExtractionWaitsForSaturatedClient(t *testing.T) {
+	upstream := make(chan StreamEvent)
+	var mu sync.Mutex
+	calls := 0
+	pool := newLeaseTestPool(t, 1, &bytes.Buffer{}, PooledClientConfig{
+		Label: "client-a",
+		Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			return upstream, nil
+		}},
+	})
+
+	first, err := pool.Stream(context.Background(), Request{RequestID: "extract-active", Extraction: true})
+	if err != nil {
+		t.Fatalf("first Stream() error = %v", err)
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		events, streamErr := pool.Stream(context.Background(), Request{RequestID: "extract-waiting", Extraction: true})
+		if streamErr == nil {
+			drainEvents(events)
+		}
+		secondDone <- streamErr
+	}()
+
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second extraction returned before capacity was released: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(upstream)
+	drainEvents(first)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second extraction Stream() error = %v", err)
+	}
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", gotCalls)
+	}
+}
+
 func TestPooledServiceRotatesFromSaturatedClient(t *testing.T) {
 	var logs bytes.Buffer
 	channels := map[string]chan StreamEvent{
