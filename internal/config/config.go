@@ -45,8 +45,19 @@ const (
 	DefaultCodexClientMaxInflight             = 2
 	DefaultCodexClientPoolUnavailable         = "fail"
 	DefaultCodexClientCooldownDefault         = 5 * time.Minute
+	DefaultCodexClientCooldownMax             = 15 * time.Minute
 	DefaultMetricsEnabled                     = true
 	DefaultGatewayTenantHeader                = "X-Smore-Tenant-ID"
+	// Structured inference ships dark. The route is not registered unless it is
+	// explicitly enabled, so the pre-ticket public surface is byte-identical.
+	DefaultStructuredEnabled         = false
+	DefaultStructuredMaxActive       = 4
+	DefaultStructuredMaxActivePerKey = 2
+	DefaultStructuredQueueLimit      = 16
+	DefaultStructuredQueueTimeout    = 30 * time.Second
+	DefaultStructuredMaxDeadline     = 5 * time.Minute
+	DefaultStructuredIdempotencyTTL  = 10 * time.Minute
+	DefaultStructuredReplicas        = 1
 )
 
 // DefaultGatewayProviders enables every provider so the local Cursor workflow
@@ -102,10 +113,34 @@ type Config struct {
 	CodexClientMaxInflight             int
 	CodexClientPoolUnavailable         string
 	CodexClientCooldownDefault         time.Duration
-	MetricsEnabled                     bool
-	GatewayBearerSecret                string
-	GatewayProviders                   []string
-	GatewayTenantHeader                string
+	// CodexClientCooldownMax caps how long upstream retry/reset hints can
+	// cool a Codex account. Zero is replaced with the default; negative
+	// disables the cap.
+	CodexClientCooldownMax time.Duration
+	MetricsEnabled         bool
+	GatewayBearerSecret    string
+	GatewayProviders       []string
+	GatewayTenantHeader    string
+	// StructuredEnabled registers POST /v1/structured/inference. Default false:
+	// the endpoint is dark until a deploy opts in, so enabling it is a
+	// deliberate act and never a traffic cutover side effect.
+	StructuredEnabled bool
+	// Structured admission limits. They are a dedicated budget so structured
+	// traffic can never consume the Cursor/agent queue.
+	StructuredMaxActive       int
+	StructuredMaxActivePerKey int
+	StructuredQueueLimit      int
+	StructuredQueueTimeout    time.Duration
+	// StructuredMaxDeadline caps the caller-supplied deadline_ms.
+	StructuredMaxDeadline time.Duration
+	// StructuredIdempotencyTTL is how long a stored response can be replayed.
+	StructuredIdempotencyTTL time.Duration
+	// StructuredReplicas is required to be exactly one. Idempotency is
+	// process-local, so deployments must also prevent rollout overlap.
+	StructuredReplicas int
+	// StructuredModels overrides the structured-capable model allowlist. Empty
+	// means the built-in allowlist in internal/structured.
+	StructuredModels []string
 }
 
 type CodexClient struct {
@@ -369,6 +404,13 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.CodexClientCooldownDefault = cooldown
 	}
+	if value := os.Getenv("CODEX_CLIENT_COOLDOWN_MAX"); value != "" {
+		cooldown, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_CLIENT_COOLDOWN_MAX: %w", err)
+		}
+		cfg.CodexClientCooldownMax = cooldown
+	}
 	if value := os.Getenv("CODEX_METRICS_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -385,6 +427,50 @@ func Load(args []string) (Config, error) {
 	}
 	if value := os.Getenv("GATEWAY_TENANT_HEADER"); value != "" {
 		cfg.GatewayTenantHeader = value
+	}
+	if value := os.Getenv("STRUCTURED_INFERENCE_ENABLED"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("STRUCTURED_INFERENCE_ENABLED: %w", err)
+		}
+		cfg.StructuredEnabled = enabled
+	}
+	for _, override := range []struct {
+		env    string
+		target *int
+	}{
+		{"STRUCTURED_MAX_ACTIVE", &cfg.StructuredMaxActive},
+		{"STRUCTURED_MAX_ACTIVE_PER_KEY", &cfg.StructuredMaxActivePerKey},
+		{"STRUCTURED_QUEUE_LIMIT", &cfg.StructuredQueueLimit},
+		{"STRUCTURED_REPLICAS", &cfg.StructuredReplicas},
+	} {
+		if value := os.Getenv(override.env); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("%s: %w", override.env, err)
+			}
+			*override.target = parsed
+		}
+	}
+	for _, override := range []struct {
+		env    string
+		target *time.Duration
+	}{
+		{"STRUCTURED_QUEUE_TIMEOUT", &cfg.StructuredQueueTimeout},
+		{"STRUCTURED_MAX_DEADLINE", &cfg.StructuredMaxDeadline},
+		{"STRUCTURED_IDEMPOTENCY_TTL", &cfg.StructuredIdempotencyTTL},
+	} {
+		if value := os.Getenv(override.env); value != "" {
+			parsed, err := time.ParseDuration(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("%s: %w", override.env, err)
+			}
+			*override.target = parsed
+		}
+	}
+	structuredModelsRaw := strings.Join(cfg.StructuredModels, ",")
+	if value := os.Getenv("STRUCTURED_MODELS"); value != "" {
+		structuredModelsRaw = value
 	}
 
 	fs := flag.NewFlagSet("open-agent-api", flag.ContinueOnError)
@@ -426,10 +512,20 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.CodexClientMaxInflight, "codex-client-max-inflight", cfg.CodexClientMaxInflight, "maximum concurrent requests per Codex client")
 	fs.StringVar(&cfg.CodexClientPoolUnavailable, "codex-client-pool-unavailable", cfg.CodexClientPoolUnavailable, "Codex client pool unavailable policy: fail or fallback_first")
 	fs.DurationVar(&cfg.CodexClientCooldownDefault, "codex-client-cooldown-default", cfg.CodexClientCooldownDefault, "default cooldown for rate-limited Codex clients when no retry hint is available")
+	fs.DurationVar(&cfg.CodexClientCooldownMax, "codex-client-cooldown-max", cfg.CodexClientCooldownMax, "maximum cooldown for Codex clients; caps far-future resets_at so recovered quota is re-probed (negative disables)")
 	fs.BoolVar(&cfg.MetricsEnabled, "metrics-enabled", cfg.MetricsEnabled, "expose Prometheus metrics on /metrics")
 	fs.StringVar(&cfg.GatewayBearerSecret, "gateway-bearer-secret", cfg.GatewayBearerSecret, "shared bearer secret required on /v1 routes (empty disables inbound auth)")
 	fs.StringVar(&providersRaw, "gateway-providers", providersRaw, "comma-separated provider allowlist: codex, gemini, claude (codex is required)")
 	fs.StringVar(&cfg.GatewayTenantHeader, "gateway-tenant-header", cfg.GatewayTenantHeader, "request header whose value overrides agent queue affinity per tenant")
+	fs.BoolVar(&cfg.StructuredEnabled, "structured-enabled", cfg.StructuredEnabled, "register POST /v1/structured/inference (default off)")
+	fs.IntVar(&cfg.StructuredMaxActive, "structured-max-active", cfg.StructuredMaxActive, "maximum concurrent structured inference requests")
+	fs.IntVar(&cfg.StructuredMaxActivePerKey, "structured-max-active-per-key", cfg.StructuredMaxActivePerKey, "maximum concurrent structured inference requests per caller")
+	fs.IntVar(&cfg.StructuredQueueLimit, "structured-queue-limit", cfg.StructuredQueueLimit, "maximum waiting structured inference requests")
+	fs.DurationVar(&cfg.StructuredQueueTimeout, "structured-queue-timeout", cfg.StructuredQueueTimeout, "maximum time a structured inference request can wait for admission")
+	fs.DurationVar(&cfg.StructuredMaxDeadline, "structured-max-deadline", cfg.StructuredMaxDeadline, "upper bound applied to the caller-supplied structured deadline_ms")
+	fs.DurationVar(&cfg.StructuredIdempotencyTTL, "structured-idempotency-ttl", cfg.StructuredIdempotencyTTL, "how long a structured response can be replayed for the same idempotency key")
+	fs.IntVar(&cfg.StructuredReplicas, "structured-replicas", cfg.StructuredReplicas, "gateway replica count; structured inference requires exactly one replica")
+	fs.StringVar(&structuredModelsRaw, "structured-models", structuredModelsRaw, "comma-separated structured-capable model allowlist (empty uses the built-in list)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -445,6 +541,7 @@ func Load(args []string) (Config, error) {
 		cfg.AuthPath = filepath.Join(cfg.CodexHome, "auth.json")
 	}
 	cfg.GatewayProviders = parseGatewayProviders(providersRaw)
+	cfg.StructuredModels = parseCommaList(structuredModelsRaw)
 	if clientsJSON != "" {
 		clients, err := parseCodexClients(clientsJSON, cfg)
 		if err != nil {
@@ -495,12 +592,21 @@ func Defaults() Config {
 		CodexClientMaxInflight:             DefaultCodexClientMaxInflight,
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
 		CodexClientCooldownDefault:         DefaultCodexClientCooldownDefault,
+		CodexClientCooldownMax:             DefaultCodexClientCooldownMax,
 		MetricsEnabled:                     DefaultMetricsEnabled,
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 		CustomToolWire:                     DefaultCustomToolWire,
 		QuotaFallbackModel:                 DefaultQuotaFallbackModel,
 		GatewayProviders:                   DefaultGatewayProviders(),
 		GatewayTenantHeader:                DefaultGatewayTenantHeader,
+		StructuredEnabled:                  DefaultStructuredEnabled,
+		StructuredMaxActive:                DefaultStructuredMaxActive,
+		StructuredMaxActivePerKey:          DefaultStructuredMaxActivePerKey,
+		StructuredQueueLimit:               DefaultStructuredQueueLimit,
+		StructuredQueueTimeout:             DefaultStructuredQueueTimeout,
+		StructuredMaxDeadline:              DefaultStructuredMaxDeadline,
+		StructuredIdempotencyTTL:           DefaultStructuredIdempotencyTTL,
+		StructuredReplicas:                 DefaultStructuredReplicas,
 	}
 	cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
 	return cfg
@@ -639,6 +745,11 @@ func (c Config) Validate() error {
 	if c.CodexClientCooldownDefault <= 0 {
 		return errors.New("codex client cooldown default must be positive")
 	}
+	// Zero means "use DefaultCodexClientCooldownMax" at pool construction.
+	// Negative disables the cap (honor upstream resets_at fully).
+	if c.CodexClientCooldownMax > 0 && c.CodexClientCooldownMax < c.CodexClientCooldownDefault {
+		return errors.New("codex client cooldown max must be >= cooldown default (or negative to disable)")
+	}
 	if err := validateCodexClients(c.CodexClients); err != nil {
 		return err
 	}
@@ -647,6 +758,37 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.GatewayTenantHeader) == "" {
 		return errors.New("gateway tenant header is required")
+	}
+	if err := c.validateStructured(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateStructured only rejects impossible admission budgets. The limits are
+// checked even when the endpoint is disabled so a bad value is caught at deploy
+// time rather than at the moment someone flips the feature on.
+func (c Config) validateStructured() error {
+	if c.StructuredMaxActive < 1 {
+		return errors.New("structured max active must be at least 1")
+	}
+	if c.StructuredMaxActivePerKey < 1 {
+		return errors.New("structured max active per key must be at least 1")
+	}
+	if c.StructuredQueueLimit < 0 {
+		return errors.New("structured queue limit must be non-negative")
+	}
+	if c.StructuredQueueTimeout <= 0 {
+		return errors.New("structured queue timeout must be positive")
+	}
+	if c.StructuredMaxDeadline <= 0 {
+		return errors.New("structured max deadline must be positive")
+	}
+	if c.StructuredIdempotencyTTL <= 0 {
+		return errors.New("structured idempotency ttl must be positive")
+	}
+	if c.StructuredReplicas != 1 {
+		return errors.New("structured replicas must be exactly 1; process-local idempotency requires a single replica with maxSurge=0 or strategy Recreate")
 	}
 	return nil
 }
@@ -678,6 +820,25 @@ func parseGatewayProviders(raw string) []string {
 		providers = append(providers, provider)
 	}
 	return providers
+}
+
+// parseCommaList splits and de-duplicates a comma-separated allowlist,
+// preserving order and case (model IDs are case sensitive).
+func parseCommaList(raw string) []string {
+	values := []string{}
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(part)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		values = append(values, value)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return values
 }
 
 func validateGatewayProviders(providers []string) error {

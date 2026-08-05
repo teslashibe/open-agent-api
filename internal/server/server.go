@@ -23,11 +23,13 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/google/uuid"
 
+	"github.com/teslashibe/open-agent-api/internal/buildinfo"
 	"github.com/teslashibe/open-agent-api/internal/codex"
 	"github.com/teslashibe/open-agent-api/internal/config"
 	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
 	"github.com/teslashibe/open-agent-api/internal/openai"
 	"github.com/teslashibe/open-agent-api/internal/sse"
+	"github.com/teslashibe/open-agent-api/internal/structured"
 )
 
 type Option func(*options)
@@ -47,7 +49,15 @@ type options struct {
 	drain              *atomic.Bool
 	isLocal            func(*fiber.Ctx) bool
 	metrics            *metricspkg.Metrics
+	// Structured inference shares the Codex admission queue with interactive
+	// traffic. Interactive requests receive a higher queue priority while
+	// queued batch extraction uses every otherwise-idle slot.
+	structuredQueue       *agentQueue
+	structuredPolicy      structured.Policy
+	structuredIdempotency *structured.IdempotencyStore
 }
+
+var structuredIdempotencyEntries = structured.DefaultIdempotencyEntries
 
 // agentQueueFor returns the provider's queue. Each provider gets its own queue
 // so heavy traffic to one upstream never starves the others.
@@ -78,6 +88,14 @@ func WithMetrics(metrics *metricspkg.Metrics) Option {
 	}
 }
 
+// withStructuredIdempotency injects a pre-seeded or shorter-TTL idempotency
+// store so tests can exercise replay without waiting on the real TTL.
+func withStructuredIdempotency(store *structured.IdempotencyStore) Option {
+	return func(opts *options) {
+		opts.structuredIdempotency = store
+	}
+}
+
 // withLocalCheck overrides the loopback detection used by the drain controls.
 // app.Test() connections are not loopback, so tests that need to exercise the
 // positive drain path inject their own predicate.
@@ -85,6 +103,14 @@ func withLocalCheck(isLocal func(*fiber.Ctx) bool) Option {
 	return func(opts *options) {
 		opts.isLocal = isLocal
 	}
+}
+
+func newStructuredIdempotencyStore(cfg config.Config, opts options) *structured.IdempotencyStore {
+	if cfg.StructuredEnabled {
+		logLine(opts, "structured_idempotency backend=memory scope=process-local replicas=1 rollout_requirement=%q\n",
+			"maxSurge=0 or strategy Recreate")
+	}
+	return structured.NewIdempotencyStore(cfg.StructuredIdempotencyTTL, structuredIdempotencyEntries, opts.now)
 }
 
 func New(cfg config.Config, setters ...Option) *fiber.App {
@@ -131,6 +157,37 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 			).withMetrics(provider, opts.metrics)
 		}
 	}
+	if opts.structuredQueue == nil {
+		if cfg.AgentQueueEnabled {
+			opts.structuredQueue = opts.agentQueueFor(codex.ProviderCodex)
+		} else {
+			opts.structuredQueue = newAgentQueue(
+				true,
+				cfg.StructuredMaxActive,
+				cfg.StructuredMaxActivePerKey,
+				cfg.StructuredQueueLimit,
+				cfg.StructuredQueueTimeout,
+				"",
+				false,
+				opts.now,
+				func(format string, args ...any) {
+					logLine(opts, "structured "+format, args...)
+				},
+			).withMetrics("structured", opts.metrics)
+		}
+	}
+	if len(opts.structuredPolicy.Models()) == 0 {
+		models := cfg.StructuredModels
+		if len(models) == 0 {
+			models = structured.DefaultModels()
+		}
+		opts.structuredPolicy = structured.NewPolicy(models, cfg.ProviderEnabled)
+	}
+	if opts.structuredIdempotency == nil {
+		opts.structuredIdempotency = newStructuredIdempotencyStore(cfg, opts)
+	}
+	opts.structuredIdempotency.WithObserver(opts.metrics.ObserveStructuredIdempotency)
+	opts.metrics.AllowStructuredModels(opts.structuredPolicy.Models())
 
 	app := fiber.New(fiber.Config{
 		AppName:               "open-agent-api",
@@ -148,9 +205,14 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 
 	// live reports that the process is up. It must never depend on upstream
 	// ChatGPT so an OpenAI outage does not get the pod killed.
+	// Provenance is additive: "status" keeps its existing value and position so
+	// every existing probe and assertion still passes.
+	build := buildinfo.Get()
 	live := func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
-			"status": "ok",
+			"status":           "ok",
+			"build":            build,
+			"contract_version": structured.ContractVersion,
 		})
 	}
 	// /health is kept as a live alias so existing k8s probes need no change.
@@ -176,11 +238,22 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	if opts.metrics.Enabled() {
 		app.Get("/metrics", bearerAuthMiddleware(cfg.GatewayBearerSecret), adaptor.HTTPHandler(opts.metrics.Handler()))
 	}
+	// The structured route answers auth failures in its own error vocabulary.
+	// It is registered ahead of the /v1 gate, which still runs unchanged for
+	// every request it admits.
+	if cfg.StructuredEnabled {
+		app.Use(StructuredPath, structuredAuthMiddleware(opts, cfg.GatewayBearerSecret))
+	}
 	// Bearer auth guards every /v1 route but never /health, which k8s probes
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
 	app.Get("/v1/models", models(cfg))
 	app.Post("/v1/chat/completions", chatCompletions(opts))
+	// Registered only when explicitly enabled. While disabled the path falls
+	// through to the 404 handler, so the pre-ticket surface is unchanged.
+	if cfg.StructuredEnabled {
+		app.Post(StructuredPath, structuredInference(opts))
+	}
 	app.Use(func(c *fiber.Ctx) error {
 		return writeError(c, fiber.StatusNotFound, "invalid_request_error", "not found")
 	})
@@ -363,7 +436,7 @@ func chatCompletions(opts options) fiber.Handler {
 		releaseQueue := func() {}
 		queueWait := time.Duration(0)
 		if toolsPresent {
-			release, wait, err := opts.agentQueueFor(provider).acquire(ctx, requestID, queueKey, turnClass)
+			release, wait, err := opts.agentQueueFor(provider).acquireWithPriority(ctx, requestID, queueKey, turnClass, agentQueuePriorityInteractive)
 			queueWait = wait
 			if err != nil {
 				cancel()

@@ -20,12 +20,18 @@ const (
 	ClientPoolUnavailableFail          = "fail"
 	ClientPoolUnavailableFallbackFirst = "fallback_first"
 	DefaultClientCooldown              = 5 * time.Minute
-	defaultClientMaxInflight           = 2
-	defaultSoftPinCapacity             = 10_000
-	defaultSoftPinTTL                  = 24 * time.Hour
-	unpinReasonAuth                    = "auth"
-	unpinReasonCooldown                = "cooldown"
-	unpinReasonUnavailable             = "unavailable"
+	// DefaultClientCooldownMax caps how long a usage_limit / rate-limit
+	// reset hint can pin an account. Codex sometimes returns a far-future
+	// resets_at (weekly window); trusting that blindly leaves a single-client
+	// pool refusing all traffic for hours even after quota has recovered.
+	// Cap the cooldown and re-probe periodically instead.
+	DefaultClientCooldownMax = 15 * time.Minute
+	defaultClientMaxInflight = 2
+	defaultSoftPinCapacity   = 10_000
+	defaultSoftPinTTL        = 24 * time.Hour
+	unpinReasonAuth          = "auth"
+	unpinReasonCooldown      = "cooldown"
+	unpinReasonUnavailable   = "unavailable"
 )
 
 // ErrClientPoolSaturated marks requests rejected before an upstream call
@@ -38,6 +44,7 @@ type PooledService struct {
 	unavailablePolicy string
 	logOutput         io.Writer
 	cooldownDefault   time.Duration
+	cooldownMax       time.Duration
 	now               func() time.Time
 	metrics           *metricspkg.Metrics
 
@@ -79,8 +86,11 @@ type PooledServiceConfig struct {
 	UnavailablePolicy string
 	LogOutput         io.Writer
 	CooldownDefault   time.Duration
-	Now               func() time.Time
-	Metrics           *metricspkg.Metrics
+	// CooldownMax caps retry/reset hints. Zero means DefaultClientCooldownMax.
+	// Negative disables the cap (honor upstream resets_at fully).
+	CooldownMax time.Duration
+	Now         func() time.Time
+	Metrics     *metricspkg.Metrics
 }
 
 type PooledClientConfig struct {
@@ -131,6 +141,9 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 	if cfg.CooldownDefault <= 0 {
 		cfg.CooldownDefault = DefaultClientCooldown
 	}
+	if cfg.CooldownMax == 0 {
+		cfg.CooldownMax = DefaultClientCooldownMax
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -140,6 +153,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		unavailablePolicy: cfg.UnavailablePolicy,
 		logOutput:         cfg.LogOutput,
 		cooldownDefault:   cfg.CooldownDefault,
+		cooldownMax:       cfg.CooldownMax,
 		now:               cfg.Now,
 		metrics:           cfg.Metrics,
 		cooldowns:         make([]clientCooldown, len(clients)),
@@ -188,6 +202,9 @@ func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	selected, pinned := p.preferredIndex(req)
 	index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+	if err != nil && shouldWaitForAcquire(req, err) {
+		index, inflight, release, unpin, err = p.acquireAvailableWait(ctx, req, selected)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +214,79 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 	}
 	p.logSelection(req, index, false, index != selected, pinned && index == selected, inflight)
 	return p.streamAttempt(ctx, req, index, false, release, unpin, refreshPin)
+}
+
+// shouldWaitForAcquire waits on pool saturation for all traffic, and on
+// broader cooldown/quota pressure for extraction turns (Report Studio).
+func shouldWaitForAcquire(req Request, err error) bool {
+	if !waitableAcquireError(err) {
+		return false
+	}
+	if req.Extraction {
+		return true
+	}
+	return errors.Is(err, ErrClientPoolSaturated)
+}
+
+// acquireAvailableWait absorbs temporary pool saturation and cooldown instead
+// of returning 429 to the durable extraction worker.
+func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request, selected int) (int, int, func(), *pendingUnpin, error) {
+	backoff := 50 * time.Millisecond
+	for {
+		index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+		if err == nil {
+			return index, inflight, release, unpin, nil
+		}
+		if !waitableAcquireError(err) {
+			return 0, 0, nil, nil, err
+		}
+		wait := backoff
+		if until, ok := p.earliestCooldownExpiry(); ok {
+			if remaining := until.Sub(p.now()); remaining > 0 {
+				wait = remaining
+				if wait > 5*time.Second {
+					wait = 5 * time.Second
+				}
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, 0, nil, nil, ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func waitableAcquireError(err error) bool {
+	if errors.Is(err, ErrClientPoolSaturated) {
+		return true
+	}
+	switch ClassifyFailure(err) {
+	case FailureRateLimit, FailureQuota, FailureTransient:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *PooledService) earliestCooldownExpiry() (time.Time, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.now()
+	var earliest time.Time
+	found := false
+	for _, cooldown := range p.cooldowns {
+		if cooldown.until.After(now) && (!found || cooldown.until.Before(earliest)) {
+			earliest = cooldown.until
+			found = true
+		}
+	}
+	return earliest, found
 }
 
 func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin, refreshPin int) (<-chan StreamEvent, error) {
@@ -403,9 +493,16 @@ func (p *PooledService) coolClient(index int, err error) time.Time {
 	p.mu.Lock()
 	if p.cooldowns[index].until.After(until) {
 		until = p.cooldowns[index].until
-	} else {
-		p.cooldowns[index] = clientCooldown{until: until, class: class}
 	}
+	// Cap far-future resets_at so a recovered quota is re-probed. Without
+	// this, a single-client pool can stay dark until process restart.
+	if p.cooldownMax > 0 {
+		maxUntil := now.Add(p.cooldownMax)
+		if until.After(maxUntil) {
+			until = maxUntil
+		}
+	}
+	p.cooldowns[index] = clientCooldown{until: until, class: class}
 	p.mu.Unlock()
 	p.metrics.ObservePoolCooldown(p.clients[index].label, string(class))
 	p.logCooldown(index, until)

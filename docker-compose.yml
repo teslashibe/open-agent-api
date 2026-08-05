@@ -2,6 +2,12 @@ services:
   api:
     build:
       context: .
+      args:
+        # Optional build provenance. Unset values fall back to the Go
+        # toolchain's VCS stamps; see GET /health.
+        BUILD_VERSION: "${BUILD_VERSION:-}"
+        BUILD_COMMIT: "${BUILD_COMMIT:-}"
+        BUILD_DATE: "${BUILD_DATE:-}"
     image: teslashibe/open-agent-api:local
     command: ["--host", "0.0.0.0", "--port", "8088"]
     environment:
@@ -26,6 +32,17 @@ services:
       CLAUDE_AGENT_MAX_ACTIVE: "${CLAUDE_AGENT_MAX_ACTIVE:-}"
       CLAUDE_AGENT_MAX_ACTIVE_PER_KEY: "${CLAUDE_AGENT_MAX_ACTIVE_PER_KEY:-}"
       CLAUDE_AGENT_QUEUE_LIMIT: "${CLAUDE_AGENT_QUEUE_LIMIT:-}"
+      # Structured inference (POST /v1/structured/inference) ships dark and has
+      # its own admission budget so it can never starve Cursor/agent traffic.
+      STRUCTURED_INFERENCE_ENABLED: "${STRUCTURED_INFERENCE_ENABLED:-false}"
+      STRUCTURED_MAX_ACTIVE: "${STRUCTURED_MAX_ACTIVE:-}"
+      STRUCTURED_MAX_ACTIVE_PER_KEY: "${STRUCTURED_MAX_ACTIVE_PER_KEY:-}"
+      STRUCTURED_QUEUE_LIMIT: "${STRUCTURED_QUEUE_LIMIT:-}"
+      STRUCTURED_MODELS: "${STRUCTURED_MODELS:-}"
+      # Idempotency is memory-only. Keep exactly one replica and configure
+      # Kubernetes with maxSurge: 0 or strategy: Recreate.
+      STRUCTURED_IDEMPOTENCY_TTL: "${STRUCTURED_IDEMPOTENCY_TTL:-}"
+      STRUCTURED_REPLICAS: "${STRUCTURED_REPLICAS:-1}"
       # 240s: deep-reasoning turns pause >90s without streaming; healthy
       # turns were killed at 90s (observed 2026-07-07).
       CODEX_STREAM_IDLE_TIMEOUT: "${CODEX_STREAM_IDLE_TIMEOUT:-240s}"

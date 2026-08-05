@@ -32,6 +32,14 @@ type Request struct {
 	// It lets that fallback make one attempt when every pooled account is
 	// cooling; ordinary requests always exclude cooling accounts.
 	AllowCooling bool
+	// Extraction marks a structured-inference turn. It forces the minimal
+	// builder (so the captured CLI profile and scaffold are never loaded),
+	// drops tools and tool_choice, and skips prewarm. Zero value keeps the
+	// pre-existing chat behavior exactly.
+	Extraction bool
+	// ResponseFormat is the upstream text.format object for extraction turns,
+	// normally a strict json_schema. Ignored unless Extraction is set.
+	ResponseFormat json.RawMessage
 }
 
 type Completion struct {

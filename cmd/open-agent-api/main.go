@@ -27,7 +27,6 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-
 	metrics := metricspkg.New(cfg.MetricsEnabled)
 	codexService, err := buildCodexService(cfg, metrics)
 	if err != nil {
@@ -104,6 +103,7 @@ func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (codex.Se
 		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
 		LogOutput:         os.Stdout,
 		CooldownDefault:   cfg.CodexClientCooldownDefault,
+		CooldownMax:       cfg.CodexClientCooldownMax,
 		Metrics:           metrics,
 	})
 }

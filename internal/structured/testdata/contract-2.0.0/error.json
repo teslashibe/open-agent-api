@@ -1,0 +1,15 @@
+{
+  "error": {
+    "code": "idempotency_conflict",
+    "message": "idempotency_key was already used with different request parameters"
+  },
+  "request_id": "golden-request-1",
+  "contract_version": "2.0.0",
+  "build": {
+    "version": "devel",
+    "commit": "unknown",
+    "build_date": "unknown",
+    "go_version": "go1.x",
+    "modified": false
+  }
+}

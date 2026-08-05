@@ -30,10 +30,20 @@ http://codex-chat-api.smore.svc.cluster.local:8088/v1
 ## Image and GitOps
 
 - Image: `ghcr.io/teslashibe/open-agent-api` (plus legacy aliases `open-chat-api` and `codex-chat-api`)
-- CI in this repo (`.github/workflows/docker.yml`) builds/pushes, then pin-bumps k8s-control:
+- CI in this repo (`.github/workflows/docker.yml`) runs the Go gate (build, vet, gofmt, `go test -race`), builds/pushes, verifies the pushed image's provenance over `/health`, then pin-bumps k8s-control:
   - push to `main` → `manifests/dev` tag `sha-<short>`
   - tag `v*` → `manifests/prod` tag `vX.Y.Z`
 - Flux applies the pin from k8s-control
+
+Every shipped image is stamped with the commit it was built from, so a running pod can be tied back to source:
+
+```bash
+kubectl -n smore exec deploy/smore-api -- \
+  curl -sf http://codex-chat-api.smore.svc.cluster.local:8088/health | jq .build
+# → {"version":"sha-6fba3e4","commit":"6fba3e4c…","build_date":"2026-07-26T20:04:11Z",…}
+```
+
+`"commit":"unknown"` means the pod is **not** running a CI-built image.
 
 ## Secrets
 
@@ -60,6 +70,29 @@ An init container seeds Codex/Gemini files into a writable `emptyDir` HOME so OA
 - `GATEWAY_PROVIDERS=codex,gemini,claude`
 - `GEMINI_AUTH_PATH=/home/codex/.gemini/antigravity_oauth_creds.json`
 - Single replica on purpose: agent queues protect shared upstream accounts; more replicas multiply concurrency against the same OAuth pools
+
+## Structured inference deployment
+
+Structured inference is a deliberately single-replica gateway. Set `replicas: 1` and prevent rollout overlap:
+
+```yaml
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    spec:
+      containers:
+        - name: open-agent-api
+          env:
+            - name: STRUCTURED_REPLICAS
+              value: "1"
+```
+
+`strategy: Recreate` is also valid. Do not attach an HPA or run a second process: idempotency is memory-only and process-local, and startup rejects `STRUCTURED_REPLICAS` values other than `1`.
 
 ## App integration
 

@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,6 +42,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "CODEX_CLIENT_MAX_INFLIGHT")
 	unsetenv(t, "CODEX_CLIENT_POOL_UNAVAILABLE")
 	unsetenv(t, "CODEX_CLIENT_COOLDOWN_DEFAULT")
+	unsetenv(t, "CODEX_CLIENT_COOLDOWN_MAX")
 	unsetenv(t, "CODEX_METRICS_ENABLED")
 	chdir(t, t.TempDir())
 
@@ -134,6 +137,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.CodexClientCooldownDefault != DefaultCodexClientCooldownDefault {
 		t.Fatalf("CodexClientCooldownDefault = %s, want %s", cfg.CodexClientCooldownDefault, DefaultCodexClientCooldownDefault)
 	}
+	if cfg.CodexClientCooldownMax != DefaultCodexClientCooldownMax {
+		t.Fatalf("CodexClientCooldownMax = %s, want %s", cfg.CodexClientCooldownMax, DefaultCodexClientCooldownMax)
+	}
 	if cfg.MetricsEnabled != DefaultMetricsEnabled {
 		t.Fatalf("MetricsEnabled = %t, want %t", cfg.MetricsEnabled, DefaultMetricsEnabled)
 	}
@@ -204,6 +210,7 @@ func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("CODEX_CLIENT_MAX_INFLIGHT", "4")
 	t.Setenv("CODEX_CLIENT_POOL_UNAVAILABLE", "fallback_first")
 	t.Setenv("CODEX_CLIENT_COOLDOWN_DEFAULT", "17s")
+	t.Setenv("CODEX_CLIENT_COOLDOWN_MAX", "31s")
 	t.Setenv("CODEX_CLIENTS", `[
 		{"label":"primary","codex_home":"/tmp/codex-a","profile_path":"/tmp/profile-a.json","scaffold_path":"/tmp/scaffold-a.json"},
 		{"label":"secondary","auth_path":"/tmp/auth-b.json","profile_path":"/tmp/profile-b.json","scaffold_path":"/tmp/scaffold-b.json"}
@@ -269,6 +276,9 @@ func TestLoadEnvironment(t *testing.T) {
 	if cfg.CodexClientCooldownDefault != 17*time.Second {
 		t.Fatalf("CodexClientCooldownDefault = %s", cfg.CodexClientCooldownDefault)
 	}
+	if cfg.CodexClientCooldownMax != 31*time.Second {
+		t.Fatalf("CodexClientCooldownMax = %s", cfg.CodexClientCooldownMax)
+	}
 	if len(cfg.CodexClients) != 2 {
 		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
 	}
@@ -316,6 +326,7 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 		"--codex-client-max-inflight", "5",
 		"--codex-client-pool-unavailable", "fallback_first",
 		"--codex-client-cooldown-default", "19s",
+		"--codex-client-cooldown-max", "37s",
 		"--codex-clients", `[{"label":"flag-a","codex_home":"/tmp/flag-a"},{"label":"flag-b","auth_path":"/tmp/flag-b-auth.json"}]`,
 	})
 	if err != nil {
@@ -375,6 +386,9 @@ func TestLoadFlagsOverrideEnvironment(t *testing.T) {
 	}
 	if cfg.CodexClientCooldownDefault != 19*time.Second {
 		t.Fatalf("CodexClientCooldownDefault = %s", cfg.CodexClientCooldownDefault)
+	}
+	if cfg.CodexClientCooldownMax != 37*time.Second {
+		t.Fatalf("CodexClientCooldownMax = %s", cfg.CodexClientCooldownMax)
 	}
 	if len(cfg.CodexClients) != 2 {
 		t.Fatalf("CodexClients length = %d, want 2", len(cfg.CodexClients))
@@ -607,6 +621,19 @@ func TestLoadInvalidCodexClientCooldownDefault(t *testing.T) {
 	}
 }
 
+func TestLoadInvalidCodexClientCooldownMax(t *testing.T) {
+	for _, value := range []string{"not-a-duration", "1s"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CODEX_CLIENT_COOLDOWN_MAX", value)
+			chdir(t, t.TempDir())
+
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid cooldown max error")
+			}
+		})
+	}
+}
+
 func TestCodexHomeFlagUpdatesDefaultAuthPath(t *testing.T) {
 	unsetenv(t, "CODEX_AUTH_PATH")
 	chdir(t, t.TempDir())
@@ -775,5 +802,129 @@ func TestProviderEnabledEmptyAllowlistMeansAll(t *testing.T) {
 		if !cfg.ProviderEnabled(provider) {
 			t.Fatalf("ProviderEnabled(%q) = false, want true for empty allowlist", provider)
 		}
+	}
+}
+
+func TestStructuredInferenceDefaultsAreDark(t *testing.T) {
+	cfg := Defaults()
+	if cfg.StructuredEnabled {
+		t.Fatal("StructuredEnabled = true, want the endpoint dark by default")
+	}
+	if len(cfg.StructuredModels) != 0 {
+		t.Fatalf("StructuredModels = %v, want the built-in allowlist", cfg.StructuredModels)
+	}
+	if cfg.StructuredMaxActive != DefaultStructuredMaxActive ||
+		cfg.StructuredMaxActivePerKey != DefaultStructuredMaxActivePerKey ||
+		cfg.StructuredQueueLimit != DefaultStructuredQueueLimit ||
+		cfg.StructuredQueueTimeout != DefaultStructuredQueueTimeout ||
+		cfg.StructuredMaxDeadline != DefaultStructuredMaxDeadline ||
+		cfg.StructuredIdempotencyTTL != DefaultStructuredIdempotencyTTL ||
+		cfg.StructuredReplicas != DefaultStructuredReplicas {
+		t.Fatalf("structured defaults = %#v", cfg)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadStructuredEnvironmentAndFlags(t *testing.T) {
+	t.Setenv("STRUCTURED_INFERENCE_ENABLED", "true")
+	t.Setenv("STRUCTURED_MAX_ACTIVE", "9")
+	t.Setenv("STRUCTURED_MAX_ACTIVE_PER_KEY", "3")
+	t.Setenv("STRUCTURED_QUEUE_LIMIT", "7")
+	t.Setenv("STRUCTURED_QUEUE_TIMEOUT", "11s")
+	t.Setenv("STRUCTURED_MAX_DEADLINE", "90s")
+	t.Setenv("STRUCTURED_IDEMPOTENCY_TTL", "2m")
+	t.Setenv("STRUCTURED_REPLICAS", "1")
+	t.Setenv("STRUCTURED_MODELS", "gpt-5.6-sol, gpt-5.6-terra ,gpt-5.6-sol")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.StructuredEnabled || cfg.StructuredMaxActive != 9 || cfg.StructuredMaxActivePerKey != 3 ||
+		cfg.StructuredQueueLimit != 7 || cfg.StructuredQueueTimeout != 11*time.Second ||
+		cfg.StructuredMaxDeadline != 90*time.Second || cfg.StructuredIdempotencyTTL != 2*time.Minute ||
+		cfg.StructuredReplicas != 1 {
+		t.Fatalf("structured config from environment = %#v", cfg)
+	}
+	if len(cfg.StructuredModels) != 2 {
+		t.Fatalf("StructuredModels = %v", cfg.StructuredModels)
+	}
+}
+
+// promised one is gone. Neither the environment variable nor the flag may be
+// recognized again: a stale deploy that still sets it must not silently be
+// believed, and the flag must fail loudly rather than be quietly accepted.
+func TestLoadNoLongerRecognizesTheStructuredOutputTokenKnob(t *testing.T) {
+	t.Setenv("STRUCTURED_INFERENCE_ENABLED", "true")
+	t.Setenv("STRUCTURED_MAX_OUTPUT_TOKENS", "4096")
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want a stale environment variable to be ignored", err)
+	}
+	// Reflection, not a compile-time reference: the field is gone, so this is
+	// the only way to keep asserting that it stays gone.
+	if field, ok := reflect.TypeOf(cfg).FieldByName("StructuredMaxOutputTokens"); ok {
+		t.Fatalf("Config still carries StructuredMaxOutputTokens: %#v", field)
+	}
+	// flag.ContinueOnError dumps the usage text to stderr on the way out; the
+	// noise in the test log is the flag package proving the knob is undefined.
+	if _, err := Load([]string{"--structured-max-output-tokens=4096"}); err == nil {
+		t.Fatal("Load() accepted --structured-max-output-tokens, want the removed flag to be rejected")
+	}
+}
+
+// structured deployment on the process-local store is rejected at load time,
+// and the message names both remedies.
+func TestLoadRejectsNonSingleReplicaStructuredGateway(t *testing.T) {
+	t.Setenv("STRUCTURED_INFERENCE_ENABLED", "true")
+	t.Setenv("STRUCTURED_REPLICAS", "2")
+	chdir(t, t.TempDir())
+	_, err := Load(nil)
+	if err == nil {
+		t.Fatal("Load() error = nil, want single-replica guard")
+	}
+	for _, want := range []string{"exactly 1", "maxSurge=0", "Recreate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestStructuredReplicaGuardAppliesEvenWhenEndpointIsDark(t *testing.T) {
+	cfg := Defaults()
+	cfg.StructuredReplicas = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted zero replicas")
+	}
+	cfg.StructuredReplicas = 1
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+// A zero-value backend means the default, so a hand-built Config still passes.
+
+func TestLoadInvalidStructuredValues(t *testing.T) {
+	for name, env := range map[string][2]string{
+		"enabled":           {"STRUCTURED_INFERENCE_ENABLED", "sometimes"},
+		"max active":        {"STRUCTURED_MAX_ACTIVE", "many"},
+		"queue timeout":     {"STRUCTURED_QUEUE_TIMEOUT", "soon"},
+		"zero max active":   {"STRUCTURED_MAX_ACTIVE", "0"},
+		"zero deadline":     {"STRUCTURED_MAX_DEADLINE", "0s"},
+		"zero ttl":          {"STRUCTURED_IDEMPOTENCY_TTL", "0s"},
+		"negative replicas": {"STRUCTURED_REPLICAS", "-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(env[0], env[1])
+			chdir(t, t.TempDir())
+			if _, err := Load(nil); err == nil {
+				t.Fatalf("Load() with %s=%s error = nil, want a validation error", env[0], env[1])
+			}
+		})
 	}
 }

@@ -1,0 +1,28 @@
+{
+  "data": {
+    "title": "Q3 report",
+    "score": 7
+  },
+  "model": "gpt-5.6-sol",
+  "upstream_response_id": "resp-upstream-1",
+  "usage": {
+    "prompt_tokens": 11,
+    "completion_tokens": 5,
+    "total_tokens": 16
+  },
+  "latency_ms": 0,
+  "request_id": "golden-request-1",
+  "idempotency_key": "golden-idempotency-1",
+  "idempotent_replay": false,
+  "operation": "report_summary",
+  "schema_version": "v1",
+  "model_policy_version": "733348d4668c87f6",
+  "contract_version": "2.0.0",
+  "build": {
+    "version": "devel",
+    "commit": "unknown",
+    "build_date": "unknown",
+    "go_version": "go1.x",
+    "modified": false
+  }
+}

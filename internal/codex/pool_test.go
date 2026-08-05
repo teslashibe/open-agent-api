@@ -792,11 +792,52 @@ func TestPooledServiceHonorsRetryHint(t *testing.T) {
 			return poolEvents(StreamEvent{Done: true}), nil
 		}}},
 	)
-	want := now.Add(2 * time.Hour)
+	want := now.Add(2 * time.Minute)
 	err := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", ErrUsageLimitReached)
 	withRetryHint(err, time.Minute, want)
 	if got := pool.coolClient(0, err); !got.Equal(want) {
 		t.Fatalf("cooldown until = %s, want %s", got, want)
+	}
+}
+
+func TestPooledServiceCapsFarFutureRetryHint(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, func() time.Time { return now },
+		PooledClientConfig{Label: "only", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			return poolEvents(StreamEvent{Done: true}), nil
+		}}},
+	)
+	err := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", ErrUsageLimitReached)
+	withRetryHint(err, time.Minute, now.Add(7*24*time.Hour))
+
+	want := now.Add(DefaultClientCooldownMax)
+	if got := pool.coolClient(0, err); !got.Equal(want) {
+		t.Fatalf("cooldown until = %s, want capped deadline %s", got, want)
+	}
+}
+
+func TestPooledServiceCanDisableCooldownCap(t *testing.T) {
+	now := time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)
+	want := now.Add(7 * 24 * time.Hour)
+	pool, err := NewPooledService(PooledServiceConfig{
+		Clients: []PooledClientConfig{{
+			Label: "only",
+			Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				return poolEvents(StreamEvent{Done: true}), nil
+			}},
+		}},
+		UnavailablePolicy: ClientPoolUnavailableFail,
+		LogOutput:         &bytes.Buffer{},
+		CooldownMax:       -1,
+		Now:               func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewPooledService() error = %v", err)
+	}
+	rateLimitErr := NewError(ErrorKindUpstream, http.StatusTooManyRequests, "usage limit reached", ErrUsageLimitReached)
+	withRetryHint(rateLimitErr, time.Minute, want)
+	if got := pool.coolClient(0, rateLimitErr); !got.Equal(want) {
+		t.Fatalf("cooldown until = %s, want uncapped deadline %s", got, want)
 	}
 }
 
@@ -820,7 +861,7 @@ func TestPooledServiceRotatesRateLimit(t *testing.T) {
 	}
 }
 
-func TestPooledServiceRejectsSaturatedClientWithoutUpstreamCall(t *testing.T) {
+func TestPooledServiceWaitsSaturatedClientWithoutUpstreamCall(t *testing.T) {
 	var logs bytes.Buffer
 	upstream := make(chan StreamEvent)
 	var mu sync.Mutex
@@ -839,13 +880,14 @@ func TestPooledServiceRejectsSaturatedClientWithoutUpstreamCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Stream() error = %v", err)
 	}
-	_, err = pool.Stream(context.Background(), Request{RequestID: "req-saturated"})
-	if !errors.Is(err, ErrClientPoolSaturated) {
-		t.Fatalf("second Stream() error = %v, want ErrClientPoolSaturated", err)
-	}
-	serviceErr, ok := ErrorAs(err)
-	if !ok || serviceErr.Status != http.StatusTooManyRequests || serviceErr.Message != "codex client pool saturated" {
-		t.Fatalf("second Stream() error = %#v, want stable 429", serviceErr)
+	// Non-extraction chat/Growth traffic waits on saturation instead of
+	// fail-fast 429 (local gpt-gateway runtime). Bound the wait so the test
+	// still proves no second upstream call is admitted.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err = pool.Stream(ctx, Request{RequestID: "req-saturated"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second Stream() error = %v, want context.DeadlineExceeded while waiting on saturation", err)
 	}
 	mu.Lock()
 	gotCalls := calls
