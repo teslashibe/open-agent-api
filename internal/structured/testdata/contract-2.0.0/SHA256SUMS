@@ -1,3 +1,3 @@
-eac04a01a27f9214207a3cb8ca24ad2fd04dce3e20b829a0efa9ef2c58390143  internal/structured/testdata/contract-2.0.0/request.json
-8858cb8833ff3200dc79fadc04a73f6607727e770082148b8bf05c1723924503  internal/structured/testdata/contract-2.0.0/success.json
-347b393aa09f75f9b3daefcddb0c24197f92af05a1a5d1f1462504ad63919929  internal/structured/testdata/contract-2.0.0/error.json
+f04404695c32a36505e577237775b05e33f9bcc142502925b006647e775d681d  request.json
+4cf44f776a6f7210988d485fb6a7cead20742820792f28a4c272776a3539b65b  success.json
+c4ae54f7694df8eb3caddbf057fb84b8c1c1f55285e7087b731f7d461cb91893  error.json
