@@ -1810,7 +1810,7 @@ func TestAgentQueueFullSoftWaitsForCapacity(t *testing.T) {
 			return events, nil
 		},
 	}
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
 	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"}],"tools":[{"type":"function"}]}`)
@@ -1850,7 +1850,7 @@ func TestAgentQueueTimeoutReturns429(t *testing.T) {
 			return events, nil
 		},
 	}
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	app := New(cfg, WithCodexService(service), WithLogOutput(&logs))
 
 	firstDone := postJSONAsync(t, app, `{"stream":true,"messages":[{"role":"user","content":"shared prompt"}],"tools":[{"type":"function"}]}`)
