@@ -1790,7 +1790,7 @@ func TestAgentQueuePriorityOrdersDifferentKeysViaHandler(t *testing.T) {
 		t.Fatalf("low status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	for _, want := range []string{"turn_class=tool_result_continuation", "priority=10", "turn_class=tool_generating", "priority=0"} {
+	for _, want := range []string{"turn_class=tool_result_continuation", "priority=110", "turn_class=tool_generating", "priority=100"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs = %q, want %q", logs.String(), want)
 		}

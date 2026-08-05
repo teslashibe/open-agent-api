@@ -45,6 +45,11 @@ type agentQueueWaiter struct {
 	ready    chan struct{}
 }
 
+const (
+	agentQueuePriorityBatch       = 0
+	agentQueuePriorityInteractive = 100
+)
+
 func newAgentQueue(enabled bool, maxActive int, maxActivePerKey int, limit int, timeout time.Duration, lockDir string, priority bool, now func() time.Time, logf func(string, ...any)) *agentQueue {
 	return &agentQueue{
 		enabled:   enabled,
@@ -67,11 +72,18 @@ func (q *agentQueue) withMetrics(provider string, metrics *metricspkg.Metrics) *
 }
 
 func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQueueKey, class turnClass) (release func(), wait time.Duration, err error) {
+	return q.acquireWithPriority(ctx, requestID, key, class, agentQueuePriorityBatch)
+}
+
+// acquireWithPriority admits work into the same non-preemptive slot pool while
+// allowing trusted call sites to put interactive traffic ahead of queued batch
+// work. Running work is never interrupted.
+func (q *agentQueue) acquireWithPriority(ctx context.Context, requestID string, key agentQueueKey, class turnClass, basePriority int) (release func(), wait time.Duration, err error) {
 	if q == nil {
 		return func() {}, 0, nil
 	}
 	key = key.withDefaults()
-	priority := agentQueuePriority(class)
+	priority := basePriority + agentQueuePriority(class)
 
 	start := q.now()
 	defer func() {
@@ -101,10 +113,27 @@ func (q *agentQueue) acquire(ctx context.Context, requestID string, key agentQue
 		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
 		return release, 0, err
 	}
-	if len(q.waiters) >= q.limit {
+	for len(q.waiters) >= q.limit {
 		q.mu.Unlock()
-		q.logf("agent_queue_full request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d limit=%d\n", requestID, key.Mode, key.Hash, class, priority, q.limit)
-		return nil, q.now().Sub(start), errAgentQueueFull
+		q.logf("agent_queue_soft_wait request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d limit=%d\n", requestID, key.Mode, key.Hash, class, priority, q.limit)
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, q.now().Sub(start), ctx.Err()
+		case <-timer.C:
+		}
+		if q.timeout > 0 && q.now().Sub(start) >= q.timeout {
+			return nil, q.now().Sub(start), errAgentQueueTimeout
+		}
+		q.mu.Lock()
+		if q.canAcquireLocked(key) && len(q.waiters) == 0 {
+			activeGlobal, activeKey := q.acquireLocked(key)
+			q.mu.Unlock()
+			q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, q.now().Sub(start).Milliseconds(), activeGlobal, activeKey)
+			release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
+			return release, q.now().Sub(start), err
+		}
 	}
 
 	q.nextSeq++

@@ -31,6 +31,9 @@ const structuredTestOutput = `{"title":"Q3 report","score":7}`
 func structuredTestConfig() config.Config {
 	cfg := config.Defaults()
 	cfg.StructuredEnabled = true
+	// Structured queue unit tests exercise its legacy standalone limits. Shared
+	// Codex admission is covered by the agent queue integration tests.
+	cfg.AgentQueueEnabled = false
 	cfg.DegenerateTurnRetryEnabled = false
 	cfg.MetricsEnabled = true
 	return cfg

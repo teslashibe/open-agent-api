@@ -49,8 +49,9 @@ type options struct {
 	drain              *atomic.Bool
 	isLocal            func(*fiber.Ctx) bool
 	metrics            *metricspkg.Metrics
-	// Structured inference keeps its own admission budget, model policy, and
-	// idempotency store so it can never consume the Cursor/agent queue.
+	// Structured inference shares the Codex admission queue with interactive
+	// traffic. Interactive requests receive a higher queue priority while
+	// queued batch extraction uses every otherwise-idle slot.
 	structuredQueue       *agentQueue
 	structuredPolicy      structured.Policy
 	structuredIdempotency *structured.IdempotencyStore
@@ -157,19 +158,23 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 		}
 	}
 	if opts.structuredQueue == nil {
-		opts.structuredQueue = newAgentQueue(
-			true,
-			cfg.StructuredMaxActive,
-			cfg.StructuredMaxActivePerKey,
-			cfg.StructuredQueueLimit,
-			cfg.StructuredQueueTimeout,
-			"",
-			false,
-			opts.now,
-			func(format string, args ...any) {
-				logLine(opts, "structured "+format, args...)
-			},
-		).withMetrics("structured", opts.metrics)
+		if cfg.AgentQueueEnabled {
+			opts.structuredQueue = opts.agentQueueFor(codex.ProviderCodex)
+		} else {
+			opts.structuredQueue = newAgentQueue(
+				true,
+				cfg.StructuredMaxActive,
+				cfg.StructuredMaxActivePerKey,
+				cfg.StructuredQueueLimit,
+				cfg.StructuredQueueTimeout,
+				"",
+				false,
+				opts.now,
+				func(format string, args ...any) {
+					logLine(opts, "structured "+format, args...)
+				},
+			).withMetrics("structured", opts.metrics)
+		}
 	}
 	if len(opts.structuredPolicy.Models()) == 0 {
 		models := cfg.StructuredModels
@@ -431,7 +436,7 @@ func chatCompletions(opts options) fiber.Handler {
 		releaseQueue := func() {}
 		queueWait := time.Duration(0)
 		if toolsPresent {
-			release, wait, err := opts.agentQueueFor(provider).acquire(ctx, requestID, queueKey, turnClass)
+			release, wait, err := opts.agentQueueFor(provider).acquireWithPriority(ctx, requestID, queueKey, turnClass, agentQueuePriorityInteractive)
 			queueWait = wait
 			if err != nil {
 				cancel()

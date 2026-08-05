@@ -35,6 +35,38 @@ func TestAgentQueuePriorityOrdersEligibleWaiters(t *testing.T) {
 	lowRelease()
 }
 
+func TestAgentQueueInteractivePriorityJumpsAheadOfBatch(t *testing.T) {
+	q := newAgentQueue(true, 1, 1, 10, time.Second, "", true, time.Now, func(string, ...any) {})
+	firstKey := newAgentQueueKey("test", "first")
+	batchKey := newAgentQueueKey("test", "batch")
+	interactiveKey := newAgentQueueKey("test", "interactive")
+
+	releaseFirst, _, err := q.acquire(context.Background(), "first", firstKey, turnClassSimpleNoTool)
+	if err != nil {
+		t.Fatalf("first acquire error = %v", err)
+	}
+
+	batchDone := acquireQueueAsync(t, q, "batch", batchKey, turnClassSimpleNoTool)
+	waitQueueWaiters(t, q, 1)
+	interactiveDone := make(chan queueAcquireResult, 1)
+	go func() {
+		release, _, err := q.acquireWithPriority(context.Background(), "interactive", interactiveKey, turnClassSimpleNoTool, agentQueuePriorityInteractive)
+		interactiveDone <- queueAcquireResult{release: release, err: err}
+	}()
+	waitQueueWaiters(t, q, 2)
+
+	releaseFirst()
+	interactiveRelease := waitQueueAcquire(t, interactiveDone)
+	select {
+	case <-batchDone:
+		t.Fatal("batch waiter acquired before interactive waiter")
+	case <-time.After(30 * time.Millisecond):
+	}
+	interactiveRelease()
+	batchRelease := waitQueueAcquire(t, batchDone)
+	batchRelease()
+}
+
 func TestAgentQueuePriorityDisabledKeepsFIFO(t *testing.T) {
 	q := newAgentQueue(true, 1, 1, 10, time.Second, "", false, time.Now, func(string, ...any) {})
 	firstKey := newAgentQueueKey("test", "first")

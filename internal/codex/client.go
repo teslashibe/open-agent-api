@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -157,7 +158,10 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		c.prewarm(ctx, req, sessionID)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	// Do not bound the entire extraction turn with CODEX_TIMEOUT. Admission and
+	// websocket-connect retries must survive transient upstream pressure; the
+	// socket read deadline remains the idle-between-frames guard.
+	ctx, cancel := context.WithCancel(ctx)
 
 	var payload map[string]any
 	var kind requestKind = requestKindTurn
@@ -172,7 +176,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		}
 	}
 
-	conn, err := c.open(ctx, faithful, sessionID, kind)
+	conn, err := c.openWithRetry(ctx, faithful, sessionID, kind)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -186,6 +190,42 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 	events := make(chan StreamEvent, 2)
 	go c.readLoop(ctx, cancel, conn, events)
 	return events, nil
+}
+
+func (c *Client) openWithRetry(ctx context.Context, faithful bool, sessionID string, kind requestKind) (websocketConn, error) {
+	backoff := 250 * time.Millisecond
+	for {
+		conn, err := c.open(ctx, faithful, sessionID, kind)
+		if err == nil {
+			return conn, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !retryableConnectError(err) {
+			return nil, err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < 5*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func retryableConnectError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if codexErr, ok := ErrorAs(err); ok {
+		return codexErr.Kind == ErrorKindUpstream && codexErr.Status != http.StatusUnauthorized
+	}
+	return false
 }
 
 func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
@@ -221,7 +261,11 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 	kindErr := ErrorKindUpstream
 	if resp != nil {
 		status = resp.StatusCode
-		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		// A 401 means the loaded credential is invalid. Codex also returns
+		// handshake-time 403s transiently when websocket/session capacity is
+		// saturated, even while the same account is completing other requests;
+		// keep those retryable as an upstream failure.
+		if status == http.StatusUnauthorized {
 			kindErr = ErrorKindAuth
 		}
 	}

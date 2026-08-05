@@ -201,7 +201,7 @@ func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, 
 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	selected, pinned := p.preferredIndex(req)
-	index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+	index, inflight, release, unpin, err := p.acquireAvailableWait(ctx, req, selected)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +211,67 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 	}
 	p.logSelection(req, index, false, index != selected, pinned && index == selected, inflight)
 	return p.streamAttempt(ctx, req, index, false, release, unpin, refreshPin)
+}
+
+// acquireAvailableWait absorbs temporary pool saturation and cooldown instead
+// of returning 429 to the durable extraction worker.
+func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request, selected int) (int, int, func(), *pendingUnpin, error) {
+	backoff := 50 * time.Millisecond
+	for {
+		index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+		if err == nil {
+			return index, inflight, release, unpin, nil
+		}
+		if !waitableAcquireError(err) {
+			return 0, 0, nil, nil, err
+		}
+		wait := backoff
+		if until, ok := p.earliestCooldownExpiry(); ok {
+			if remaining := until.Sub(p.now()); remaining > 0 {
+				wait = remaining
+				if wait > 5*time.Second {
+					wait = 5 * time.Second
+				}
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, 0, nil, nil, ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func waitableAcquireError(err error) bool {
+	if errors.Is(err, ErrClientPoolSaturated) {
+		return true
+	}
+	switch ClassifyFailure(err) {
+	case FailureRateLimit, FailureQuota, FailureTransient:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *PooledService) earliestCooldownExpiry() (time.Time, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.now()
+	var earliest time.Time
+	found := false
+	for _, cooldown := range p.cooldowns {
+		if cooldown.until.After(now) && (!found || cooldown.until.Before(earliest)) {
+			earliest = cooldown.until
+			found = true
+		}
+	}
+	return earliest, found
 }
 
 func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin, refreshPin int) (<-chan StreamEvent, error) {
