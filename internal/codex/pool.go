@@ -201,7 +201,10 @@ func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, 
 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	selected, pinned := p.preferredIndex(req)
-	index, inflight, release, unpin, err := p.acquireAvailableWait(ctx, req, selected)
+	index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+	if err != nil && shouldWaitForAcquire(req, err) {
+		index, inflight, release, unpin, err = p.acquireAvailableWait(ctx, req, selected)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +214,18 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 	}
 	p.logSelection(req, index, false, index != selected, pinned && index == selected, inflight)
 	return p.streamAttempt(ctx, req, index, false, release, unpin, refreshPin)
+}
+
+// shouldWaitForAcquire waits on pool saturation for all traffic, and on
+// broader cooldown/quota pressure for extraction turns (Report Studio).
+func shouldWaitForAcquire(req Request, err error) bool {
+	if !waitableAcquireError(err) {
+		return false
+	}
+	if req.Extraction {
+		return true
+	}
+	return errors.Is(err, ErrClientPoolSaturated)
 }
 
 // acquireAvailableWait absorbs temporary pool saturation and cooldown instead
