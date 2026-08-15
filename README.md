@@ -45,12 +45,12 @@ NGROK_DOMAIN=YOUR_SUBDOMAIN.ngrok-free.dev NGROK_AUTHTOKEN=... \
 | Override OpenAI Base URL | `https://${NGROK_DOMAIN}/v1` (**not** `http://127.0.0.1…`) |
 | Model | e.g. `gpt-5.6-terra` — see [model catalog](https://teslashibe.github.io/open-agent-api/docs/models/catalog) |
 
-`docker-compose.cursor.yml` is the single-account interactive baseline: two
-active requests globally, one per conversation key, and two inflight requests
-per Codex account. Its 200-place shared queue soft-waits when full; timeout
-`0s` means wait until request cancellation. Interactive work has priority over
-queued structured work without preempting active requests. Structured limits
-and higher-concurrency overrides remain configurable through the existing
+`docker-compose.cursor.yml` uses the high-throughput baseline proven by the
+shared Cursor/Report Studio gateway: 20 active requests globally and per key,
+20 inflight requests per Codex account, and a 192-place queue with a 60-minute
+wait budget. Structured inference uses the same active and queue limits.
+Interactive work has priority over queued structured work without preempting
+active requests. Every value remains overridable through the existing
 environment variables. If every account is cooling, structured work waits;
 interactive work waits only for saturation and otherwise retains quota/fallback
 handling.
