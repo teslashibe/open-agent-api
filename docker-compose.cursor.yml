@@ -22,4 +22,4 @@ services:
       STRUCTURED_QUEUE_LIMIT: "${STRUCTURED_QUEUE_LIMIT:-192}"
       STRUCTURED_QUEUE_TIMEOUT: "${STRUCTURED_QUEUE_TIMEOUT:-60m}"
       STRUCTURED_MAX_DEADLINE: "${STRUCTURED_MAX_DEADLINE:-60m}"
-      STRUCTURED_MODELS: "${STRUCTURED_MODELS:-gpt-5.6-sol,gpt-5.6-sol-fast,gpt-5.6-luna,gpt-5.5}"
+      STRUCTURED_MODELS: "${STRUCTURED_MODELS:-gpt-5.6-sol,gpt-5.6-sol-fast,gpt-5.6-terra,gpt-5.6-terra-fast,gpt-5.6-luna,gpt-5.6-luna-fast,gpt-5.5}"

@@ -112,9 +112,10 @@ Additional API pricing note (developer API only): prompts **>272K input** are bi
 | `gpt-5.6-sol-max` | `gpt-5.6-sol` | max | low | |
 | `gpt-5.6-terra` | `gpt-5.6-terra` | medium | low | Everyday default recommendation |
 | `gpt-5.6-terra-low` … `-max` | `gpt-5.6-terra` | * | low | Same ladder as Sol |
+| `gpt-5.6-terra-fast` … `-fast-max` | `gpt-5.6-terra` | * | low | Upstream `priority` tier |
 | `gpt-5.6-luna` | `gpt-5.6-luna` | medium | low | |
 | `gpt-5.6-luna-low` … `-max` | `gpt-5.6-luna` | * | low | |
-| `gpt-5.6-luna-fast` | `gpt-5.6-luna` | low | low | Interactive shortcut |
+| `gpt-5.6-luna-fast` … `-fast-max` | `gpt-5.6-luna` | * | low | Upstream `priority` tier |
 
 Optional (nice-to-have, same PR or follow-up):
 
@@ -187,7 +188,7 @@ Today the proxy forwards `reasoning_effort` into the Codex websocket payload. Co
 curl -s "$BASE/v1/models" | jq '.data[].id' | grep 5.6
 
 # completions
-for m in gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5.6-sol-high gpt-5.6-luna-fast; do
+for m in gpt-5.6-sol gpt-5.6-terra-fast gpt-5.6-luna-fast gpt-5.6-sol-fast-high; do
   curl -s "$BASE/v1/chat/completions" -H 'Content-Type: application/json' \
     -d "{\"model\":\"$m\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply: OK-$m\"}]}"
 done

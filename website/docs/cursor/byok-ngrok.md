@@ -76,7 +76,10 @@ Handy slugs to add in Cursor:
 ```text
 gpt-5.6-terra
 gpt-5.6-sol-high
+gpt-5.6-sol-fast
+gpt-5.6-terra-fast
 gpt-5.6-luna-fast
+gpt-5.4-fast
 gemini-3.1-flash-lite
 gemini-3.1-pro-high
 claude-sonnet-4-6
@@ -91,9 +94,15 @@ gpt-5.3-codex-spark
 | --- | --- |
 | Everyday Agent | `gpt-5.6-terra` |
 | Hard tasks | `gpt-5.6-sol-high` |
-| Fast Codex | `gpt-5.6-luna-fast` |
+| Fast frontier Agent | `gpt-5.6-sol-fast` |
+| Fast everyday Agent | `gpt-5.6-terra-fast` |
+| Fast lightweight Agent | `gpt-5.6-luna-fast` |
 | Fastest cheap turn | `gemini-3.1-flash-lite` |
 | Claude Code fast | `haiku` |
+
+Codex `-fast` aliases request the upstream `priority` service tier (advertised
+as roughly 1.5× speed with increased usage); they are not merely low-effort
+shortcuts.
 
 After changing the base URL or models, open a **new** Agent chat — old ones can keep poisoned history.
 
