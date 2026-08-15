@@ -15,6 +15,9 @@ services:
       CODEX_LOG_BODY_SHAPE: "${CODEX_LOG_BODY_SHAPE:-true}"
       CODEX_LOG_REQUEST_IDENTITY: "${CODEX_LOG_REQUEST_IDENTITY:-false}"
       CODEX_LOG_CODEX_TOOL_EVENTS: "${CODEX_LOG_CODEX_TOOL_EVENTS:-false}"
+      CODEX_TELEMETRY_FILE: "${CODEX_TELEMETRY_FILE:-/var/lib/open-agent-api/telemetry/gateway.log}"
+      CODEX_TELEMETRY_MAX_BYTES: "${CODEX_TELEMETRY_MAX_BYTES:-104857600}"
+      CODEX_TELEMETRY_BACKUPS: "${CODEX_TELEMETRY_BACKUPS:-5}"
       CODEX_CLIENTS: "${CODEX_CLIENTS:-}"
       CODEX_CLIENT_POOL_UNAVAILABLE: "${CODEX_CLIENT_POOL_UNAVAILABLE:-fail}"
       CODEX_CLIENT_COOLDOWN_DEFAULT: "${CODEX_CLIENT_COOLDOWN_DEFAULT:-5m}"
@@ -75,6 +78,7 @@ services:
       # corrupted"). Auth comes from CLAUDE_CODE_OAUTH_TOKEN (.env); the
       # container CLI maintains its own config in its own HOME.
       - "agent-queue-locks:/var/lib/open-agent-api/agent-locks"
+      - "telemetry-data:/var/lib/open-agent-api/telemetry"
     ports:
       - "127.0.0.1:${CODEX_CHAT_API_PORT:-8088}:8088"
     healthcheck:
@@ -87,3 +91,4 @@ services:
 
 volumes:
   agent-queue-locks:
+  telemetry-data:
