@@ -51,6 +51,458 @@ func TestPooledServiceDifferentQueueKeysCanMapToDifferentClients(t *testing.T) {
 	}
 }
 
+func TestPooledServiceBalancesBurstOfNewAffinityKeys(t *testing.T) {
+	const concurrency = 36
+
+	upstream := [2]chan StreamEvent{make(chan StreamEvent), make(chan StreamEvent)}
+	var callsMu sync.Mutex
+	var calls [2]int
+	pool := newLeaseTestPool(t, 20, nil,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			callsMu.Lock()
+			calls[0]++
+			callsMu.Unlock()
+			return upstream[0], nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			callsMu.Lock()
+			calls[1]++
+			callsMu.Unlock()
+			return upstream[1], nil
+		}}},
+	)
+
+	type streamResult struct {
+		events <-chan StreamEvent
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan streamResult, concurrency)
+	for i := range concurrency {
+		req := Request{
+			RequestID:       fmt.Sprintf("burst-%d", i),
+			AffinityKey:     fmt.Sprintf("new-affinity-%d", i),
+			AffinityKeyHash: fmt.Sprintf("new-hash-%d", i),
+			AffinityKeyMode: "body:session_id",
+		}
+		for pool.selectIndex(req) != 0 {
+			req.AffinityKey += "-next"
+		}
+		go func() {
+			<-start
+			events, err := pool.Stream(context.Background(), req)
+			results <- streamResult{events: events, err: err}
+		}()
+	}
+	close(start)
+
+	streams := make([]<-chan StreamEvent, 0, concurrency)
+	var firstErr error
+	for range concurrency {
+		result := <-results
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+		}
+		if result.events != nil {
+			streams = append(streams, result.events)
+		}
+	}
+	close(upstream[0])
+	close(upstream[1])
+	for _, events := range streams {
+		drainEvents(events)
+	}
+	if firstErr != nil {
+		t.Fatalf("burst Stream() error = %v", firstErr)
+	}
+
+	callsMu.Lock()
+	got := calls
+	callsMu.Unlock()
+	if got[0]+got[1] != concurrency {
+		t.Fatalf("upstream calls = %v, want %d total", got, concurrency)
+	}
+	if difference := got[0] - got[1]; difference < -initialLoadBalanceGap || difference > initialLoadBalanceGap {
+		t.Fatalf("upstream calls = %v, want balanced initial placement", got)
+	}
+}
+
+func TestPooledServiceAffinitylessRequestsStayCapacityBalancedWithoutPins(t *testing.T) {
+	const requests = 6
+
+	var mu sync.Mutex
+	var calls [2]int
+	upstreams := make([]chan StreamEvent, 0, requests)
+	clients := make([]PooledClientConfig, 2)
+	for i := range clients {
+		index := i
+		clients[i] = PooledClientConfig{
+			Label: fmt.Sprintf("client-%c", 'a'+i),
+			Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				events := make(chan StreamEvent, 1)
+				mu.Lock()
+				calls[index]++
+				upstreams = append(upstreams, events)
+				mu.Unlock()
+				return events, nil
+			}},
+		}
+	}
+	pool := newLeaseTestPool(t, 20, nil, clients...)
+	streams := make([]<-chan StreamEvent, 0, requests)
+	for i := range requests {
+		events, err := pool.Stream(context.Background(), Request{RequestID: fmt.Sprintf("structured-%d", i), Extraction: true})
+		if err != nil {
+			t.Fatalf("Stream() %d error = %v", i, err)
+		}
+		streams = append(streams, events)
+	}
+
+	mu.Lock()
+	gotCalls := calls
+	gotUpstreams := append([]chan StreamEvent(nil), upstreams...)
+	mu.Unlock()
+	if gotCalls[0] == 0 || gotCalls[1] == 0 {
+		t.Fatalf("calls = %v, affinity-less traffic did not use both accounts", gotCalls)
+	}
+	if difference := gotCalls[0] - gotCalls[1]; difference < -initialLoadBalanceGap || difference > initialLoadBalanceGap {
+		t.Fatalf("calls = %v, affinity-less traffic was not capacity balanced", gotCalls)
+	}
+	for _, events := range gotUpstreams {
+		events <- StreamEvent{Done: true}
+		close(events)
+	}
+	for _, events := range streams {
+		drainEvents(events)
+	}
+
+	pool.mu.Lock()
+	softPins := len(pool.softPins)
+	tentativePins := len(pool.tentativePins)
+	pool.mu.Unlock()
+	if softPins != 0 || tentativePins != 0 {
+		t.Fatalf("affinity-less pins = soft:%d tentative:%d, want none", softPins, tentativePins)
+	}
+	if _, pinned := pool.preferredIndex(Request{}); pinned {
+		t.Fatal("affinity-less traffic must never resolve a global soft pin")
+	}
+}
+
+func TestPooledServiceConcurrentSameKeySharesTentativePlacementAndPromotes(t *testing.T) {
+	const siblings = 4
+
+	var mu sync.Mutex
+	var calls [2]int
+	upstreams := make([]chan StreamEvent, 0, siblings)
+	clients := make([]PooledClientConfig, 2)
+	for i := range clients {
+		index := i
+		clients[i] = PooledClientConfig{
+			Label: fmt.Sprintf("client-%c", 'a'+i),
+			Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				events := make(chan StreamEvent, 1)
+				mu.Lock()
+				calls[index]++
+				upstreams = append(upstreams, events)
+				mu.Unlock()
+				return events, nil
+			}},
+		}
+	}
+	pool := newLeaseTestPool(t, 20, nil, clients...)
+	req := requestForPoolIndex(pool, 0)
+	type streamResult struct {
+		events <-chan StreamEvent
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan streamResult, siblings)
+	for range siblings {
+		go func() {
+			<-start
+			events, err := pool.Stream(context.Background(), req)
+			results <- streamResult{events: events, err: err}
+		}()
+	}
+	close(start)
+
+	streams := make([]<-chan StreamEvent, 0, siblings)
+	for range siblings {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent Stream() error = %v", result.err)
+		}
+		streams = append(streams, result.events)
+	}
+	mu.Lock()
+	gotCalls := calls
+	gotUpstreams := append([]chan StreamEvent(nil), upstreams...)
+	mu.Unlock()
+	if gotCalls != [2]int{siblings, 0} {
+		t.Fatalf("calls = %v, concurrent siblings split tentative placement", gotCalls)
+	}
+	for _, events := range gotUpstreams {
+		events <- StreamEvent{Done: true}
+		close(events)
+	}
+	for _, events := range streams {
+		drainEvents(events)
+	}
+
+	if got, pinned := pool.preferredIndex(req); got != 0 || !pinned {
+		t.Fatalf("preferredIndex() after sibling success = %d, %t", got, pinned)
+	}
+	pool.mu.Lock()
+	tentativePins := len(pool.tentativePins)
+	pool.mu.Unlock()
+	if tentativePins != 0 {
+		t.Fatalf("tentative pins after promotion = %d, want zero", tentativePins)
+	}
+}
+
+func TestPooledServiceConcurrentFailedTentativePlacementIsRemoved(t *testing.T) {
+	const siblings = 4
+
+	attemptErr := errors.New("tentative attempt failed")
+	gate := make(chan struct{})
+	started := make(chan int, siblings)
+	var mu sync.Mutex
+	var calls [2]int
+	clients := make([]PooledClientConfig, 2)
+	for i := range clients {
+		index := i
+		clients[i] = PooledClientConfig{
+			Label: fmt.Sprintf("client-%c", 'a'+i),
+			Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				mu.Lock()
+				calls[index]++
+				mu.Unlock()
+				started <- index
+				<-gate
+				return nil, attemptErr
+			}},
+		}
+	}
+	pool := newLeaseTestPool(t, 20, nil, clients...)
+	req := requestForPoolIndex(pool, 0)
+	start := make(chan struct{})
+	results := make(chan error, siblings)
+	for range siblings {
+		go func() {
+			<-start
+			_, err := pool.Stream(context.Background(), req)
+			results <- err
+		}()
+	}
+	close(start)
+	startedOn := make([]int, 0, siblings)
+	for range siblings {
+		startedOn = append(startedOn, <-started)
+	}
+	close(gate)
+	for range siblings {
+		if err := <-results; !errors.Is(err, attemptErr) {
+			t.Fatalf("Stream() error = %v, want tentative attempt error", err)
+		}
+	}
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != [2]int{siblings, 0} {
+		t.Fatalf("calls = %v, started on %v; failed siblings split tentative placement", gotCalls, startedOn)
+	}
+	pool.mu.Lock()
+	softPins := len(pool.softPins)
+	tentativePins := len(pool.tentativePins)
+	pool.mu.Unlock()
+	if softPins != 0 || tentativePins != 0 {
+		t.Fatalf("pins after all failures = soft:%d tentative:%d, want none", softPins, tentativePins)
+	}
+	if got, pinned := pool.preferredIndex(req); got != 0 || pinned {
+		t.Fatalf("preferredIndex() after all failures = %d, %t", got, pinned)
+	}
+}
+
+func TestPooledServiceConcurrentCancelledTentativePlacementIsRemoved(t *testing.T) {
+	const siblings = 3
+
+	upstream := make(chan StreamEvent)
+	var mu sync.Mutex
+	var calls [2]int
+	pool := newLeaseTestPool(t, 20, nil,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			mu.Lock()
+			calls[0]++
+			mu.Unlock()
+			return upstream, nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			mu.Lock()
+			calls[1]++
+			mu.Unlock()
+			return upstream, nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+	streams := make([]<-chan StreamEvent, 0, siblings)
+	cancels := make([]context.CancelFunc, 0, siblings)
+	for range siblings {
+		ctx, cancel := context.WithCancel(context.Background())
+		events, err := pool.Stream(ctx, req)
+		if err != nil {
+			cancel()
+			t.Fatalf("Stream() error = %v", err)
+		}
+		streams = append(streams, events)
+		cancels = append(cancels, cancel)
+	}
+	for _, cancel := range cancels {
+		cancel()
+	}
+	for _, events := range streams {
+		drainEvents(events)
+	}
+	close(upstream)
+
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != [2]int{siblings, 0} {
+		t.Fatalf("calls = %v, cancelled siblings split tentative placement", gotCalls)
+	}
+	pool.mu.Lock()
+	softPins := len(pool.softPins)
+	tentativePins := len(pool.tentativePins)
+	pool.mu.Unlock()
+	if softPins != 0 || tentativePins != 0 {
+		t.Fatalf("pins after all cancellations = soft:%d tentative:%d, want none", softPins, tentativePins)
+	}
+}
+
+func TestPooledServiceInitialPlacementUsesHashOwnerOnTie(t *testing.T) {
+	var calls [2]int
+	pool := newLeaseTestPool(t, 20, nil,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[0]++
+			return poolEvents(StreamEvent{Done: true}), nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[1]++
+			return poolEvents(StreamEvent{Done: true}), nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 1)
+	pool.mu.Lock()
+	pool.inflight["client-a"] = 5
+	pool.inflight["client-b"] = 5
+	pool.mu.Unlock()
+
+	if _, err := pool.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if calls != [2]int{0, 1} {
+		t.Fatalf("calls = %v, want deterministic hash owner on tied load", calls)
+	}
+}
+
+func TestPooledServiceSuccessfulInitialLoadBalanceCreatesStickyPin(t *testing.T) {
+	var logs bytes.Buffer
+	var calls [2]int
+	pool := newLeaseTestPool(t, 20, &logs,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[0]++
+			return poolEvents(StreamEvent{Delta: "from-a"}, StreamEvent{Done: true}), nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[1]++
+			return poolEvents(StreamEvent{Delta: "from-b"}, StreamEvent{Done: true}), nil
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+
+	_, releaseA1, acquired, _, _ := pool.tryAcquireClient(req, 0, false)
+	if !acquired {
+		t.Fatal("failed to hold first owner lease")
+	}
+	_, releaseA2, acquired, _, _ := pool.tryAcquireClient(req, 0, false)
+	if !acquired {
+		releaseA1()
+		t.Fatal("failed to hold second owner lease")
+	}
+	completion, err := pool.Complete(context.Background(), req)
+	releaseA1()
+	releaseA2()
+	if err != nil || completion.Text != "from-b" {
+		t.Fatalf("load-balanced Complete() = %#v, %v", completion, err)
+	}
+	if got, pinned := pool.preferredIndex(req); got != 1 || !pinned {
+		t.Fatalf("preferredIndex() after load-balanced success = %d, %t", got, pinned)
+	}
+	pool.mu.Lock()
+	tentativePins := len(pool.tentativePins)
+	pool.mu.Unlock()
+	if tentativePins != 0 {
+		t.Fatalf("tentative pins after successful promotion = %d, want zero", tentativePins)
+	}
+	if !strings.Contains(logs.String(), "client_label=client-b inflight=1 fallback=false rotated=true") {
+		t.Fatalf("logs = %q, want load-balanced selection represented as rotated", logs.String())
+	}
+
+	_, releaseB1, acquired, _, _ := pool.tryAcquireClient(req, 1, false)
+	if !acquired {
+		t.Fatal("failed to hold first pinned-client lease")
+	}
+	defer releaseB1()
+	_, releaseB2, acquired, _, _ := pool.tryAcquireClient(req, 1, false)
+	if !acquired {
+		t.Fatal("failed to hold second pinned-client lease")
+	}
+	defer releaseB2()
+	completion, err = pool.Complete(context.Background(), req)
+	if err != nil || completion.Text != "from-b" {
+		t.Fatalf("sticky Complete() = %#v, %v", completion, err)
+	}
+	if calls != [2]int{0, 2} {
+		t.Fatalf("calls = %v, active soft pin did not remain sticky under load", calls)
+	}
+}
+
+func TestPooledServiceFailedInitialLoadBalanceDoesNotPin(t *testing.T) {
+	var calls [2]int
+	loadBalancedErr := errors.New("load-balanced attempt failed")
+	pool := newLeaseTestPool(t, 20, nil,
+		PooledClientConfig{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[0]++
+			return poolEvents(StreamEvent{Done: true}), nil
+		}}},
+		PooledClientConfig{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			calls[1]++
+			return nil, loadBalancedErr
+		}}},
+	)
+	req := requestForPoolIndex(pool, 0)
+	_, releaseA1, acquired, _, _ := pool.tryAcquireClient(req, 0, false)
+	if !acquired {
+		t.Fatal("failed to hold first owner lease")
+	}
+	defer releaseA1()
+	_, releaseA2, acquired, _, _ := pool.tryAcquireClient(req, 0, false)
+	if !acquired {
+		t.Fatal("failed to hold second owner lease")
+	}
+	defer releaseA2()
+
+	if _, err := pool.Complete(context.Background(), req); !errors.Is(err, loadBalancedErr) {
+		t.Fatalf("Complete() error = %v, want load-balanced attempt error", err)
+	}
+	if calls != [2]int{0, 1} {
+		t.Fatalf("calls = %v, want only the less-loaded client", calls)
+	}
+	if got, pinned := pool.preferredIndex(req); got != 0 || pinned {
+		t.Fatalf("preferredIndex() after failed load-balanced attempt = %d, %t", got, pinned)
+	}
+}
+
 func TestPooledServiceAllUnavailableClientsFailGracefully(t *testing.T) {
 	unavailable := ErrClientUnavailable
 	pool, calls := testPool(t, ClientPoolUnavailableFail, 2, map[string]error{"client-0": unavailable, "client-1": unavailable})
@@ -950,8 +1402,13 @@ func TestPooledServiceRotatesFromSaturatedClient(t *testing.T) {
 	if !strings.Contains(logs.String(), "client_label=client-b inflight=1 fallback=false rotated=true") {
 		t.Fatalf("logs = %q, want rotated selection", logs.String())
 	}
-	if got, pinned := pool.preferredIndex(req); got != 0 || pinned {
-		t.Fatalf("preferredIndex() = %d, %t; saturation must not change affinity", got, pinned)
+	channels["client-b"] <- StreamEvent{Done: true}
+	if terminal := <-second; !terminal.Done {
+		t.Fatalf("second terminal event = %#v", terminal)
+	}
+	drainEvents(second)
+	if got, pinned := pool.preferredIndex(req); got != 1 || !pinned {
+		t.Fatalf("preferredIndex() = %d, %t; successful tentative spillover was not promoted", got, pinned)
 	}
 	if strings.Contains(logs.String(), "codex_client_unpin") {
 		t.Fatalf("logs = %q, saturation must not emit unpin", logs.String())
@@ -960,7 +1417,6 @@ func TestPooledServiceRotatesFromSaturatedClient(t *testing.T) {
 	close(channels["client-a"])
 	close(channels["client-b"])
 	drainEvents(first)
-	drainEvents(second)
 	waitPoolInflight(t, pool, "client-a", 0)
 	waitPoolInflight(t, pool, "client-b", 0)
 }

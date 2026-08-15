@@ -1,0 +1,22 @@
+# Optional two-account Codex pool. Credential directories stay outside Git and
+# are mounted read-write so in-process OAuth refresh can persist rotated tokens.
+#
+# Expected host layout:
+#   ~/.open-agent-api/accounts/primary/auth.json
+#   ~/.open-agent-api/accounts/secondary/auth.json
+services:
+  api:
+    environment:
+      CODEX_CLIENTS: >-
+        [{"label":"primary","codex_home":"/home/codex/accounts/primary","auth_path":"/home/codex/accounts/primary/auth.json"},{"label":"secondary","codex_home":"/home/codex/accounts/secondary","auth_path":"/home/codex/accounts/secondary/auth.json"}]
+      # Stable Codex ceiling: two accounts x 16 inflight = 32 total. Repeated
+      # 36-40 request bursts triggered upstream tail-latency cliffs.
+      CODEX_AGENT_MAX_ACTIVE: "${CODEX_AGENT_MAX_ACTIVE:-32}"
+      CODEX_AGENT_MAX_ACTIVE_PER_KEY: "${CODEX_AGENT_MAX_ACTIVE_PER_KEY:-1}"
+      CODEX_CLIENT_MAX_INFLIGHT: "${CODEX_CLIENT_MAX_INFLIGHT:-16}"
+      # The Codex-specific pool increase must not raise other provider limits.
+      GEMINI_AGENT_MAX_ACTIVE: "${GEMINI_AGENT_MAX_ACTIVE:-20}"
+      CLAUDE_AGENT_MAX_ACTIVE: "${CLAUDE_AGENT_MAX_ACTIVE:-20}"
+    volumes:
+      - "${CODEX_PRIMARY_HOME:-${HOME}/.open-agent-api/accounts/primary}:/home/codex/accounts/primary"
+      - "${CODEX_SECONDARY_HOME:-${HOME}/.open-agent-api/accounts/secondary}:/home/codex/accounts/secondary"
