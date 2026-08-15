@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +14,7 @@ import (
 	"github.com/teslashibe/open-agent-api/internal/gemini"
 	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
 	"github.com/teslashibe/open-agent-api/internal/server"
+	"github.com/teslashibe/open-agent-api/internal/telemetry"
 )
 
 func main() {
@@ -27,8 +29,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	logOutput, err := telemetry.New(os.Stdout, cfg.TelemetryFile, cfg.TelemetryMaxBytes, cfg.TelemetryBackups)
+	if err != nil {
+		return fmt.Errorf("initialize telemetry: %w", err)
+	}
+	defer logOutput.Close()
 	metrics := metricspkg.New(cfg.MetricsEnabled)
-	codexService, err := buildCodexService(cfg, metrics)
+	codexService, err := buildCodexService(cfg, metrics, logOutput)
 	if err != nil {
 		return err
 	}
@@ -51,7 +58,7 @@ func run(args []string) error {
 	}
 	service := codex.Router{Codex: codexService, Gemini: geminiService, Claude: claudeService}
 
-	app := server.New(cfg, server.WithCodexService(service), server.WithMetrics(metrics))
+	app := server.New(cfg, server.WithCodexService(service), server.WithMetrics(metrics), server.WithLogOutput(logOutput))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -75,7 +82,7 @@ func run(args []string) error {
 	}
 }
 
-func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (codex.Service, error) {
+func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics, logOutput io.Writer) (codex.Service, error) {
 	clients := make([]codex.PooledClientConfig, 0, len(cfg.CodexClients))
 	for _, clientCfg := range cfg.CodexClients {
 		client, err := codex.NewClient(codex.ClientConfig{
@@ -85,7 +92,7 @@ func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (codex.Se
 			ScaffoldPath:  clientCfg.CodexScaffoldPath,
 			WebsocketURL:  cfg.CodexWebsocketURL,
 			Timeout:       cfg.CodexTimeout,
-			LogOutput:     os.Stdout,
+			LogOutput:     logOutput,
 			LogBodyShape:  cfg.LogBodyShape,
 			LogToolEvents: cfg.LogCodexToolEvents,
 		})
@@ -101,7 +108,7 @@ func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (codex.Se
 		Clients:           clients,
 		MaxInflight:       cfg.CodexClientMaxInflight,
 		UnavailablePolicy: cfg.CodexClientPoolUnavailable,
-		LogOutput:         os.Stdout,
+		LogOutput:         logOutput,
 		CooldownDefault:   cfg.CodexClientCooldownDefault,
 		CooldownMax:       cfg.CodexClientCooldownMax,
 		Metrics:           metrics,

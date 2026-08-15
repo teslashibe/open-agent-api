@@ -47,6 +47,8 @@ const (
 	DefaultCodexClientCooldownDefault         = 5 * time.Minute
 	DefaultCodexClientCooldownMax             = 15 * time.Minute
 	DefaultMetricsEnabled                     = true
+	DefaultTelemetryMaxBytes                  = 100 * 1024 * 1024
+	DefaultTelemetryBackups                   = 5
 	DefaultGatewayTenantHeader                = "X-Smore-Tenant-ID"
 	// Structured inference ships dark. The route is not registered unless it is
 	// explicitly enabled, so the pre-ticket public surface is byte-identical.
@@ -88,6 +90,9 @@ type Config struct {
 	LogBodyShape                       bool
 	LogRequestIdentity                 bool
 	LogCodexToolEvents                 bool
+	TelemetryFile                      string
+	TelemetryMaxBytes                  int64
+	TelemetryBackups                   int
 	AgentQueueEnabled                  bool
 	AgentMaxActive                     int
 	AgentMaxActivePerKey               int
@@ -253,6 +258,23 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CODEX_LOG_BODY_SHAPE: %w", err)
 		}
 		cfg.LogBodyShape = logBodyShape
+	}
+	if value := os.Getenv("CODEX_TELEMETRY_FILE"); value != "" {
+		cfg.TelemetryFile = value
+	}
+	if value := os.Getenv("CODEX_TELEMETRY_MAX_BYTES"); value != "" {
+		maxBytes, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_TELEMETRY_MAX_BYTES: %w", err)
+		}
+		cfg.TelemetryMaxBytes = maxBytes
+	}
+	if value := os.Getenv("CODEX_TELEMETRY_BACKUPS"); value != "" {
+		backups, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODEX_TELEMETRY_BACKUPS: %w", err)
+		}
+		cfg.TelemetryBackups = backups
 	}
 	if value := os.Getenv("CODEX_LOG_REQUEST_IDENTITY"); value != "" {
 		logRequestIdentity, err := strconv.ParseBool(value)
@@ -493,6 +515,9 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
 	fs.BoolVar(&cfg.LogCodexToolEvents, "log-codex-tool-events", cfg.LogCodexToolEvents, "log redacted upstream Codex tool-event diagnostics")
+	fs.StringVar(&cfg.TelemetryFile, "telemetry-file", cfg.TelemetryFile, "optional persistent telemetry log file")
+	fs.Int64Var(&cfg.TelemetryMaxBytes, "telemetry-max-bytes", cfg.TelemetryMaxBytes, "maximum bytes per persistent telemetry file")
+	fs.IntVar(&cfg.TelemetryBackups, "telemetry-backups", cfg.TelemetryBackups, "number of rotated persistent telemetry files")
 	fs.BoolVar(&cfg.AgentQueueEnabled, "agent-queue-enabled", cfg.AgentQueueEnabled, "enable Agent queue for requests with tools")
 	fs.IntVar(&cfg.AgentMaxActive, "agent-max-active", cfg.AgentMaxActive, "maximum concurrent tool-capable Agent requests")
 	fs.IntVar(&cfg.AgentMaxActivePerKey, "agent-max-active-per-key", cfg.AgentMaxActivePerKey, "maximum concurrent tool-capable Agent requests per queue key")
@@ -594,6 +619,8 @@ func Defaults() Config {
 		CodexClientCooldownDefault:         DefaultCodexClientCooldownDefault,
 		CodexClientCooldownMax:             DefaultCodexClientCooldownMax,
 		MetricsEnabled:                     DefaultMetricsEnabled,
+		TelemetryMaxBytes:                  DefaultTelemetryMaxBytes,
+		TelemetryBackups:                   DefaultTelemetryBackups,
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
 		CustomToolWire:                     DefaultCustomToolWire,
 		QuotaFallbackModel:                 DefaultQuotaFallbackModel,
@@ -652,6 +679,12 @@ func (c Config) AgentQueueLimitsFor(provider string) AgentQueueLimits {
 func (c Config) Validate() error {
 	if c.Host == "" {
 		return errors.New("host is required")
+	}
+	if c.TelemetryMaxBytes <= 0 {
+		return errors.New("telemetry max bytes must be greater than zero")
+	}
+	if c.TelemetryBackups < 0 {
+		return errors.New("telemetry backups must not be negative")
 	}
 	if _, err := parsePort(strconv.Itoa(c.Port)); err != nil {
 		return err
