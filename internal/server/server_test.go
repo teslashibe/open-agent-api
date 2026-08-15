@@ -229,7 +229,7 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 68 {
+	if body.Object != "list" || len(body.Data) != 82 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
 	wantIDs := []string{
@@ -237,8 +237,10 @@ func TestModels(t *testing.T) {
 		"gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max",
 		"gpt-5.6-sol-fast", "gpt-5.6-sol-fast-low", "gpt-5.6-sol-fast-medium", "gpt-5.6-sol-fast-high", "gpt-5.6-sol-fast-xhigh", "gpt-5.6-sol-fast-max",
 		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max",
+		"gpt-5.6-terra-fast", "gpt-5.6-terra-fast-low", "gpt-5.6-terra-fast-medium", "gpt-5.6-terra-fast-high", "gpt-5.6-terra-fast-xhigh", "gpt-5.6-terra-fast-max",
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
-		"gpt-5.6-luna-fast", "codex-sol", "codex-terra", "codex-luna",
+		"gpt-5.6-luna-fast", "gpt-5.6-luna-fast-low", "gpt-5.6-luna-fast-medium", "gpt-5.6-luna-fast-high", "gpt-5.6-luna-fast-xhigh", "gpt-5.6-luna-fast-max",
+		"codex-sol", "codex-terra", "codex-luna",
 		"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
 		"gemini-3.1-pro-low", "gemini-3.1-pro-high",
 		"gemini-3.5-flash-low", "gemini-3.5-flash-medium", "gemini-3.5-flash-high",
@@ -248,7 +250,7 @@ func TestModels(t *testing.T) {
 		"opus", "sonnet", "haiku", "fable",
 		"api/claude-opus-4-8", "api/claude-sonnet-5", "api/claude-haiku-4-5-20251001", "api/claude-fable-5",
 		"api/claude-fable-5-low", "api/claude-fable-5-medium", "api/claude-fable-5-high",
-		"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose",
+		"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-fast-low", "gpt-5.5-fast-medium", "gpt-5.5-fast-high", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose",
 		"gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview",
 	}
 	for i, wantID := range wantIDs {
@@ -297,12 +299,13 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 			wantFaithful:  true,
 		},
 		{
-			name:          "luna fast alias",
-			body:          `{"model":"gpt-5.6-luna-fast","messages":[{"role":"user","content":"hi"}]}`,
-			wantModel:     "gpt-5.6-luna",
-			wantEffort:    "low",
-			wantVerbosity: "low",
-			wantFaithful:  true,
+			name:            "luna fast alias",
+			body:            `{"model":"gpt-5.6-luna-fast","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:       "gpt-5.6-luna",
+			wantEffort:      "low",
+			wantVerbosity:   "low",
+			wantServiceTier: "priority",
+			wantFaithful:    true,
 		},
 		{
 			name:          "high alias",
@@ -321,12 +324,13 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 			wantFaithful:  true,
 		},
 		{
-			name:          "fast alias",
-			body:          `{"model":"gpt-5.5-fast","messages":[{"role":"user","content":"hi"}]}`,
-			wantModel:     "gpt-5.5",
-			wantEffort:    "low",
-			wantVerbosity: "low",
-			wantFaithful:  true,
+			name:            "fast alias",
+			body:            `{"model":"gpt-5.5-fast","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:       "gpt-5.5",
+			wantEffort:      "low",
+			wantVerbosity:   "low",
+			wantServiceTier: "priority",
+			wantFaithful:    true,
 		},
 		{
 			name:          "mini alias",
@@ -361,12 +365,13 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 			wantFaithful:  true,
 		},
 		{
-			name:          "fast verbose alias",
-			body:          `{"model":"gpt-5.5-fast-verbose","messages":[{"role":"user","content":"hi"}]}`,
-			wantModel:     "gpt-5.5",
-			wantEffort:    "low",
-			wantVerbosity: "high",
-			wantFaithful:  true,
+			name:            "fast verbose alias",
+			body:            `{"model":"gpt-5.5-fast-verbose","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:       "gpt-5.5",
+			wantEffort:      "low",
+			wantVerbosity:   "high",
+			wantServiceTier: "priority",
+			wantFaithful:    true,
 		},
 		{
 			name:          "spark alias",
@@ -393,12 +398,13 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 			wantFaithful:  true,
 		},
 		{
-			name:          "explicit fields override alias defaults",
-			body:          `{"model":"gpt-5.5-fast","reasoning_effort":"high","verbosity":"high","messages":[{"role":"user","content":"hi"}]}`,
-			wantModel:     "gpt-5.5",
-			wantEffort:    "high",
-			wantVerbosity: "high",
-			wantFaithful:  true,
+			name:            "explicit fields override alias defaults",
+			body:            `{"model":"gpt-5.5-fast","reasoning_effort":"high","verbosity":"high","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:       "gpt-5.5",
+			wantEffort:      "high",
+			wantVerbosity:   "high",
+			wantServiceTier: "priority",
+			wantFaithful:    true,
 		},
 		{
 			name:          "unknown model passes through",
