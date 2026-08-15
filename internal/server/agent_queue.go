@@ -144,8 +144,13 @@ func (q *agentQueue) acquireWithPriority(ctx context.Context, requestID string, 
 	q.mu.Unlock()
 	q.logf("agent_queue_wait request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d position=%d\n", requestID, key.Mode, key.Hash, class, priority, position)
 
-	timer := time.NewTimer(q.timeout)
-	defer timer.Stop()
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	if q.timeout > 0 {
+		timer = time.NewTimer(q.timeout)
+		timerC = timer.C
+		defer timer.Stop()
+	}
 
 	select {
 	case <-waiter.ready:
@@ -154,7 +159,7 @@ func (q *agentQueue) acquireWithPriority(ctx context.Context, requestID string, 
 		q.logf("agent_queue_acquire request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d active_global=%d active_key=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds(), activeGlobal, activeKey)
 		release, err := q.releaseWithDistributedLock(ctx, requestID, start, key, class, priority)
 		return release, wait, err
-	case <-timer.C:
+	case <-timerC:
 		if q.removeWaiter(waiter) {
 			wait := q.now().Sub(start)
 			q.logf("agent_queue_timeout request_id=%s key_mode=%s key_hash=%s turn_class=%s priority=%d wait_ms=%d\n", requestID, key.Mode, key.Hash, class, priority, wait.Milliseconds())

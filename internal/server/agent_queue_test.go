@@ -150,6 +150,29 @@ func TestAgentQueueCanceledPriorityWaiterIsRemoved(t *testing.T) {
 	lowRelease()
 }
 
+func TestAgentQueueZeroTimeoutWaitsUntilCapacity(t *testing.T) {
+	q := newAgentQueue(true, 1, 1, 10, 0, "", true, time.Now, func(string, ...any) {})
+	firstKey := newAgentQueueKey("test", "first")
+	secondKey := newAgentQueueKey("test", "second")
+
+	releaseFirst, _, err := q.acquire(context.Background(), "first", firstKey, turnClassToolGenerating)
+	if err != nil {
+		t.Fatalf("first acquire error = %v", err)
+	}
+	secondDone := acquireQueueAsync(t, q, "second", secondKey, turnClassToolGenerating)
+	waitQueueWaiters(t, q, 1)
+
+	select {
+	case result := <-secondDone:
+		t.Fatalf("zero-timeout waiter returned before capacity: %v", result.err)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	releaseFirst()
+	secondRelease := waitQueueAcquire(t, secondDone)
+	secondRelease()
+}
+
 type queueAcquireResult struct {
 	release func()
 	err     error

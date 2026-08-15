@@ -498,7 +498,7 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&cfg.AgentMaxActivePerKey, "agent-max-active-per-key", cfg.AgentMaxActivePerKey, "maximum concurrent tool-capable Agent requests per queue key")
 	fs.StringVar(&cfg.AgentQueueKeyMode, "agent-queue-key-mode", cfg.AgentQueueKeyMode, "Agent queue key mode: cursor, global, auth_hash, request_fingerprint, header:<name>, or body:<field>")
 	fs.IntVar(&cfg.AgentQueueLimit, "agent-queue-limit", cfg.AgentQueueLimit, "maximum waiting tool-capable Agent requests")
-	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue")
+	fs.DurationVar(&cfg.AgentQueueTimeout, "agent-queue-timeout", cfg.AgentQueueTimeout, "maximum time a tool-capable Agent request can wait in the queue (0 waits until cancellation)")
 	fs.StringVar(&cfg.AgentQueueLockDir, "agent-queue-lock-dir", cfg.AgentQueueLockDir, "directory for cross-process Agent queue key locks")
 	fs.BoolVar(&cfg.AgentQueuePriorityEnabled, "agent-queue-priority-enabled", cfg.AgentQueuePriorityEnabled, "experimentally prioritize low-risk eligible Agent queue waiters")
 	fs.BoolVar(&cfg.ContextManagementEnabled, "context-management-enabled", cfg.ContextManagementEnabled, "enable context management for tool-capable minimal-mode requests")
@@ -718,8 +718,8 @@ func (c Config) Validate() error {
 			return errors.New("per-provider agent queue overrides must be non-negative")
 		}
 	}
-	if c.AgentQueueEnabled && c.AgentQueueTimeout <= 0 {
-		return errors.New("agent queue timeout must be positive")
+	if c.AgentQueueEnabled && c.AgentQueueTimeout < 0 {
+		return errors.New("agent queue timeout must be non-negative (0 = wait until cancellation)")
 	}
 	if c.ContextMaxBytes < 0 {
 		return errors.New("context max bytes must be non-negative")
