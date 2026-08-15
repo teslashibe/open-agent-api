@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/teslashibe/open-agent-api/internal/auth"
+	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
 	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
@@ -34,6 +35,8 @@ type ClientConfig struct {
 	LogOutput     io.Writer
 	LogBodyShape  bool
 	LogToolEvents bool
+	ClientLabel   string
+	Metrics       *metricspkg.Metrics
 }
 
 type Client struct {
@@ -47,6 +50,8 @@ type Client struct {
 	logOutput     io.Writer
 	logBodyShape  bool
 	logToolEvents bool
+	clientLabel   string
+	metrics       *metricspkg.Metrics
 }
 
 type websocketConn interface {
@@ -61,6 +66,9 @@ type websocketConn interface {
 type websocketDialFunc func(context.Context, string, http.Header) (websocketConn, *http.Response, error)
 
 func NewClient(cfg ClientConfig) (*Client, error) {
+	if cfg.Metrics == nil {
+		cfg.Metrics = metricspkg.New(false)
+	}
 	profile, err := LoadProfile(cfg.ProfilePath)
 	if err != nil {
 		return nil, err
@@ -93,6 +101,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		logOutput:     cfg.LogOutput,
 		logBodyShape:  cfg.LogBodyShape,
 		logToolEvents: cfg.LogToolEvents,
+		clientLabel:   cfg.ClientLabel,
+		metrics:       cfg.Metrics,
 	}, nil
 }
 
@@ -178,7 +188,9 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		}
 	}
 
+	connectStarted := time.Now()
 	conn, err := c.openWithRetry(ctx, faithful, sessionID, kind)
+	c.metrics.ObserveCodexPhase(c.clientLabel, "connect", time.Since(connectStarted))
 	if err != nil {
 		cancel()
 		return nil, err
@@ -188,9 +200,10 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 		closeConn(conn)
 		return nil, err
 	}
+	payloadAt := time.Now()
 
 	events := make(chan StreamEvent, 2)
-	go c.readLoop(ctx, cancel, conn, events)
+	go c.readLoop(ctx, cancel, conn, events, connectStarted, payloadAt)
 	return events, nil
 }
 
@@ -256,6 +269,7 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 
 	conn, resp, err := c.dial(ctx, c.websocketURL, c.headers(creds, faithful, sessionID, kind))
 	if err == nil {
+		c.observeRateLimitHeaders(resp)
 		return conn, nil
 	}
 	if ctx.Err() != nil {
@@ -268,6 +282,7 @@ func (c *Client) open(ctx context.Context, faithful bool, sessionID string, kind
 		if refreshed, refreshErr := c.tokens.ForceRefresh(ctx); refreshErr == nil {
 			conn, resp, err = c.dial(ctx, c.websocketURL, c.headers(refreshed, faithful, sessionID, kind))
 			if err == nil {
+				c.observeRateLimitHeaders(resp)
 				return conn, nil
 			}
 			if ctx.Err() != nil {
@@ -328,7 +343,7 @@ func (c *Client) headers(creds auth.Credentials, faithful bool, sessionID string
 	return header
 }
 
-func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn websocketConn, events chan<- StreamEvent) {
+func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn websocketConn, events chan<- StreamEvent, upstreamAt, payloadAt time.Time) {
 	defer cancel()
 	defer close(events)
 	defer closeConn(conn)
@@ -343,6 +358,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 	}()
 	defer close(done)
 
+	var firstEventAt, firstTokenAt time.Time
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(c.timeout))
 		_, raw, err := conn.ReadMessage()
@@ -356,12 +372,25 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		}
 
 		c.logCodexToolEvent(raw)
+		now := time.Now()
+		if firstEventAt.IsZero() {
+			firstEventAt = now
+			c.metrics.ObserveCodexPhase(c.clientLabel, "payload_to_first_event", now.Sub(payloadAt))
+		}
+		c.observeRateLimitEvent(raw)
 		event, terminal, err := parseStreamEvent(raw)
 		if err != nil {
 			sendStreamEvent(ctx, events, StreamEvent{Err: err})
 			return
 		}
+		if terminal && event.Err == nil {
+			c.observeSuccessfulPhases(upstreamAt, firstEventAt, firstTokenAt, now)
+		}
 		if hasStreamEvent(event) {
+			if firstTokenAt.IsZero() && (event.Delta != "" || event.ReasoningDelta != "") {
+				firstTokenAt = now
+				c.metrics.ObserveCodexPhase(c.clientLabel, "payload_to_first_token", now.Sub(payloadAt))
+			}
 			if !sendStreamEvent(ctx, events, event) {
 				trySendStreamEvent(events, StreamEvent{Err: ctx.Err()})
 				return
@@ -370,6 +399,16 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 		if terminal {
 			return
 		}
+	}
+}
+
+func (c *Client) observeSuccessfulPhases(upstreamAt, firstEventAt, firstTokenAt, completedAt time.Time) {
+	c.metrics.ObserveCodexPhase(c.clientLabel, "total", completedAt.Sub(upstreamAt))
+	if !firstEventAt.IsZero() {
+		c.metrics.ObserveCodexPhase(c.clientLabel, "first_event_to_completion", completedAt.Sub(firstEventAt))
+	}
+	if !firstTokenAt.IsZero() {
+		c.metrics.ObserveCodexPhase(c.clientLabel, "first_token_to_completion", completedAt.Sub(firstTokenAt))
 	}
 }
 

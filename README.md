@@ -116,6 +116,12 @@ which is faster but consumes increased upstream usage. Gemini, Claude, Spark,
 and other models without advertised priority support do not receive synthetic
 Fast aliases.
 
+For bounded local throughput evidence, `go run ./cmd/bench -duration 5s
+-concurrency 2` targets `127.0.0.1:8088` and emits JSON throughput, errors, and
+p50/p95/p99 latency. Change its endpoint only to an explicitly safe local test
+server. The existing prewarm request remains unchanged: phase telemetry should
+first show whether connect or first-event latency is material.
+
 ```bash
 go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088
 curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'

@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
 )
 
 func TestPooledServiceSameQueueKeyMapsToSameClient(t *testing.T) {
@@ -1441,6 +1444,83 @@ func TestPooledServiceReleasesLeaseOnStartupError(t *testing.T) {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
 	waitPoolInflight(t, pool, "client-a", 0)
+}
+
+func TestAcquireAvailableWaitQueueDepthCountsOnlyBlockedRequests(t *testing.T) {
+	m := metricspkg.New(true)
+	upstream := make(chan StreamEvent)
+	pool, err := NewPooledService(PooledServiceConfig{
+		Clients: []PooledClientConfig{{
+			Label: "client-a",
+			Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				return upstream, nil
+			}},
+		}},
+		MaxInflight: 1,
+		LogOutput:   io.Discard,
+		Metrics:     m,
+	})
+	if err != nil {
+		t.Fatalf("NewPooledService() error = %v", err)
+	}
+
+	immediate, err := pool.acquireAvailableWait(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("immediate acquireAvailableWait() error = %v", err)
+	}
+	if got := codexQueueDepth(t, m); got != 0 {
+		t.Fatalf("queue depth after immediate acquisition = %v, want 0", got)
+	}
+
+	acquired := make(chan poolAcquisition, 1)
+	go func() {
+		got, acquireErr := pool.acquireAvailableWait(context.Background(), Request{})
+		if acquireErr == nil {
+			acquired <- got
+		}
+	}()
+	waitForQueueDepth(t, m, 1)
+	immediate.release()
+	second := <-acquired
+	if got := codexQueueDepth(t, m); got != 0 {
+		t.Fatalf("queue depth after waiter acquired = %v, want 0", got)
+	}
+	second.release()
+}
+
+func codexQueueDepth(t *testing.T, m *metricspkg.Metrics) float64 {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, line := range strings.Split(recorder.Body.String(), "\n") {
+		if strings.HasPrefix(line, "codex_chat_api_client_pool_queue_depth ") {
+			var got float64
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				t.Fatalf("unexpected queue depth metric %q", line)
+			}
+			if _, err := fmt.Sscan(fields[1], &got); err != nil {
+				t.Fatalf("parse queue depth %q: %v", line, err)
+			}
+			return got
+		}
+	}
+	t.Fatal("queue depth metric not found")
+	return 0
+}
+
+func waitForQueueDepth(t *testing.T, m *metricspkg.Metrics, want float64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if got := codexQueueDepth(t, m); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue depth did not reach %v", want)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestPooledServiceReleasesLeaseOnMidstreamError(t *testing.T) {

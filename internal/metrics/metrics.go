@@ -26,6 +26,10 @@ type Metrics struct {
 	poolSelections    *prometheus.CounterVec
 	poolCooldowns     *prometheus.CounterVec
 	poolCooldownSkips *prometheus.CounterVec
+	codexPhase        *prometheus.HistogramVec
+	codexInflight     *prometheus.GaugeVec
+	codexQueueDepth   prometheus.Gauge
+	codexRateLimit    *prometheus.GaugeVec
 	queueWait         *prometheus.HistogramVec
 	activeStreams     *prometheus.GaugeVec
 	chatDuration      *prometheus.HistogramVec
@@ -74,6 +78,23 @@ func New(enabled bool) *Metrics {
 		Name: "codex_chat_api_pool_cooldown_skips_total",
 		Help: "Total pool selection skips caused by an active cooldown.",
 	}, []string{"client_label", "failure_class"})
+	m.codexPhase = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "codex_chat_api_upstream_phase_seconds",
+		Help:    "Codex WebSocket request lifecycle durations by safe client label and bounded phase.",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600, 1200, 2700},
+	}, []string{"client_label", "phase"})
+	m.codexInflight = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "codex_chat_api_client_inflight",
+		Help: "Current Codex requests leased to each safely labeled client.",
+	}, []string{"client_label"})
+	m.codexQueueDepth = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "codex_chat_api_client_pool_queue_depth",
+		Help: "Current requests waiting for a Codex client lease.",
+	})
+	m.codexRateLimit = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "codex_chat_api_upstream_rate_limit",
+		Help: "Latest recognized sanitized Codex rate-limit value by safe client label, source, limit type, and field.",
+	}, []string{"client_label", "source", "limit_type", "field"})
 	m.queueWait = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "codex_chat_api_queue_wait_seconds",
 		Help:    "Agent queue wait time by provider and terminal admission result.",
@@ -128,6 +149,10 @@ func New(enabled bool) *Metrics {
 		m.poolSelections,
 		m.poolCooldowns,
 		m.poolCooldownSkips,
+		m.codexPhase,
+		m.codexInflight,
+		m.codexQueueDepth,
+		m.codexRateLimit,
 		m.queueWait,
 		m.activeStreams,
 		m.chatDuration,
@@ -141,6 +166,61 @@ func New(enabled bool) *Metrics {
 		m.structuredInflight,
 	)
 	return m
+}
+
+func (m *Metrics) ObserveCodexPhase(clientLabel, phase string, duration time.Duration) {
+	if !m.Enabled() {
+		return
+	}
+	switch phase {
+	case "connect", "payload_to_first_event", "payload_to_first_token", "first_event_to_completion", "first_token_to_completion", "total":
+	default:
+		phase = "other"
+	}
+	if duration < 0 {
+		duration = 0
+	}
+	m.codexPhase.WithLabelValues(normalizeClientLabel(clientLabel), phase).Observe(duration.Seconds())
+}
+
+func (m *Metrics) SetCodexClientInflight(clientLabel string, value int) {
+	if m.Enabled() {
+		m.codexInflight.WithLabelValues(normalizeClientLabel(clientLabel)).Set(float64(max(value, 0)))
+	}
+}
+
+func (m *Metrics) IncCodexQueueDepth() {
+	if m.Enabled() {
+		m.codexQueueDepth.Inc()
+	}
+}
+
+func (m *Metrics) DecCodexQueueDepth() {
+	if m.Enabled() {
+		m.codexQueueDepth.Dec()
+	}
+}
+
+func (m *Metrics) SetCodexRateLimit(clientLabel, source, limitType, field string, value float64) {
+	if !m.Enabled() {
+		return
+	}
+	switch source {
+	case "event", "header":
+	default:
+		source = "other"
+	}
+	switch limitType {
+	case "primary", "secondary":
+	default:
+		limitType = "other"
+	}
+	switch field {
+	case "used_percent", "window_minutes", "reset_at":
+	default:
+		return
+	}
+	m.codexRateLimit.WithLabelValues(normalizeClientLabel(clientLabel), source, limitType, field).Set(value)
 }
 
 func (m *Metrics) ObserveChatDuration(provider, result string, duration time.Duration) {
