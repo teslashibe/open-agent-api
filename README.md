@@ -112,6 +112,12 @@ Metrics are enabled by default. Key chat series are
 `CODEX_STREAM_IDLE_TIMEOUT=0s`: valid reasoning can be silent for minutes, so
 that profile relies on cancellation and the unchanged 45-minute overall timeout.
 
+For bounded local throughput evidence, `go run ./cmd/bench -duration 5s
+-concurrency 2` targets `127.0.0.1:8088` and emits JSON throughput, errors, and
+p50/p95/p99 latency. Change its endpoint only to an explicitly safe local test
+server. The existing prewarm request remains unchanged: phase telemetry should
+first show whether connect or first-event latency is material.
+
 ```bash
 go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088
 curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'

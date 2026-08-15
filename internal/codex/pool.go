@@ -259,6 +259,8 @@ func shouldWaitForAcquire(req Request, err error) bool {
 // acquireAvailableWait absorbs temporary pool saturation and cooldown instead
 // of returning 429 to the durable extraction worker.
 func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request) (poolAcquisition, error) {
+	p.metrics.IncCodexQueueDepth()
+	defer p.metrics.DecCodexQueueDepth()
 	backoff := 50 * time.Millisecond
 	for {
 		acquisition, err := p.acquireAvailable(req)
@@ -670,6 +672,7 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 		label := p.clients[candidate].label
 		p.inflight[label]++
 		inflight := p.inflight[label]
+		p.metrics.SetCodexClientInflight(label, inflight)
 		if explicitAffinity && !pinned {
 			key := affinityKey(req)
 			if tentative == nil {
@@ -703,6 +706,7 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 		if current < p.maxInflight {
 			current++
 			p.inflight[label] = current
+			p.metrics.SetCodexClientInflight(label, current)
 			if explicitAffinity && !pinned {
 				key := affinityKey(req)
 				if tentative == nil {
@@ -790,6 +794,7 @@ func (p *PooledService) releaseClient(req Request, index int, label string) func
 			}
 			remaining := p.inflight[label]
 			p.mu.Unlock()
+			p.metrics.SetCodexClientInflight(label, remaining)
 			p.logRelease(req, index, remaining)
 		})
 	}

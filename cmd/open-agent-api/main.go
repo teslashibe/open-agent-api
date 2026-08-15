@@ -88,6 +88,8 @@ func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics) (codex.Se
 			LogOutput:     os.Stdout,
 			LogBodyShape:  cfg.LogBodyShape,
 			LogToolEvents: cfg.LogCodexToolEvents,
+			ClientLabel:   clientCfg.Label,
+			Metrics:       metrics,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create codex client %q: %w", clientCfg.Label, err)
