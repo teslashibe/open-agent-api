@@ -86,6 +86,19 @@ Routed when the upstream model is not Gemini/Claude/Antigravity-gateway. Auth: `
 
 Every `gpt-5.5-fast*` alias above requests the `priority` service tier.
 
+### GPT-5.4 (legacy, default and Fast tiers)
+
+| Public ID pattern | Upstream | Effort | Verbosity | Service tier |
+| --- | --- | --- | --- | --- |
+| `gpt-5.4` | `gpt-5.4` | `medium` | `medium` | default |
+| `gpt-5.4-{low,medium,high,xhigh}` | `gpt-5.4` | suffix value | `medium` | default |
+| `gpt-5.4-fast` | `gpt-5.4` | `low` | `medium` | priority |
+| `gpt-5.4-fast-{low,medium,high,xhigh}` | `gpt-5.4` | suffix value | `medium` | priority |
+
+GPT-5.4 remains visible in the Codex CLI catalog and advertises the priority
+tier. It does not advertise `max`, so the gateway intentionally stops at
+`xhigh`.
+
 ### Spark (overflow / small context)
 
 96 KiB hard context. Faithful Codex turns may inject `image_generation`, which Spark rejects — use `faithful:false` or client `tools` for plain chat.
