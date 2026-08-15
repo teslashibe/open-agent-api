@@ -61,6 +61,22 @@ func gpt56FastEffortLadder(upstream string) []ModelAlias {
 	}
 }
 
+func gpt54EffortLadders() []ModelAlias {
+	const upstream = "gpt-5.4"
+	return []ModelAlias{
+		alias(upstream, upstream, "medium", DefaultVerbosity),
+		alias(upstream+"-low", upstream, "low", DefaultVerbosity),
+		alias(upstream+"-medium", upstream, "medium", DefaultVerbosity),
+		alias(upstream+"-high", upstream, "high", DefaultVerbosity),
+		alias(upstream+"-xhigh", upstream, "xhigh", DefaultVerbosity),
+		serviceTierAlias(upstream+"-fast", upstream, "low", DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-low", upstream, "low", DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-medium", upstream, "medium", DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-high", upstream, "high", DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-xhigh", upstream, "xhigh", DefaultVerbosity, "priority"),
+	}
+}
+
 func buildModelAliases() []ModelAlias {
 	out := []ModelAlias{
 		// Default / GPT-5.6 family (ChatGPT/Codex path; ~272K context, not 1.05M).
@@ -82,6 +98,7 @@ func buildModelAliases() []ModelAlias {
 	out = append(out, gpt56FastEffortLadder("gpt-5.6-terra")...)
 	out = append(out, gpt56EffortLadder("gpt-5.6-luna")...)
 	out = append(out, gpt56FastEffortLadder("gpt-5.6-luna")...)
+	out = append(out, gpt54EffortLadders()...)
 	out = append(out,
 		alias("codex-sol", DefaultModel, "low", gpt56DefaultVerbosity),
 		alias("codex-terra", "gpt-5.6-terra", DefaultReasoningEffort, gpt56DefaultVerbosity),

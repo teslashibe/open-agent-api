@@ -21,6 +21,8 @@ func TestModelAliases(t *testing.T) {
 		"gpt-5.6-terra-fast", "gpt-5.6-terra-fast-low", "gpt-5.6-terra-fast-medium", "gpt-5.6-terra-fast-high", "gpt-5.6-terra-fast-xhigh", "gpt-5.6-terra-fast-max",
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
 		"gpt-5.6-luna-fast", "gpt-5.6-luna-fast-low", "gpt-5.6-luna-fast-medium", "gpt-5.6-luna-fast-high", "gpt-5.6-luna-fast-xhigh", "gpt-5.6-luna-fast-max",
+		"gpt-5.4", "gpt-5.4-low", "gpt-5.4-medium", "gpt-5.4-high", "gpt-5.4-xhigh",
+		"gpt-5.4-fast", "gpt-5.4-fast-low", "gpt-5.4-fast-medium", "gpt-5.4-fast-high", "gpt-5.4-fast-xhigh",
 		"codex-sol", "codex-terra", "codex-luna",
 		"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
 		"gemini-3.1-pro-low", "gemini-3.1-pro-high",
