@@ -168,7 +168,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan StreamEvent, e
 	var payload map[string]any
 	var kind requestKind = requestKindTurn
 	if faithful {
-		payload = c.builder.buildFaithful(req.Messages, req.Model, sessionID, kind, req.ReasoningEffort, req.Verbosity)
+		payload = c.builder.buildFaithful(req.Messages, req.Model, sessionID, kind, req.ReasoningEffort, req.Verbosity, req.ServiceTier)
 	} else {
 		var err error
 		payload, err = c.builder.buildMinimal(req)
@@ -234,7 +234,7 @@ func (c *Client) prewarm(ctx context.Context, req Request, sessionID string) {
 	ctx, cancel := context.WithTimeout(ctx, minDuration(c.timeout, 2*time.Second))
 	defer cancel()
 
-	payload := c.builder.buildFaithful(nil, req.Model, sessionID, requestKindPrewarm, req.ReasoningEffort, req.Verbosity)
+	payload := c.builder.buildFaithful(nil, req.Model, sessionID, requestKindPrewarm, req.ReasoningEffort, req.Verbosity, req.ServiceTier)
 	conn, err := c.open(ctx, true, sessionID, requestKindPrewarm)
 	if err != nil {
 		return

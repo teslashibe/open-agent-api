@@ -28,6 +28,9 @@ type Metrics struct {
 	poolCooldownSkips *prometheus.CounterVec
 	queueWait         *prometheus.HistogramVec
 	activeStreams     *prometheus.GaugeVec
+	chatDuration      *prometheus.HistogramVec
+	chatTokens        *prometheus.CounterVec
+	fastTierRequests  *prometheus.CounterVec
 
 	structuredLatency     *prometheus.HistogramVec
 	structuredTokens      *prometheus.CounterVec
@@ -80,6 +83,19 @@ func New(enabled bool) *Metrics {
 		Name: "codex_chat_api_active_streams",
 		Help: "Current downstream chat completion streams by provider.",
 	}, []string{"provider"})
+	m.chatDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "codex_chat_api_request_duration_seconds",
+		Help:    "End-to-end chat completion duration by provider and terminal result.",
+		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600, 1200, 2700},
+	}, []string{"provider", "result"})
+	m.chatTokens = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "codex_chat_api_tokens_total",
+		Help: "Chat completion token usage by provider and token kind.",
+	}, []string{"provider", "kind"})
+	m.fastTierRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "codex_chat_api_fast_tier_requests_total",
+		Help: "Fast service-tier chat requests by provider, tier, and terminal result.",
+	}, []string{"provider", "tier", "result"})
 	m.structuredLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "codex_chat_api_structured_latency_seconds",
 		Help:    "Structured inference end-to-end latency by model and contract result.",
@@ -114,6 +130,9 @@ func New(enabled bool) *Metrics {
 		m.poolCooldownSkips,
 		m.queueWait,
 		m.activeStreams,
+		m.chatDuration,
+		m.chatTokens,
+		m.fastTierRequests,
 		m.structuredLatency,
 		m.structuredTokens,
 		m.structuredFailures,
@@ -122,6 +141,37 @@ func New(enabled bool) *Metrics {
 		m.structuredInflight,
 	)
 	return m
+}
+
+func (m *Metrics) ObserveChatDuration(provider, result string, duration time.Duration) {
+	if !m.Enabled() {
+		return
+	}
+	if duration < 0 {
+		duration = 0
+	}
+	m.chatDuration.WithLabelValues(normalizeProvider(provider), normalizeRequestResult(result)).Observe(duration.Seconds())
+}
+
+func (m *Metrics) ObserveChatUsage(provider string, promptTokens, completionTokens, totalTokens int) {
+	if !m.Enabled() {
+		return
+	}
+	for _, usage := range []struct {
+		kind  string
+		value int
+	}{{"prompt", promptTokens}, {"completion", completionTokens}, {"total", totalTokens}} {
+		if usage.value > 0 {
+			m.chatTokens.WithLabelValues(normalizeProvider(provider), usage.kind).Add(float64(usage.value))
+		}
+	}
+}
+
+func (m *Metrics) ObserveFastTierRequest(provider, tier, result string) {
+	if !m.Enabled() || tier == "" {
+		return
+	}
+	m.fastTierRequests.WithLabelValues(normalizeProvider(provider), normalizeServiceTier(tier), normalizeRequestResult(result)).Inc()
 }
 
 // AllowStructuredModels bounds the structured model label to the configured
@@ -330,7 +380,7 @@ func normalizeProvider(value string) string {
 }
 
 func normalizeRequestResult(value string) string {
-	return allow(value, "server_error", "success", "client_error", "rate_limited", "server_error")
+	return allow(value, "server_error", "success", "client_error", "rate_limited", "server_error", "canceled")
 }
 
 func normalizePoolResult(value string) string {
@@ -343,6 +393,10 @@ func normalizeQueueResult(value string) string {
 
 func normalizeFailureClass(value string) string {
 	return allow(value, "unknown", "quota", "rate_limit", "auth", "permanent", "transient", "unknown")
+}
+
+func normalizeServiceTier(value string) string {
+	return allow(value, "other", "priority")
 }
 
 func normalizeClientLabel(value string) string {

@@ -11,12 +11,19 @@ type ModelAlias struct {
 	UpstreamModel   string
 	ReasoningEffort string
 	Verbosity       string
+	ServiceTier     string
 	// ContextHardMaxBytes forces aggressive context reduction (including
 	// dropping oldest turns) for models with small context windows. 0 = off.
 	ContextHardMaxBytes int
 	// Unlisted hides the alias from GET /v1/models while still resolving it
 	// for chat completions (e.g. overflow-only Spark).
 	Unlisted bool
+}
+
+func serviceTierAlias(id, upstream, effort, verbosity, serviceTier string) ModelAlias {
+	model := alias(id, upstream, effort, verbosity)
+	model.ServiceTier = serviceTier
+	return model
 }
 
 func alias(id, upstream, effort, verbosity string) ModelAlias {
@@ -57,6 +64,12 @@ func buildModelAliases() []ModelAlias {
 		alias("gpt-5.6-sol-high", DefaultModel, "high", gpt56DefaultVerbosity),
 		alias("gpt-5.6-sol-xhigh", DefaultModel, "xhigh", gpt56DefaultVerbosity),
 		alias("gpt-5.6-sol-max", DefaultModel, "max", gpt56DefaultVerbosity),
+		serviceTierAlias("gpt-5.6-sol-fast", DefaultModel, "low", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias("gpt-5.6-sol-fast-low", DefaultModel, "low", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias("gpt-5.6-sol-fast-medium", DefaultModel, "medium", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias("gpt-5.6-sol-fast-high", DefaultModel, "high", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias("gpt-5.6-sol-fast-xhigh", DefaultModel, "xhigh", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias("gpt-5.6-sol-fast-max", DefaultModel, "max", gpt56DefaultVerbosity, "priority"),
 	}
 	out = append(out, gpt56EffortLadder("gpt-5.6-terra")...)
 	out = append(out, gpt56EffortLadder("gpt-5.6-luna")...)

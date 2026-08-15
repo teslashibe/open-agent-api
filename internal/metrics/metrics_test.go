@@ -19,6 +19,9 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 	m.ObserveQueueWait("gemini", "bypassed", 0)
 	m.IncActiveStreams("codex")
 	m.DecActiveStreams("codex")
+	m.ObserveChatDuration("codex", "success", 150*time.Millisecond)
+	m.ObserveChatUsage("codex", 10, 5, 15)
+	m.ObserveFastTierRequest("codex", "priority", "success")
 
 	body := scrape(t, m)
 	for _, want := range []string{
@@ -30,6 +33,11 @@ func TestMetricsExposeStableBoundedSurface(t *testing.T) {
 		`codex_chat_api_queue_wait_seconds_count{provider="codex",result="acquired"} 1`,
 		`codex_chat_api_queue_wait_seconds_count{provider="gemini",result="bypassed"} 1`,
 		`codex_chat_api_active_streams{provider="codex"} 0`,
+		`codex_chat_api_request_duration_seconds_count{provider="codex",result="success"} 1`,
+		`codex_chat_api_tokens_total{kind="prompt",provider="codex"} 10`,
+		`codex_chat_api_tokens_total{kind="completion",provider="codex"} 5`,
+		`codex_chat_api_tokens_total{kind="total",provider="codex"} 15`,
+		`codex_chat_api_fast_tier_requests_total{provider="codex",result="success",tier="priority"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics body missing %q:\n%s", want, body)

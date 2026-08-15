@@ -229,12 +229,13 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 62 {
+	if body.Object != "list" || len(body.Data) != 68 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
 	wantIDs := []string{
 		"gpt-5.6-sol", "gpt-5.6",
 		"gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max",
+		"gpt-5.6-sol-fast", "gpt-5.6-sol-fast-low", "gpt-5.6-sol-fast-medium", "gpt-5.6-sol-fast-high", "gpt-5.6-sol-fast-xhigh", "gpt-5.6-sol-fast-max",
 		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max",
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
 		"gpt-5.6-luna-fast", "codex-sol", "codex-terra", "codex-luna",
@@ -265,6 +266,7 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 		wantModel       string
 		wantEffort      string
 		wantVerbosity   string
+		wantServiceTier string
 		wantTools       bool
 		wantFaithful    bool
 		wantParallelSet bool
@@ -276,6 +278,15 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 			wantEffort:    "max",
 			wantVerbosity: "low",
 			wantFaithful:  true,
+		},
+		{
+			name:            "sol fast alias",
+			body:            `{"model":"gpt-5.6-sol-fast-high","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:       "gpt-5.6-sol",
+			wantEffort:      "high",
+			wantVerbosity:   "low",
+			wantServiceTier: "priority",
+			wantFaithful:    true,
 		},
 		{
 			name:          "terra alias",
@@ -421,6 +432,9 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 					}
 					if req.Verbosity != tc.wantVerbosity {
 						t.Fatalf("Verbosity = %q, want %q", req.Verbosity, tc.wantVerbosity)
+					}
+					if req.ServiceTier != tc.wantServiceTier {
+						t.Fatalf("ServiceTier = %q, want %q", req.ServiceTier, tc.wantServiceTier)
 					}
 					if rawJSONPresent(req.Tools) != tc.wantTools {
 						t.Fatalf("tools present = %t, want %t", rawJSONPresent(req.Tools), tc.wantTools)

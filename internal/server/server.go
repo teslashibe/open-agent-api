@@ -319,10 +319,17 @@ func models(cfg config.Config) fiber.Handler {
 func chatCompletions(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		provider := "unknown"
+		serviceTier := ""
+		requestStart := opts.now()
+		var telemetryRecorded atomic.Bool
 		defer func() {
 			status := c.Response().StatusCode()
 			result := requestMetricResult(status)
 			opts.metrics.ObserveRequest(provider, result)
+			if !telemetryRecorded.Swap(true) {
+				opts.metrics.ObserveChatDuration(provider, result, opts.now().Sub(requestStart))
+				opts.metrics.ObserveFastTierRequest(provider, serviceTier, result)
+			}
 			if status == fiber.StatusTooManyRequests {
 				failureClass, _ := c.Locals(metricsFailureClassLocal).(string)
 				if failureClass == "" {
@@ -337,7 +344,6 @@ func chatCompletions(opts options) fiber.Handler {
 		if opts.drain.Load() {
 			return writeError(c, fiber.StatusServiceUnavailable, "server_error", "server draining")
 		}
-		requestStart := opts.now()
 		requestID := opts.newID()
 		if opts.logBodyShape {
 			logLine(opts, "body_shape path=%s %s %s\n", c.Path(), redactedBodyShape(c.Body()), summarizeCursorWire(c.Body()).logFields())
@@ -360,6 +366,7 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 		modelAlias := openai.ResolveModelAlias(model)
 		provider = codex.ProviderForModel(modelAlias.UpstreamModel)
+		serviceTier = modelAlias.ServiceTier
 		if !opts.contextConfig.ProviderEnabled(provider) {
 			logLine(opts, "provider_disabled model=%s provider=%s\n", model, provider)
 			return writeError(c, fiber.StatusNotFound, "invalid_request_error", "model not found")
@@ -425,6 +432,7 @@ func chatCompletions(opts options) fiber.Handler {
 			ParallelToolCalls: req.ParallelToolCalls,
 			ReasoningEffort:   defaultString(req.ReasoningEffort, modelAlias.ReasoningEffort),
 			Verbosity:         defaultString(req.Verbosity, modelAlias.Verbosity),
+			ServiceTier:       modelAlias.ServiceTier,
 			Faithful:          faithful,
 			Prewarm:           prewarm,
 			RequestID:         requestID,
@@ -447,7 +455,8 @@ func chatCompletions(opts options) fiber.Handler {
 		}
 
 		if req.Stream {
-			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, provider, requestID, releaseQueue, requestStart, contextDuration, queueWait)
+			telemetryRecorded.Store(true)
+			return streamChatCompletion(c, opts, ctx, cancel, serviceReq, provider, requestID, releaseQueue, requestStart, contextDuration, queueWait, &telemetryRecorded)
 		}
 		defer cancel()
 		defer releaseQueue()
@@ -466,6 +475,7 @@ func chatCompletions(opts options) fiber.Handler {
 			logRequestTiming(opts, requestID, contextDuration, queueWait, upstreamDuration, -1, opts.now().Sub(requestStart))
 			return mapServiceError(c, err)
 		}
+		opts.metrics.ObserveChatUsage(provider, completion.Usage.PromptTokens, completion.Usage.CompletionTokens, completion.Usage.TotalTokens)
 
 		message := openai.ChatMessage{
 			Role:    "assistant",
@@ -496,7 +506,7 @@ func chatCompletions(opts options) fiber.Handler {
 	}
 }
 
-func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, provider string, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration) error {
+func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cancel context.CancelFunc, req codex.Request, provider string, requestID string, releaseQueue func(), requestStart time.Time, contextDuration time.Duration, queueWait time.Duration, telemetryRecorded *atomic.Bool) error {
 	upstreamStart := opts.now()
 	events, err := opts.codexService.Stream(ctx, req)
 	if err != nil && errors.Is(err, codex.ErrUsageLimitReached) {
@@ -518,6 +528,9 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		releaseQueue()
 		logLine(opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", requestID, req.Model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseConnect)
 		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
+		result := serviceErrorMetricResult(err)
+		opts.metrics.ObserveChatDuration(provider, result, opts.now().Sub(requestStart))
+		opts.metrics.ObserveFastTierRequest(provider, req.ServiceTier, result)
 		return mapServiceError(c, err)
 	}
 	events = withStreamIdleTimeout(ctx, events, opts.contextConfig.StreamIdleTimeout)
@@ -552,11 +565,13 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 				streamID, model, ctxErrString(ctx),
 			)
 			logRequestTiming(opts, streamID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
+			opts.metrics.ObserveChatDuration(provider, "canceled", opts.now().Sub(requestStart))
+			opts.metrics.ObserveFastTierRequest(provider, req.ServiceTier, "canceled")
 			return
 		}
 
 		outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount, assistantText, start, firstDeltaLatency := deliverToolStream(
-			ctx, opts, w, cancel, req, opts.codexService, events, id, created, model, streamID, upstreamStart,
+			ctx, opts, w, cancel, req, opts.codexService, events, id, created, model, streamID, provider, upstreamStart,
 		)
 
 		finish := streamFinish(outcome, toolCallCount > 0)
@@ -569,8 +584,34 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 			ctxErrString(ctx), opts.now().Sub(start).Milliseconds(),
 		)
 		logRequestTiming(opts, streamID, contextDuration, queueWait, opts.now().Sub(upstreamStart), firstDeltaLatency, opts.now().Sub(requestStart))
+		result := streamMetricResult(outcome)
+		opts.metrics.ObserveChatDuration(provider, result, opts.now().Sub(requestStart))
+		opts.metrics.ObserveFastTierRequest(provider, req.ServiceTier, result)
+		telemetryRecorded.Store(true)
 	})
 	return nil
+}
+
+func streamMetricResult(outcome string) string {
+	switch outcome {
+	case "completed":
+		return "success"
+	case "client_disconnect":
+		return "canceled"
+	default:
+		return "server_error"
+	}
+}
+
+func serviceErrorMetricResult(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, codex.ErrUsageLimitReached):
+		return "rate_limited"
+	default:
+		return "server_error"
+	}
 }
 
 func logRequestTiming(opts options, requestID string, contextDuration, queueWait, upstreamDuration, firstDeltaLatency, totalDuration time.Duration) {
