@@ -81,6 +81,31 @@ func TestCompleteUsesPrewarmThenTurnAndAggregatesEvents(t *testing.T) {
 	}
 }
 
+func TestStreamWithOmittedMetricsDoesNotPanic(t *testing.T) {
+	authPath, codexHome := writeAuthFixture(t)
+	turnConn := &fakeWebsocketConn{readMessages: [][]byte{
+		[]byte(`{"type":"response.completed","response":{"id":"resp-123","model":"gpt-test"}}`),
+	}}
+	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
+	client.dial = (&recordingDialer{conns: []websocketConn{turnConn}}).dial
+	client.builder.newSessionID = func() string { return "session-123" }
+
+	events, err := client.Stream(context.Background(), Request{
+		Model:           "gpt-test",
+		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+		ReasoningEffort: "medium",
+		Verbosity:       "medium",
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	for event := range events {
+		if event.Err != nil {
+			t.Fatalf("Stream() event error = %v", event.Err)
+		}
+	}
+}
+
 func TestCompleteAggregatesToolCallFrames(t *testing.T) {
 	authPath, codexHome := writeAuthFixture(t)
 	turnConn := &fakeWebsocketConn{readMessages: [][]byte{

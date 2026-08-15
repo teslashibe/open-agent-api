@@ -175,6 +175,9 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = metricspkg.New(false)
+	}
 	return &PooledService{
 		clients:           clients,
 		maxInflight:       cfg.MaxInflight,
@@ -260,6 +263,12 @@ func shouldWaitForAcquire(req Request, err error) bool {
 // of returning 429 to the durable extraction worker.
 func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request) (poolAcquisition, error) {
 	backoff := 50 * time.Millisecond
+	waiting := false
+	defer func() {
+		if waiting {
+			p.metrics.DecCodexQueueDepth()
+		}
+	}()
 	for {
 		acquisition, err := p.acquireAvailable(req)
 		if err == nil {
@@ -267,6 +276,10 @@ func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request) (
 		}
 		if !waitableAcquireError(err) {
 			return poolAcquisition{}, err
+		}
+		if !waiting {
+			p.metrics.IncCodexQueueDepth()
+			waiting = true
 		}
 		wait := backoff
 		if until, ok := p.earliestCooldownExpiry(); ok {
@@ -670,6 +683,7 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 		label := p.clients[candidate].label
 		p.inflight[label]++
 		inflight := p.inflight[label]
+		p.metrics.SetCodexClientInflight(label, inflight)
 		if explicitAffinity && !pinned {
 			key := affinityKey(req)
 			if tentative == nil {
@@ -703,6 +717,7 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 		if current < p.maxInflight {
 			current++
 			p.inflight[label] = current
+			p.metrics.SetCodexClientInflight(label, current)
 			if explicitAffinity && !pinned {
 				key := affinityKey(req)
 				if tentative == nil {
@@ -775,6 +790,7 @@ func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bo
 	}
 	current++
 	p.inflight[label] = current
+	p.metrics.SetCodexClientInflight(label, current)
 	p.mu.Unlock()
 
 	return current, p.releaseClient(req, index, label), true, "", false
@@ -789,6 +805,7 @@ func (p *PooledService) releaseClient(req Request, index int, label string) func
 				p.inflight[label]--
 			}
 			remaining := p.inflight[label]
+			p.metrics.SetCodexClientInflight(label, remaining)
 			p.mu.Unlock()
 			p.logRelease(req, index, remaining)
 		})
