@@ -49,6 +49,18 @@ func gpt56EffortLadder(upstream string) []ModelAlias {
 	}
 }
 
+// gpt56FastEffortLadder returns priority-tier aliases for every exposed effort.
+func gpt56FastEffortLadder(upstream string) []ModelAlias {
+	return []ModelAlias{
+		serviceTierAlias(upstream+"-fast", upstream, "low", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-low", upstream, "low", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-medium", upstream, "medium", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-high", upstream, "high", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-xhigh", upstream, "xhigh", gpt56DefaultVerbosity, "priority"),
+		serviceTierAlias(upstream+"-fast-max", upstream, "max", gpt56DefaultVerbosity, "priority"),
+	}
+}
+
 func buildModelAliases() []ModelAlias {
 	out := []ModelAlias{
 		// Default / GPT-5.6 family (ChatGPT/Codex path; ~272K context, not 1.05M).
@@ -64,17 +76,13 @@ func buildModelAliases() []ModelAlias {
 		alias("gpt-5.6-sol-high", DefaultModel, "high", gpt56DefaultVerbosity),
 		alias("gpt-5.6-sol-xhigh", DefaultModel, "xhigh", gpt56DefaultVerbosity),
 		alias("gpt-5.6-sol-max", DefaultModel, "max", gpt56DefaultVerbosity),
-		serviceTierAlias("gpt-5.6-sol-fast", DefaultModel, "low", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias("gpt-5.6-sol-fast-low", DefaultModel, "low", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias("gpt-5.6-sol-fast-medium", DefaultModel, "medium", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias("gpt-5.6-sol-fast-high", DefaultModel, "high", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias("gpt-5.6-sol-fast-xhigh", DefaultModel, "xhigh", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias("gpt-5.6-sol-fast-max", DefaultModel, "max", gpt56DefaultVerbosity, "priority"),
 	}
+	out = append(out, gpt56FastEffortLadder(DefaultModel)...)
 	out = append(out, gpt56EffortLadder("gpt-5.6-terra")...)
+	out = append(out, gpt56FastEffortLadder("gpt-5.6-terra")...)
 	out = append(out, gpt56EffortLadder("gpt-5.6-luna")...)
+	out = append(out, gpt56FastEffortLadder("gpt-5.6-luna")...)
 	out = append(out,
-		alias("gpt-5.6-luna-fast", "gpt-5.6-luna", "low", "low"),
 		alias("codex-sol", DefaultModel, "low", gpt56DefaultVerbosity),
 		alias("codex-terra", "gpt-5.6-terra", DefaultReasoningEffort, gpt56DefaultVerbosity),
 		alias("codex-luna", "gpt-5.6-luna", DefaultReasoningEffort, gpt56DefaultVerbosity),
@@ -116,12 +124,15 @@ func buildModelAliases() []ModelAlias {
 		alias(LegacyGPT55, LegacyGPT55, DefaultReasoningEffort, DefaultVerbosity),
 		alias("gpt-5.5-low", LegacyGPT55, "low", DefaultVerbosity),
 		alias("gpt-5.5-high", LegacyGPT55, "high", DefaultVerbosity),
-		alias("gpt-5.5-fast", LegacyGPT55, "low", "low"),
+		serviceTierAlias("gpt-5.5-fast", LegacyGPT55, "low", "low", "priority"),
+		serviceTierAlias("gpt-5.5-fast-low", LegacyGPT55, "low", DefaultVerbosity, "priority"),
+		serviceTierAlias("gpt-5.5-fast-medium", LegacyGPT55, "medium", DefaultVerbosity, "priority"),
+		serviceTierAlias("gpt-5.5-fast-high", LegacyGPT55, "high", DefaultVerbosity, "priority"),
 		alias("gpt-5.5-mini", LegacyGPT55, "low", "low"),
 		alias("gpt-5.5-lite", LegacyGPT55, "low", DefaultVerbosity),
 		alias("gpt-5.5-deep", LegacyGPT55, "high", DefaultVerbosity),
 		alias("gpt-5.5-verbose", LegacyGPT55, DefaultReasoningEffort, "high"),
-		alias("gpt-5.5-fast-verbose", LegacyGPT55, "low", "high"),
+		serviceTierAlias("gpt-5.5-fast-verbose", LegacyGPT55, "low", "high", "priority"),
 	)
 
 	// Spark: ultra-fast overflow / Cursor alias (96 KiB hard context).

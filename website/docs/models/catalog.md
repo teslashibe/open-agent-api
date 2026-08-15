@@ -47,32 +47,27 @@ Routed when the upstream model is not Gemini/Claude/Antigravity-gateway. Auth: `
 | `gpt-5.6-sol-fast-max` | `gpt-5.6-sol` | `max` | `low` | `priority` |
 | `codex-sol` | `gpt-5.6-sol` | `low` | `low` | default |
 
-### GPT-5.6 Terra
+### GPT-5.6 Terra (default and Fast tiers)
 
-| Public ID | Upstream | Effort | Verbosity |
-| --- | --- | --- | --- |
-| `gpt-5.6-terra` | `gpt-5.6-terra` | `medium` | `low` |
-| `gpt-5.6-terra-low` | `gpt-5.6-terra` | `low` | `low` |
-| `gpt-5.6-terra-medium` | `gpt-5.6-terra` | `medium` | `low` |
-| `gpt-5.6-terra-high` | `gpt-5.6-terra` | `high` | `low` |
-| `gpt-5.6-terra-xhigh` | `gpt-5.6-terra` | `xhigh` | `low` |
-| `gpt-5.6-terra-max` | `gpt-5.6-terra` | `max` | `low` |
-| `codex-terra` | `gpt-5.6-terra` | `medium` | `low` |
+| Public ID pattern | Upstream | Effort | Verbosity | Service tier |
+| --- | --- | --- | --- | --- |
+| `gpt-5.6-terra` | `gpt-5.6-terra` | `medium` | `low` | default |
+| `gpt-5.6-terra-{low,medium,high,xhigh,max}` | `gpt-5.6-terra` | suffix value | `low` | default |
+| `gpt-5.6-terra-fast` | `gpt-5.6-terra` | `low` | `low` | priority |
+| `gpt-5.6-terra-fast-{low,medium,high,xhigh,max}` | `gpt-5.6-terra` | suffix value | `low` | priority |
+| `codex-terra` | `gpt-5.6-terra` | `medium` | `low` | default |
 
-### GPT-5.6 Luna
+### GPT-5.6 Luna (default and Fast tiers)
 
-| Public ID | Upstream | Effort | Verbosity |
-| --- | --- | --- | --- |
-| `gpt-5.6-luna` | `gpt-5.6-luna` | `medium` | `low` |
-| `gpt-5.6-luna-low` | `gpt-5.6-luna` | `low` | `low` |
-| `gpt-5.6-luna-medium` | `gpt-5.6-luna` | `medium` | `low` |
-| `gpt-5.6-luna-high` | `gpt-5.6-luna` | `high` | `low` |
-| `gpt-5.6-luna-xhigh` | `gpt-5.6-luna` | `xhigh` | `low` |
-| `gpt-5.6-luna-max` | `gpt-5.6-luna` | `max` | `low` |
-| `gpt-5.6-luna-fast` | `gpt-5.6-luna` | `low` | `low` |
-| `codex-luna` | `gpt-5.6-luna` | `medium` | `low` |
+| Public ID pattern | Upstream | Effort | Verbosity | Service tier |
+| --- | --- | --- | --- | --- |
+| `gpt-5.6-luna` | `gpt-5.6-luna` | `medium` | `low` | default |
+| `gpt-5.6-luna-{low,medium,high,xhigh,max}` | `gpt-5.6-luna` | suffix value | `low` | default |
+| `gpt-5.6-luna-fast` | `gpt-5.6-luna` | `low` | `low` | priority |
+| `gpt-5.6-luna-fast-{low,medium,high,xhigh,max}` | `gpt-5.6-luna` | suffix value | `low` | priority |
+| `codex-luna` | `gpt-5.6-luna` | `medium` | `low` | default |
 
-### GPT-5.5 (legacy)
+### GPT-5.5 (legacy, default and Fast tiers)
 
 | Public ID | Upstream | Effort | Verbosity |
 | --- | --- | --- | --- |
@@ -80,11 +75,16 @@ Routed when the upstream model is not Gemini/Claude/Antigravity-gateway. Auth: `
 | `gpt-5.5-low` | `gpt-5.5` | `low` | `medium` |
 | `gpt-5.5-high` | `gpt-5.5` | `high` | `medium` |
 | `gpt-5.5-fast` | `gpt-5.5` | `low` | `low` |
+| `gpt-5.5-fast-low` | `gpt-5.5` | `low` | `medium` |
+| `gpt-5.5-fast-medium` | `gpt-5.5` | `medium` | `medium` |
+| `gpt-5.5-fast-high` | `gpt-5.5` | `high` | `medium` |
 | `gpt-5.5-mini` | `gpt-5.5` | `low` | `low` |
 | `gpt-5.5-lite` | `gpt-5.5` | `low` | `medium` |
 | `gpt-5.5-deep` | `gpt-5.5` | `high` | `medium` |
 | `gpt-5.5-verbose` | `gpt-5.5` | `medium` | `high` |
 | `gpt-5.5-fast-verbose` | `gpt-5.5` | `low` | `high` |
+
+Every `gpt-5.5-fast*` alias above requests the `priority` service tier.
 
 ### Spark (overflow / small context)
 
@@ -166,6 +166,8 @@ Routed for Claude Code short names, dated IDs, and `api/claude-*` prefixes. Auth
 | Everyday Agent | `gpt-5.6-terra` |
 | Hard tasks | `gpt-5.6-sol-high` |
 | Fast Codex | `gpt-5.6-sol-fast` |
+| Fast everyday Agent | `gpt-5.6-terra-fast` |
+| Fast lightweight Agent | `gpt-5.6-luna-fast` |
 | Fastest cheap turn | `gemini-3.1-flash-lite` |
 | Gemini Pro (Antigravity) | `gemini-3.1-pro-high` |
 | Antigravity Claude | `claude-sonnet-4-6` |

@@ -31,8 +31,19 @@ func DefaultModels() []string {
 		"gpt-5.6-terra-low",
 		"gpt-5.6-terra-medium",
 		"gpt-5.6-terra-high",
+		"gpt-5.6-terra-fast",
+		"gpt-5.6-terra-fast-low",
+		"gpt-5.6-terra-fast-medium",
+		"gpt-5.6-terra-fast-high",
+		"gpt-5.6-terra-fast-xhigh",
+		"gpt-5.6-terra-fast-max",
 		"gpt-5.6-luna",
 		"gpt-5.6-luna-fast",
+		"gpt-5.6-luna-fast-low",
+		"gpt-5.6-luna-fast-medium",
+		"gpt-5.6-luna-fast-high",
+		"gpt-5.6-luna-fast-xhigh",
+		"gpt-5.6-luna-fast-max",
 	}
 }
 
