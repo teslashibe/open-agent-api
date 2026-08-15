@@ -111,6 +111,10 @@ Metrics are enabled by default. Key chat series are
 `codex_chat_api_fast_tier_requests_total`. The Cursor compose profile sets
 `CODEX_STREAM_IDLE_TIMEOUT=0s`: valid reasoning can be silent for minutes, so
 that profile relies on cancellation and the unchanged 45-minute overall timeout.
+Codex model IDs containing `-fast` request the upstream `priority` service tier,
+which is faster but consumes increased upstream usage. Gemini, Claude, Spark,
+and other models without advertised priority support do not receive synthetic
+Fast aliases.
 
 ```bash
 go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088
