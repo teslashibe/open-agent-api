@@ -29,6 +29,7 @@ const (
 	defaultClientMaxInflight = 2
 	defaultSoftPinCapacity   = 10_000
 	defaultSoftPinTTL        = 24 * time.Hour
+	initialLoadBalanceGap    = 2
 	unpinReasonAuth          = "auth"
 	unpinReasonCooldown      = "cooldown"
 	unpinReasonUnavailable   = "unavailable"
@@ -53,6 +54,7 @@ type PooledService struct {
 	inflight        map[string]int
 	softPins        map[string]*list.Element
 	softPinLRU      *list.List
+	tentativePins   map[string]*tentativePin
 	softPinCapacity int
 	softPinTTL      time.Duration
 	logMu           sync.Mutex
@@ -69,10 +71,36 @@ type softPin struct {
 	expiresAt time.Time
 }
 
+type tentativePin struct {
+	key   string
+	index int
+	refs  int
+}
+
 type pendingUnpin struct {
 	key    string
 	from   int
 	reason string
+}
+
+type acquireCooldownSkip struct {
+	index int
+	class FailureClass
+}
+
+type acquireSaturatedClient struct {
+	index    int
+	inflight int
+}
+
+type poolAcquisition struct {
+	index     int
+	preferred int
+	inflight  int
+	release   func()
+	unpin     *pendingUnpin
+	tentative *tentativePin
+	pinned    bool
 }
 
 type pooledClient struct {
@@ -160,6 +188,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		inflight:          map[string]int{},
 		softPins:          map[string]*list.Element{},
 		softPinLRU:        list.New(),
+		tentativePins:     map[string]*tentativePin{},
 		softPinCapacity:   defaultSoftPinCapacity,
 		softPinTTL:        defaultSoftPinTTL,
 	}, nil
@@ -200,20 +229,19 @@ func (p *PooledService) Complete(ctx context.Context, req Request) (Completion, 
 }
 
 func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
-	selected, pinned := p.preferredIndex(req)
-	index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+	acquisition, err := p.acquireAvailable(req)
 	if err != nil && shouldWaitForAcquire(req, err) {
-		index, inflight, release, unpin, err = p.acquireAvailableWait(ctx, req, selected)
+		acquisition, err = p.acquireAvailableWait(ctx, req)
 	}
 	if err != nil {
 		return nil, err
 	}
 	refreshPin := -1
-	if pinned && index == selected {
-		refreshPin = selected
+	if acquisition.pinned && acquisition.index == acquisition.preferred {
+		refreshPin = acquisition.preferred
 	}
-	p.logSelection(req, index, false, index != selected, pinned && index == selected, inflight)
-	return p.streamAttempt(ctx, req, index, false, release, unpin, refreshPin)
+	p.logSelection(req, acquisition.index, false, acquisition.index != acquisition.preferred, acquisition.pinned && acquisition.index == acquisition.preferred, acquisition.inflight)
+	return p.streamAttempt(ctx, req, acquisition.index, false, acquisition.release, acquisition.unpin, refreshPin, acquisition.tentative)
 }
 
 // shouldWaitForAcquire waits on pool saturation for all traffic, and on
@@ -230,15 +258,15 @@ func shouldWaitForAcquire(req Request, err error) bool {
 
 // acquireAvailableWait absorbs temporary pool saturation and cooldown instead
 // of returning 429 to the durable extraction worker.
-func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request, selected int) (int, int, func(), *pendingUnpin, error) {
+func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request) (poolAcquisition, error) {
 	backoff := 50 * time.Millisecond
 	for {
-		index, inflight, release, unpin, err := p.acquireAvailable(req, selected)
+		acquisition, err := p.acquireAvailable(req)
 		if err == nil {
-			return index, inflight, release, unpin, nil
+			return acquisition, nil
 		}
 		if !waitableAcquireError(err) {
-			return 0, 0, nil, nil, err
+			return poolAcquisition{}, err
 		}
 		wait := backoff
 		if until, ok := p.earliestCooldownExpiry(); ok {
@@ -253,7 +281,7 @@ func (p *PooledService) acquireAvailableWait(ctx context.Context, req Request, s
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return 0, 0, nil, nil, ctx.Err()
+			return poolAcquisition{}, ctx.Err()
 		case <-timer.C:
 		}
 		if backoff < time.Second {
@@ -289,7 +317,7 @@ func (p *PooledService) earliestCooldownExpiry() (time.Time, bool) {
 	return earliest, found
 }
 
-func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin, refreshPin int) (<-chan StreamEvent, error) {
+func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin, refreshPin int, tentative *tentativePin) (<-chan StreamEvent, error) {
 	attemptCtx, cancel := context.WithCancel(ctx)
 	events, err := p.clients[index].service.Stream(attemptCtx, req)
 	if err != nil {
@@ -302,24 +330,29 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 			if !retried {
 				if alternate, inflight, altRelease, ok := p.acquireAlternate(req, index); ok {
 					unpin = firstPendingUnpin(req, unpin, index, reason)
+					p.moveTentative(tentative, index, alternate)
 					p.logSelection(req, alternate, false, true, false, inflight)
-					return p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin)
+					return p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin, tentative)
 				}
 			}
+			p.releaseTentative(tentative)
 			return nil, err
 		}
 		release()
 		if !retried && p.shouldFallback(index, err) {
+			p.releaseTentative(tentative)
 			if inflight, fbRelease, ok, _, _ := p.tryAcquireClient(req, 0, false); ok {
 				p.logSelection(req, 0, true, false, false, inflight)
-				return p.streamAttempt(ctx, req, 0, true, fbRelease, unpin, refreshPin)
+				return p.streamAttempt(ctx, req, 0, true, fbRelease, unpin, refreshPin, nil)
 			}
+			return nil, err
 		}
+		p.releaseTentative(tentative)
 		return nil, err
 	}
 
 	out := make(chan StreamEvent, 1)
-	go p.forwardAttempt(ctx, cancel, req, index, events, out, retried, release, unpin, refreshPin)
+	go p.forwardAttempt(ctx, cancel, req, index, events, out, retried, release, unpin, refreshPin, tentative)
 	return out, nil
 }
 
@@ -334,13 +367,24 @@ func (p *PooledService) forwardAttempt(
 	release func(),
 	unpin *pendingUnpin,
 	refreshPin int,
+	tentative *tentativePin,
 ) {
 	defer close(out)
 	defer cancel()
+	tentativePending := tentative != nil
+	defer func() {
+		if tentativePending {
+			p.releaseTentative(tentative)
+		}
+	}()
 
 	first, ok := receivePoolEvent(ctx, events)
 	if !ok {
 		release()
+		if tentativePending {
+			p.releaseTentative(tentative)
+			tentativePending = false
+		}
 		if err := ctx.Err(); err != nil {
 			trySendContextError(out, err)
 		}
@@ -355,13 +399,15 @@ func (p *PooledService) forwardAttempt(
 				cancel()
 				release()
 				unpin = firstPendingUnpin(req, unpin, index, reason)
+				p.moveTentative(tentative, index, alternate)
 				p.logSelection(req, alternate, false, true, false, inflight)
-				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin)
+				tentativePending = false
+				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin, tentative)
 				if err != nil {
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
 				}
-				p.forwardRemaining(ctx, out, retryEvents, nil)
+				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
 				return
 			}
 		}
@@ -369,12 +415,17 @@ func (p *PooledService) forwardAttempt(
 
 	defer release()
 	if first.Err != nil {
+		if tentativePending {
+			p.releaseTentative(tentative)
+			tentativePending = false
+		}
 		p.sendPoolEvent(ctx, out, first)
 		return
 	}
 	if first.Done {
 		// Commit affinity before the terminal event can release a queued turn.
-		p.recordSuccessfulSelection(req, index, unpin, refreshPin)
+		p.recordSuccessfulTentativeSelection(req, index, unpin, refreshPin, tentative)
+		tentativePending = false
 		p.sendPoolEvent(ctx, out, first)
 		return
 	}
@@ -382,14 +433,21 @@ func (p *PooledService) forwardAttempt(
 		return
 	}
 	p.forwardRemaining(ctx, out, events, func() {
-		p.recordSuccessfulSelection(req, index, unpin, refreshPin)
+		p.recordSuccessfulTentativeSelection(req, index, unpin, refreshPin, tentative)
+		tentativePending = false
+	}, func() {
+		p.releaseTentative(tentative)
+		tentativePending = false
 	})
 }
 
-func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func()) {
+func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func(), failure func()) {
 	for {
 		select {
 		case <-ctx.Done():
+			if failure != nil {
+				failure()
+			}
 			trySendContextError(out, ctx.Err())
 			return
 		case event, ok := <-events:
@@ -400,6 +458,9 @@ func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamE
 				return
 			}
 			if event.Err != nil {
+				if failure != nil {
+					failure()
+				}
 				p.sendPoolEvent(ctx, out, event)
 				return
 			}
@@ -412,6 +473,9 @@ func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamE
 				return
 			}
 			if !p.sendPoolEvent(ctx, out, event) {
+				if failure != nil {
+					failure()
+				}
 				return
 			}
 		}
@@ -522,43 +586,159 @@ func (p *PooledService) shouldFallback(index int, err error) bool {
 	return false
 }
 
-// acquireAvailable leases the sticky client when it is healthy (not cooling and
-// under the inflight cap). Otherwise it walks other clients in shard order.
-// Prefer cooldown errors when every client is cooling; otherwise saturation.
-func (p *PooledService) acquireAvailable(req Request, selected int) (int, int, func(), *pendingUnpin, error) {
+// acquireAvailable resolves affinity, checks health and capacity, and leases a
+// client in one critical section. Explicit new keys get a tentative placement
+// immediately so concurrent sibling turns cannot choose different accounts.
+func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
+	now := p.now()
+	var cooldownSkips []acquireCooldownSkip
+	var saturated []acquireSaturatedClient
+
+	p.mu.Lock()
+	owner := p.selectIndex(req)
+	preferred := owner
+	explicitAffinity := hasExplicitAffinity(req)
+	var tentative *tentativePin
+	pinned := false
+	if explicitAffinity {
+		key := affinityKey(req)
+		if element := p.softPins[key]; element != nil {
+			pin := element.Value.(*softPin)
+			if pin.expiresAt.After(now) {
+				preferred = pin.index
+				pinned = true
+				p.softPinLRU.MoveToFront(element)
+			} else {
+				p.removeSoftPinLocked(element)
+			}
+		}
+		if !pinned {
+			tentative = p.tentativePins[key]
+			if tentative != nil {
+				preferred = tentative.index
+			}
+		}
+	}
+
 	sawEligible := false
-	selectedCooling := false
-	var selectedCooldownClass FailureClass
+	preferredEligible := false
+	preferredInflight := 0
+	sticky := pinned || tentative != nil
+	candidate := -1
+	candidateInflight := p.maxInflight
+	var preferredCooldownClass FailureClass
+	preferredCooling := false
 	for offset := range len(p.clients) {
-		index := (selected + offset) % len(p.clients)
-		inflight, release, acquired, class, cooling := p.tryAcquireClient(req, index, false)
-		if cooling {
-			if index == selected {
-				selectedCooldownClass = class
-				selectedCooling = true
+		index := (preferred + offset) % len(p.clients)
+		cooldown := p.cooldowns[index]
+		if !cooldown.until.After(now) {
+			p.cooldowns[index] = clientCooldown{}
+		} else {
+			if index == preferred {
+				preferredCooldownClass = cooldown.class
+				preferredCooling = true
+			}
+			if !sticky || !preferredEligible || index == preferred {
+				cooldownSkips = append(cooldownSkips, acquireCooldownSkip{index: index, class: cooldown.class})
 			}
 			continue
 		}
+
 		sawEligible = true
-		if acquired {
-			var unpin *pendingUnpin
-			if selectedCooling && index != selected {
-				unpin = firstPendingUnpin(req, nil, selected, unpinReasonCooldown)
+		label := p.clients[index].label
+		current := p.inflight[label]
+		if current >= p.maxInflight {
+			if !sticky || !preferredEligible || index == preferred {
+				saturated = append(saturated, acquireSaturatedClient{index: index, inflight: current})
 			}
-			return index, inflight, release, unpin, nil
+			continue
+		}
+		if index == preferred {
+			preferredEligible = true
+			preferredInflight = current
+		}
+		if candidate == -1 || current < candidateInflight {
+			candidate = index
+			candidateInflight = current
 		}
 	}
-	if !sawEligible {
-		if req.AllowCooling {
-			inflight, release, acquired, _, _ := p.tryAcquireClient(req, selected, true)
-			if acquired {
-				return selected, inflight, release, nil, nil
-			}
-			return 0, 0, nil, nil, p.saturatedError(req)
+
+	if candidate != -1 {
+		if preferredEligible && (sticky || preferredInflight-candidateInflight < initialLoadBalanceGap) {
+			candidate = preferred
 		}
-		return 0, 0, nil, nil, allClientsCoolingError(selectedCooldownClass)
+		label := p.clients[candidate].label
+		p.inflight[label]++
+		inflight := p.inflight[label]
+		if explicitAffinity && !pinned {
+			key := affinityKey(req)
+			if tentative == nil {
+				tentative = &tentativePin{key: key, index: candidate}
+				p.tentativePins[key] = tentative
+			} else if preferredCooling && candidate != preferred {
+				tentative.index = candidate
+			}
+			tentative.refs++
+		}
+		p.mu.Unlock()
+		p.observeAcquireSkips(req, cooldownSkips, saturated)
+		var unpin *pendingUnpin
+		if preferredCooling && candidate != preferred {
+			unpin = firstPendingUnpin(req, nil, preferred, unpinReasonCooldown)
+		}
+		return poolAcquisition{
+			index:     candidate,
+			preferred: preferred,
+			inflight:  inflight,
+			release:   p.releaseClient(req, candidate, label),
+			unpin:     unpin,
+			tentative: tentative,
+			pinned:    pinned,
+		}, nil
 	}
-	return 0, 0, nil, nil, p.saturatedError(req)
+
+	if !sawEligible && req.AllowCooling {
+		label := p.clients[preferred].label
+		current := p.inflight[label]
+		if current < p.maxInflight {
+			current++
+			p.inflight[label] = current
+			if explicitAffinity && !pinned {
+				key := affinityKey(req)
+				if tentative == nil {
+					tentative = &tentativePin{key: key, index: preferred}
+					p.tentativePins[key] = tentative
+				}
+				tentative.refs++
+			}
+			p.mu.Unlock()
+			p.observeAcquireSkips(req, cooldownSkips, saturated)
+			return poolAcquisition{
+				index:     preferred,
+				preferred: preferred,
+				inflight:  current,
+				release:   p.releaseClient(req, preferred, label),
+				tentative: tentative,
+				pinned:    pinned,
+			}, nil
+		}
+		saturated = append(saturated, acquireSaturatedClient{index: preferred, inflight: current})
+	}
+	p.mu.Unlock()
+	p.observeAcquireSkips(req, cooldownSkips, saturated)
+	if !sawEligible && !req.AllowCooling {
+		return poolAcquisition{}, allClientsCoolingError(preferredCooldownClass)
+	}
+	return poolAcquisition{}, p.saturatedError(req)
+}
+
+func (p *PooledService) observeAcquireSkips(req Request, cooldowns []acquireCooldownSkip, saturated []acquireSaturatedClient) {
+	for _, cooldown := range cooldowns {
+		p.metrics.ObservePoolCooldownSkip(p.clients[cooldown.index].label, string(cooldown.class))
+	}
+	for _, client := range saturated {
+		p.logClientSaturated(req, client.index, client.inflight)
+	}
 }
 
 func (p *PooledService) acquireAlternate(req Request, failed int) (int, int, func(), bool) {
@@ -597,8 +777,12 @@ func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bo
 	p.inflight[label] = current
 	p.mu.Unlock()
 
+	return current, p.releaseClient(req, index, label), true, "", false
+}
+
+func (p *PooledService) releaseClient(req Request, index int, label string) func() {
 	var once sync.Once
-	release := func() {
+	return func() {
 		once.Do(func() {
 			p.mu.Lock()
 			if p.inflight[label] > 0 {
@@ -609,7 +793,6 @@ func (p *PooledService) tryAcquireClient(req Request, index int, allowCooling bo
 			p.logRelease(req, index, remaining)
 		})
 	}
-	return current, release, true, "", false
 }
 
 func (p *PooledService) saturatedError(req Request) error {
@@ -639,7 +822,7 @@ func (p *PooledService) selectIndex(req Request) int {
 
 func (p *PooledService) preferredIndex(req Request) (int, bool) {
 	selected := p.selectIndex(req)
-	if len(p.clients) == 1 {
+	if len(p.clients) == 1 || !hasExplicitAffinity(req) {
 		return selected, false
 	}
 	key := affinityKey(req)
@@ -659,8 +842,21 @@ func (p *PooledService) preferredIndex(req Request) (int, bool) {
 	return pin.index, true
 }
 
+func (p *PooledService) recordSuccessfulTentativeSelection(req Request, index int, unpin *pendingUnpin, refreshPin int, tentative *tentativePin) {
+	if p.promoteTentative(tentative, index) {
+		if unpin != nil && unpin.from != index {
+			p.logUnpin(req, unpin.from, index, unpin.reason)
+		}
+		return
+	}
+	if tentative != nil {
+		refreshPin = index
+	}
+	p.recordSuccessfulSelection(req, index, unpin, refreshPin)
+}
+
 func (p *PooledService) recordSuccessfulSelection(req Request, index int, unpin *pendingUnpin, refreshPin int) {
-	if len(p.clients) == 1 {
+	if len(p.clients) == 1 || !hasExplicitAffinity(req) {
 		return
 	}
 	key := affinityKey(req)
@@ -686,6 +882,47 @@ func (p *PooledService) recordSuccessfulSelection(req Request, index int, unpin 
 	if shouldLog {
 		p.logUnpin(req, unpin.from, index, unpin.reason)
 	}
+}
+
+func (p *PooledService) promoteTentative(tentative *tentativePin, index int) bool {
+	if tentative == nil {
+		return false
+	}
+	now := p.now()
+	p.mu.Lock()
+	if p.tentativePins[tentative.key] != tentative {
+		p.mu.Unlock()
+		return false
+	}
+	delete(p.tentativePins, tentative.key)
+	p.setSoftPinLocked(tentative.key, index, now)
+	p.mu.Unlock()
+	return true
+}
+
+func (p *PooledService) releaseTentative(tentative *tentativePin) {
+	if tentative == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.tentativePins[tentative.key] == tentative {
+		tentative.refs--
+		if tentative.refs <= 0 {
+			delete(p.tentativePins, tentative.key)
+		}
+	}
+	p.mu.Unlock()
+}
+
+func (p *PooledService) moveTentative(tentative *tentativePin, from int, to int) {
+	if tentative == nil || from == to {
+		return
+	}
+	p.mu.Lock()
+	if p.tentativePins[tentative.key] == tentative && tentative.index == from {
+		tentative.index = to
+	}
+	p.mu.Unlock()
 }
 
 func (p *PooledService) setSoftPinLocked(key string, index int, now time.Time) {
@@ -724,6 +961,10 @@ func affinityKey(req Request) string {
 		return req.AffinityKeyHash
 	}
 	return "global"
+}
+
+func hasExplicitAffinity(req Request) bool {
+	return req.AffinityKey != "" || req.AffinityKeyHash != ""
 }
 
 func (p *PooledService) logSelection(req Request, index int, fallback bool, rotated bool, pinned bool, inflight int) {

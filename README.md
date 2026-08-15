@@ -39,6 +39,34 @@ NGROK_DOMAIN=YOUR_SUBDOMAIN.ngrok-free.dev NGROK_AUTHTOKEN=... \
   docker compose -f docker-compose.yml -f docker-compose.cursor.yml -f docker-compose.ngrok.yml up --build -d
 ```
 
+To pool two local Codex accounts, place each account's `auth.json` under
+`~/.open-agent-api/accounts/{primary,secondary}/` and add the accounts override:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.cursor.yml \
+  -f docker-compose.accounts.yml \
+  up --build -d
+```
+
+The override admits 32 Codex requests globally with a hard limit of 16 inflight
+requests per account (`2 × 16 = 32`). This avoids the upstream tail-latency
+cliff observed at 36–40 active requests. Capacity-aware placement keeps new
+conversations balanced within that budget, while tentative then successful
+affinity keeps concurrent and subsequent turns from an established Cursor
+thread on one account. Affinity-less structured requests remain independently
+balanced and never create a global pin. The per-key active limit is 1, so one
+conversation cannot execute simultaneous turns while separate Cursor agents
+still fan out. Connect-time and first-event rate-limit/quota failures cool the
+affected account and retry one alternate. A stream cannot move accounts after
+output begins.
+
+The accounts override explicitly keeps Gemini and Claude at 20 active requests;
+all limits retain their existing environment-variable override syntax.
+Credential directories are mounted read-write only so OAuth refresh can
+persist; they remain outside the repository.
+
 | Cursor field | Value |
 | --- | --- |
 | OpenAI API Key | `local-open-agent-api` (any non-empty string) |
