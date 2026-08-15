@@ -519,12 +519,16 @@ func TestLoadInvalidAgentQueueLimit(t *testing.T) {
 	}
 }
 
-func TestLoadInvalidAgentQueueTimeout(t *testing.T) {
+func TestLoadAllowsUnlimitedAgentQueueTimeout(t *testing.T) {
 	t.Setenv("CODEX_AGENT_QUEUE_TIMEOUT", "0s")
 	chdir(t, t.TempDir())
 
-	if _, err := Load(nil); err == nil {
-		t.Fatal("Load() error = nil, want invalid agent queue timeout error")
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentQueueTimeout != 0 {
+		t.Fatalf("AgentQueueTimeout = %s, want unlimited (0)", cfg.AgentQueueTimeout)
 	}
 }
 

@@ -1,0 +1,14 @@
+# Local Cursor baseline. Compose with docker-compose.yml and
+# docker-compose.ngrok.yml; all values remain overridable for soak testing.
+services:
+  api:
+    environment:
+      CODEX_AGENT_MAX_ACTIVE: "${CODEX_AGENT_MAX_ACTIVE:-2}"
+      CODEX_AGENT_MAX_ACTIVE_PER_KEY: "${CODEX_AGENT_MAX_ACTIVE_PER_KEY:-1}"
+      CODEX_CLIENT_MAX_INFLIGHT: "${CODEX_CLIENT_MAX_INFLIGHT:-2}"
+      CODEX_AGENT_QUEUE_LIMIT: "${CODEX_AGENT_QUEUE_LIMIT:-200}"
+      # 0s means wait until request cancellation, including while the queue is full.
+      CODEX_AGENT_QUEUE_TIMEOUT: "${CODEX_AGENT_QUEUE_TIMEOUT:-0s}"
+      CODEX_CLIENT_COOLDOWN_DEFAULT: "${CODEX_CLIENT_COOLDOWN_DEFAULT:-1m}"
+      CODEX_TIMEOUT: "${CODEX_TIMEOUT:-45m}"
+      CODEX_STREAM_IDLE_TIMEOUT: "${CODEX_STREAM_IDLE_TIMEOUT:-240s}"
