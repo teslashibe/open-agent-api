@@ -74,8 +74,15 @@ Coding agents: see [`AGENTS.md`](AGENTS.md).
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions` (stream + non-stream)
+- `GET /metrics` (Prometheus; authenticated when `GATEWAY_BEARER_SECRET` is set)
 
 JSON honors `Accept-Encoding` (**gzip** / **brotli** / **deflate**). Streaming chat completions stay uncompressed so SSE flushes stay timely.
+
+Metrics are enabled by default. Key chat series are
+`codex_chat_api_request_duration_seconds`, `codex_chat_api_tokens_total`, and
+`codex_chat_api_fast_tier_requests_total`. The Cursor compose profile sets
+`CODEX_STREAM_IDLE_TIMEOUT=0s`: valid reasoning can be silent for minutes, so
+that profile relies on cancellation and the unchanged 45-minute overall timeout.
 
 ```bash
 go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088

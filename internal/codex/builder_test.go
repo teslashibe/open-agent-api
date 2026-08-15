@@ -16,7 +16,7 @@ func TestBuildFaithfulRequestUsesProfileScaffoldAndTurnShape(t *testing.T) {
 		{Role: "system", Content: openai.TextContent("system rules")},
 		{Role: "user", Content: openai.TextContent("hello")},
 		{Role: "assistant", Content: openai.TextContent("hi")},
-	}, "", "session-123", requestKindTurn, "high", "low")
+	}, "", "session-123", requestKindTurn, "high", "low", "")
 
 	if payload["type"] != "response.create" {
 		t.Fatalf("type = %v", payload["type"])
@@ -83,7 +83,7 @@ func TestBuildFaithfulRequestUsesProfileScaffoldAndTurnShape(t *testing.T) {
 func TestBuildFaithfulPrewarmRequestHasGenerateFalseAndEmptyInput(t *testing.T) {
 	builder := fixtureBuilder()
 
-	payload := builder.buildFaithful(nil, "override-model", "session-123", requestKindPrewarm, "medium", "medium")
+	payload := builder.buildFaithful(nil, "override-model", "session-123", requestKindPrewarm, "medium", "medium", "")
 
 	if payload["model"] != "override-model" {
 		t.Fatalf("model = %v", payload["model"])
@@ -134,6 +134,35 @@ func TestBuildMinimalRequest(t *testing.T) {
 	input := payload["input"].([]any)
 	if got := input[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]; got != "hello there" {
 		t.Fatalf("message text = %v", got)
+	}
+}
+
+func TestBuildersIncludeServiceTierOnlyWhenRequested(t *testing.T) {
+	builder := fixtureBuilder()
+	fast, err := builder.buildMinimal(Request{
+		Model: "gpt-5.6-sol", ReasoningEffort: "low", Verbosity: "low",
+		ServiceTier: "priority",
+		Messages:    []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fast["service_tier"] != "priority" {
+		t.Fatalf("minimal service_tier = %v", fast["service_tier"])
+	}
+	ordinary, err := builder.buildMinimal(Request{
+		Model: "gpt-5.6-sol", ReasoningEffort: "low", Verbosity: "low",
+		Messages: []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ordinary["service_tier"]; ok {
+		t.Fatal("ordinary payload unexpectedly includes service_tier")
+	}
+	faithful := builder.buildFaithful(nil, "gpt-5.6-sol", "session-123", requestKindPrewarm, "low", "low", "priority")
+	if faithful["service_tier"] != "priority" {
+		t.Fatalf("faithful prewarm service_tier = %v", faithful["service_tier"])
 	}
 }
 

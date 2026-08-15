@@ -14,6 +14,7 @@ import (
 	"github.com/teslashibe/open-agent-api/internal/codex"
 	"github.com/teslashibe/open-agent-api/internal/config"
 	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 func TestMetricsEndpointRecordsRequestsAndQueueWait(t *testing.T) {
@@ -173,6 +174,42 @@ func TestActiveStreamsGaugeReturnsToZero(t *testing.T) {
 	body := scrapeServerMetrics(t, app, nil)
 	if !strings.Contains(body, `codex_chat_api_active_streams{provider="codex"} 0`) {
 		t.Fatalf("active stream gauge did not return to zero:\n%s", body)
+	}
+}
+
+func TestChatTelemetryRecordsFastTierAndStreamingUsage(t *testing.T) {
+	cfg := config.Defaults()
+	metrics := metricspkg.New(true)
+	service := fakeCodexService{stream: func(_ context.Context, req codex.Request) (<-chan codex.StreamEvent, error) {
+		if req.ServiceTier != "priority" {
+			t.Fatalf("ServiceTier = %q, want priority", req.ServiceTier)
+		}
+		events := make(chan codex.StreamEvent, 2)
+		events <- codex.StreamEvent{Delta: "ok"}
+		events <- codex.StreamEvent{Done: true, Usage: openai.Usage{PromptTokens: 8, CompletionTokens: 3, TotalTokens: 11}}
+		close(events)
+		return events, nil
+	}}
+	app := New(cfg, WithCodexService(service), WithMetrics(metrics), WithLogOutput(io.Discard), fixedServerOptions())
+
+	resp := doJSON(t, app, `{"model":"gpt-5.6-sol-fast","stream":true,"messages":[{"role":"user","content":"sensitive prompt"}]}`)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	body := scrapeServerMetrics(t, app, nil)
+	for _, want := range []string{
+		`codex_chat_api_request_duration_seconds_count{provider="codex",result="success"} 1`,
+		`codex_chat_api_tokens_total{kind="prompt",provider="codex"} 8`,
+		`codex_chat_api_tokens_total{kind="completion",provider="codex"} 3`,
+		`codex_chat_api_tokens_total{kind="total",provider="codex"} 11`,
+		`codex_chat_api_fast_tier_requests_total{provider="codex",result="success",tier="priority"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "sensitive prompt") || strings.Contains(body, "gpt-5.6-sol-fast") {
+		t.Fatalf("metrics leaked caller-controlled values:\n%s", body)
 	}
 }
 

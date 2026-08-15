@@ -16,6 +16,7 @@ func TestModelAliases(t *testing.T) {
 	want := []string{
 		"gpt-5.6-sol", "gpt-5.6",
 		"gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max",
+		"gpt-5.6-sol-fast", "gpt-5.6-sol-fast-low", "gpt-5.6-sol-fast-medium", "gpt-5.6-sol-fast-high", "gpt-5.6-sol-fast-xhigh", "gpt-5.6-sol-fast-max",
 		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max",
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
 		"gpt-5.6-luna-fast", "codex-sol", "codex-terra", "codex-luna",
@@ -60,6 +61,7 @@ func TestResolveModelAlias(t *testing.T) {
 		wantUpstream  string
 		wantEffort    string
 		wantVerbosity string
+		wantTier      string
 	}{
 		{
 			name:          "empty model uses default",
@@ -75,6 +77,15 @@ func TestResolveModelAlias(t *testing.T) {
 			wantUpstream:  DefaultModel,
 			wantEffort:    "high",
 			wantVerbosity: "low",
+		},
+		{
+			name:          "sol fast bare uses low reasoning",
+			model:         "gpt-5.6-sol-fast",
+			wantID:        "gpt-5.6-sol-fast",
+			wantUpstream:  DefaultModel,
+			wantEffort:    "low",
+			wantVerbosity: "low",
+			wantTier:      "priority",
 		},
 		{
 			name:          "terra max alias",
@@ -212,7 +223,8 @@ func TestResolveModelAlias(t *testing.T) {
 			if alias.ID != tc.wantID ||
 				alias.UpstreamModel != tc.wantUpstream ||
 				alias.ReasoningEffort != tc.wantEffort ||
-				alias.Verbosity != tc.wantVerbosity {
+				alias.Verbosity != tc.wantVerbosity ||
+				alias.ServiceTier != tc.wantTier {
 				t.Fatalf("ResolveModelAlias(%q) = %#v", tc.model, alias)
 			}
 		})

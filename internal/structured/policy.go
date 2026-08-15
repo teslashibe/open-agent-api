@@ -21,6 +21,12 @@ func DefaultModels() []string {
 		"gpt-5.6-sol-low",
 		"gpt-5.6-sol-medium",
 		"gpt-5.6-sol-high",
+		"gpt-5.6-sol-fast",
+		"gpt-5.6-sol-fast-low",
+		"gpt-5.6-sol-fast-medium",
+		"gpt-5.6-sol-fast-high",
+		"gpt-5.6-sol-fast-xhigh",
+		"gpt-5.6-sol-fast-max",
 		"gpt-5.6-terra",
 		"gpt-5.6-terra-low",
 		"gpt-5.6-terra-medium",
@@ -41,6 +47,7 @@ type ResolvedModel struct {
 	// ReasoningEffort and Verbosity are the alias defaults.
 	ReasoningEffort string
 	Verbosity       string
+	ServiceTier     string
 }
 
 // Policy is the structured model allowlist plus its stable version. The
@@ -77,6 +84,7 @@ func NewPolicy(models []string, providerEnabled func(string) bool) Policy {
 			Provider:        provider,
 			ReasoningEffort: alias.ReasoningEffort,
 			Verbosity:       alias.Verbosity,
+			ServiceTier:     alias.ServiceTier,
 		}
 		policy.order = append(policy.order, id)
 	}
@@ -128,7 +136,7 @@ func policyVersion(p Policy) string {
 	hash := sha256.New()
 	for _, id := range p.order {
 		model := p.models[id]
-		_, _ = hash.Write([]byte(model.ID + "\x00" + model.Upstream + "\x00" + model.Provider + "\x1e"))
+		_, _ = hash.Write([]byte(model.ID + "\x00" + model.Upstream + "\x00" + model.Provider + "\x00" + model.ServiceTier + "\x1e"))
 	}
 	return hex.EncodeToString(hash.Sum(nil))[:16]
 }

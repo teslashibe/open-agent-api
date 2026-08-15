@@ -202,6 +202,7 @@ func runStructuredInference(
 		},
 		ReasoningEffort: defaultString(req.ReasoningEffort, model.ReasoningEffort),
 		Verbosity:       defaultString(req.Verbosity, model.Verbosity),
+		ServiceTier:     model.ServiceTier,
 		RequestID:       logRequestID,
 		// Extraction turns off tools, the faithful profile/scaffold, and prewarm.
 		Extraction:     true,

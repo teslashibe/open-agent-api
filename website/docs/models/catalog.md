@@ -28,18 +28,24 @@ GPT-5.6 ChatGPT/Codex context is ~272K tokens (not the API card’s 1.05M).
 
 Routed when the upstream model is not Gemini/Claude/Antigravity-gateway. Auth: `CODEX_HOME` / `CODEX_AUTH_PATH` (`~/.codex/auth.json`).
 
-### GPT-5.6 Sol (default tier)
+### GPT-5.6 Sol (default and Fast tiers)
 
-| Public ID | Upstream | Effort | Verbosity |
-| --- | --- | --- | --- |
-| `gpt-5.6-sol` | `gpt-5.6-sol` | `low` | `low` |
-| `gpt-5.6` | `gpt-5.6-sol` | `medium` | `low` |
-| `gpt-5.6-sol-low` | `gpt-5.6-sol` | `low` | `low` |
-| `gpt-5.6-sol-medium` | `gpt-5.6-sol` | `medium` | `low` |
-| `gpt-5.6-sol-high` | `gpt-5.6-sol` | `high` | `low` |
-| `gpt-5.6-sol-xhigh` | `gpt-5.6-sol` | `xhigh` | `low` |
-| `gpt-5.6-sol-max` | `gpt-5.6-sol` | `max` | `low` |
-| `codex-sol` | `gpt-5.6-sol` | `low` | `low` |
+| Public ID | Upstream | Effort | Verbosity | Service tier |
+| --- | --- | --- | --- | --- |
+| `gpt-5.6-sol` | `gpt-5.6-sol` | `low` | `low` | default |
+| `gpt-5.6` | `gpt-5.6-sol` | `medium` | `low` | default |
+| `gpt-5.6-sol-low` | `gpt-5.6-sol` | `low` | `low` | default |
+| `gpt-5.6-sol-medium` | `gpt-5.6-sol` | `medium` | `low` | default |
+| `gpt-5.6-sol-high` | `gpt-5.6-sol` | `high` | `low` | default |
+| `gpt-5.6-sol-xhigh` | `gpt-5.6-sol` | `xhigh` | `low` | default |
+| `gpt-5.6-sol-max` | `gpt-5.6-sol` | `max` | `low` | default |
+| `gpt-5.6-sol-fast` | `gpt-5.6-sol` | `low` | `low` | `priority` (Fast, 1.5x speed) |
+| `gpt-5.6-sol-fast-low` | `gpt-5.6-sol` | `low` | `low` | `priority` |
+| `gpt-5.6-sol-fast-medium` | `gpt-5.6-sol` | `medium` | `low` | `priority` |
+| `gpt-5.6-sol-fast-high` | `gpt-5.6-sol` | `high` | `low` | `priority` |
+| `gpt-5.6-sol-fast-xhigh` | `gpt-5.6-sol` | `xhigh` | `low` | `priority` |
+| `gpt-5.6-sol-fast-max` | `gpt-5.6-sol` | `max` | `low` | `priority` |
+| `codex-sol` | `gpt-5.6-sol` | `low` | `low` | default |
 
 ### GPT-5.6 Terra
 
@@ -159,7 +165,7 @@ Routed for Claude Code short names, dated IDs, and `api/claude-*` prefixes. Auth
 | --- | --- |
 | Everyday Agent | `gpt-5.6-terra` |
 | Hard tasks | `gpt-5.6-sol-high` |
-| Fast Codex | `gpt-5.6-luna-fast` |
+| Fast Codex | `gpt-5.6-sol-fast` |
 | Fastest cheap turn | `gemini-3.1-flash-lite` |
 | Gemini Pro (Antigravity) | `gemini-3.1-pro-high` |
 | Antigravity Claude | `claude-sonnet-4-6` |

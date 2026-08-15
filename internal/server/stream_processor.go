@@ -32,8 +32,10 @@ type streamProcessor struct {
 	created int64
 	model   *string
 
-	streamID string
-	outcome  *string
+	streamID      string
+	outcome       *string
+	provider      string
+	usageRecorded bool
 
 	deltas, toolDeltas, upstreamEvents *int
 	textBytes, toolArgChars            *int
@@ -89,6 +91,7 @@ func newStreamProcessor(
 	created int64,
 	model *string,
 	streamID string,
+	provider string,
 	outcome *string,
 	deltas, toolDeltas, upstreamEvents *int,
 	textBytes, toolArgChars *int,
@@ -106,6 +109,7 @@ func newStreamProcessor(
 		created:             created,
 		model:               model,
 		streamID:            streamID,
+		provider:            provider,
 		outcome:             outcome,
 		deltas:              deltas,
 		toolDeltas:          toolDeltas,
@@ -424,6 +428,10 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 
 func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textMode deltaTextMode) (stop bool) {
 	*p.upstreamEvents++
+	if !p.usageRecorded && event.Usage != (openai.Usage{}) {
+		p.opts.metrics.ObserveChatUsage(p.provider, event.Usage.PromptTokens, event.Usage.CompletionTokens, event.Usage.TotalTokens)
+		p.usageRecorded = true
+	}
 	if event.Err != nil {
 		if write {
 			failureClass := codex.ClassifyFailure(event.Err)
@@ -560,13 +568,14 @@ func deliverToolStream(
 	created int64,
 	model string,
 	streamID string,
+	provider string,
 	upstreamStart time.Time,
 ) (outcome string, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, toolCallCount int, assistantText string, start time.Time, firstDeltaLatency time.Duration) {
 	outcome = "completed"
 	firstDeltaLatency = -1
 	var assistant strings.Builder
 	proc := newStreamProcessor(
-		ctx, cancel, w, opts, id, created, &model, streamID, &outcome,
+		ctx, cancel, w, opts, id, created, &model, streamID, provider, &outcome,
 		&deltas, &toolDeltas, &upstreamEvents, &textBytes, &toolArgChars, &assistant, new(bool),
 		upstreamStart, &firstDeltaLatency,
 	)

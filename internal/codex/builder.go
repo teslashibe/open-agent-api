@@ -54,7 +54,7 @@ func newRequestBuilder(profile Profile, scaffold Scaffold, codexHome string) req
 	return builder
 }
 
-func (b requestBuilder) buildFaithful(messages []openai.ChatMessage, model, sessionID string, kind requestKind, reasoningEffort, verbosity string) map[string]any {
+func (b requestBuilder) buildFaithful(messages []openai.ChatMessage, model, sessionID string, kind requestKind, reasoningEffort, verbosity, serviceTier string) map[string]any {
 	systemTexts, conversation := splitMessages(messages)
 
 	turnID := ""
@@ -115,6 +115,9 @@ func (b requestBuilder) buildFaithful(messages []openai.ChatMessage, model, sess
 	if kind == requestKindPrewarm {
 		payload["generate"] = false
 	}
+	if serviceTier != "" {
+		payload["service_tier"] = serviceTier
+	}
 	return payload
 }
 
@@ -135,6 +138,9 @@ func (b requestBuilder) buildMinimal(req Request) (map[string]any, error) {
 		"reasoning":        map[string]any{"effort": req.ReasoningEffort},
 		"text":             map[string]any{"verbosity": req.Verbosity},
 		"prompt_cache_key": b.newPromptCache(),
+	}
+	if req.ServiceTier != "" {
+		payload["service_tier"] = req.ServiceTier
 	}
 	// Extraction turns are structured inference: strict output format and no
 	// tool surface at all. Returning here guarantees no

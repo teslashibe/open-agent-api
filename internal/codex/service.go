@@ -22,6 +22,7 @@ type Request struct {
 	ParallelToolCalls *bool
 	ReasoningEffort   string
 	Verbosity         string
+	ServiceTier       string
 	Faithful          bool
 	Prewarm           bool
 	RequestID         string
