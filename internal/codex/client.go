@@ -355,9 +355,12 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 	}()
 	defer close(done)
 
-	var firstEventAt, firstTokenAt time.Time
+	var firstEventAt, firstTokenAt, lastUpstreamAt time.Time
 	defer func() {
-		completedAt := time.Now()
+		completedAt := lastUpstreamAt
+		if completedAt.IsZero() {
+			completedAt = time.Now()
+		}
 		c.metrics.ObserveCodexPhase(c.clientLabel, "total", completedAt.Sub(upstreamAt))
 		if !firstEventAt.IsZero() {
 			c.metrics.ObserveCodexPhase(c.clientLabel, "first_event_to_completion", completedAt.Sub(firstEventAt))
@@ -380,6 +383,7 @@ func (c *Client) readLoop(ctx context.Context, cancel context.CancelFunc, conn w
 
 		c.logCodexToolEvent(raw)
 		now := time.Now()
+		lastUpstreamAt = now
 		if firstEventAt.IsZero() {
 			firstEventAt = now
 			c.metrics.ObserveCodexPhase(c.clientLabel, "payload_to_first_event", now.Sub(payloadAt))
