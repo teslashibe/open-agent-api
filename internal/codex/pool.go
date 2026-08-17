@@ -405,6 +405,31 @@ func (p *PooledService) forwardAttempt(
 		}
 		return
 	}
+	// Upstream may emit ID/model metadata before any user-visible content.
+	// Hold it until the first substantive event so a transport failure remains
+	// safely retryable when Cursor has received no text or tool call.
+	var pendingMetadata StreamEvent
+	for first.Err == nil && !first.Done && !hasEmittedContent(first) {
+		mergeStreamMetadata(&pendingMetadata, first)
+		first, ok = receivePoolEvent(ctx, events)
+		if !ok {
+			if err := ctx.Err(); err != nil {
+				release()
+				if tentativePending {
+					p.releaseTentative(tentative)
+					tentativePending = false
+				}
+				trySendContextError(out, err)
+				return
+			}
+			p.recordSuccessfulTentativeSelection(req, index, unpin, refreshPin, tentative)
+			tentativePending = false
+			release()
+			p.sendPoolEvent(ctx, out, pendingMetadata)
+			return
+		}
+	}
+	mergeStreamMetadata(&first, pendingMetadata)
 	if reason, unhealthy := p.unpinReason(first.Err, PhaseFirstEvent); first.Err != nil && unhealthy {
 		if reason == unpinReasonCooldown {
 			p.coolClient(index, first.Err)
@@ -473,6 +498,25 @@ func (p *PooledService) forwardAttempt(
 		p.releaseTentative(tentative)
 		tentativePending = false
 	})
+}
+
+func hasEmittedContent(event StreamEvent) bool {
+	return event.Delta != "" ||
+		event.ReasoningDelta != "" ||
+		len(event.ToolCalls) > 0 ||
+		event.ToolCallDelta != nil
+}
+
+func mergeStreamMetadata(dst *StreamEvent, src StreamEvent) {
+	if dst.ID == "" {
+		dst.ID = src.ID
+	}
+	if dst.Model == "" {
+		dst.Model = src.Model
+	}
+	if dst.Usage.TotalTokens == 0 && dst.Usage.PromptTokens == 0 && dst.Usage.CompletionTokens == 0 {
+		dst.Usage = src.Usage
+	}
 }
 
 func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func(), failure func()) {
