@@ -430,12 +430,26 @@ func (p *PooledService) forwardAttempt(
 		}
 	}
 	mergeStreamMetadata(&first, pendingMetadata)
-	if reason, unhealthy := p.unpinReason(first.Err, PhaseFirstEvent); first.Err != nil && unhealthy {
+	reason, unhealthy := p.unpinReason(first.Err, PhaseFirstEvent)
+	if first.Err != nil {
+		p.logf(
+			"codex_first_event_retry_check request_id=%s shard=%d client_label=%s retried=%t eligible=%t reason=%s failure_class=%s\n",
+			requestID(req),
+			index,
+			p.clients[index].label,
+			retried,
+			unhealthy,
+			reason,
+			ClassifyFailure(first.Err),
+		)
+	}
+	if first.Err != nil && unhealthy {
 		if reason == unpinReasonCooldown {
 			p.coolClient(index, first.Err)
 		}
 		if !retried {
 			if alternate, inflight, altRelease, available := p.acquireAlternate(req, index); available {
+				p.logTransportRetry(req, index, "alternate", "acquired", alternate, inflight, "", false)
 				cancel()
 				release()
 				unpin = firstPendingUnpin(req, unpin, index, reason)
@@ -450,16 +464,23 @@ func (p *PooledService) forwardAttempt(
 				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
 				return
 			}
+			p.logTransportRetry(req, index, "alternate", "unavailable", -1, 0, "", false)
 			if reason == unpinReasonTransport {
 				cancel()
 				release()
 				tentativePending = false
-				inflight, retryRelease, available, _, _ := p.tryAcquireClient(req, index, false)
+				inflight, retryRelease, available, cooldownClass, cooling := p.tryAcquireClient(req, index, false)
 				if !available {
+					blockedBy := "saturated"
+					if cooling {
+						blockedBy = "cooldown"
+					}
+					p.logTransportRetry(req, index, "same_client", blockedBy, index, inflight, cooldownClass, cooling)
 					p.releaseTentative(tentative)
 					p.sendPoolEvent(ctx, out, first)
 					return
 				}
+				p.logTransportRetry(req, index, "same_client", "acquired", index, inflight, "", false)
 				p.logSelection(req, index, false, true, false, inflight)
 				retryEvents, err := p.streamAttempt(ctx, req, index, true, retryRelease, unpin, refreshPin, tentative)
 				if err != nil {
@@ -470,6 +491,9 @@ func (p *PooledService) forwardAttempt(
 				return
 			}
 		}
+	}
+	if first.Err != nil && reason == unpinReasonTransport {
+		p.logTransportRetry(req, index, "none", "not_retried", -1, 0, "", false)
 	}
 
 	defer release()
@@ -517,6 +541,21 @@ func mergeStreamMetadata(dst *StreamEvent, src StreamEvent) {
 	if dst.Usage.TotalTokens == 0 && dst.Usage.PromptTokens == 0 && dst.Usage.CompletionTokens == 0 {
 		dst.Usage = src.Usage
 	}
+}
+
+func (p *PooledService) logTransportRetry(req Request, from int, target, result string, to, inflight int, cooldownClass FailureClass, cooling bool) {
+	p.logf(
+		"codex_transport_retry request_id=%s from_shard=%d from_client=%s target=%s result=%s to_shard=%d inflight=%d cooldown=%t cooldown_class=%s\n",
+		requestID(req),
+		from,
+		p.clients[from].label,
+		target,
+		result,
+		to,
+		inflight,
+		cooling,
+		cooldownClass,
+	)
 }
 
 func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func(), failure func()) {
