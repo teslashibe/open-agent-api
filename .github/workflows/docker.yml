@@ -185,7 +185,9 @@ jobs:
               return tuple(map(int, match.groups()))
 
           target = version(sys.argv[3])
-          print("yes" if target > version(sys.argv[1]) and target > version(sys.argv[2]) else "no")
+          prod = version(sys.argv[1])
+          eu = version(sys.argv[2])
+          print("yes" if target >= prod and target >= eu and (target > prod or target > eu) else "no")
           PY
             )"
             if [ "$FORWARD_DEPLOY" != "yes" ]; then
@@ -234,12 +236,5 @@ jobs:
           else
             git commit -m "deploy(open-agent-api): ${{ steps.target.outputs.env }} -> ${{ steps.target.outputs.tag }}"
           fi
-          for attempt in 1 2 3 4 5; do
-            git pull --rebase origin main
-            if git push origin main; then
-              exit 0
-            fi
-            sleep $((attempt * 2))
-          done
-          echo "Failed to push GitOps pins after 5 attempts" >&2
-          exit 1
+          git pull --rebase origin main
+          git push origin main
