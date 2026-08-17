@@ -12,6 +12,10 @@
 # of this exact commit: checks -> build-and-push -> verify-provenance -> deploy.
 name: docker
 
+concurrency:
+  group: open-agent-api-release-${{ github.ref_type == 'tag' && 'prod' || github.ref }}
+  cancel-in-progress: false
+
 on:
   push:
     branches: [main]
@@ -149,12 +153,15 @@ jobs:
         id: target
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
             echo "env=prod" >> "$GITHUB_OUTPUT"
             echo "file=manifests/prod/kustomization.yaml" >> "$GITHUB_OUTPUT"
+            echo "eu_file=manifests/smore-agents/internal-services/kustomization.yaml" >> "$GITHUB_OUTPUT"
             echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
             echo "env=dev" >> "$GITHUB_OUTPUT"
             echo "file=manifests/dev/kustomization.yaml" >> "$GITHUB_OUTPUT"
+            echo "eu_file=" >> "$GITHUB_OUTPUT"
             echo "tag=sha-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
@@ -163,6 +170,31 @@ jobs:
           set -euo pipefail
           FILE="${{ steps.target.outputs.file }}"
           TAG="${{ steps.target.outputs.tag }}"
+          EU_FILE="${{ steps.target.outputs.eu_file }}"
+          if [ -n "$EU_FILE" ]; then
+            PROD_TAG="$(sed -nE 's#.*ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):([^[:space:]]+).*#\2#p' "$FILE" | head -1)"
+            EU_TAG="$(sed -nE 's#.*value: ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):([^[:space:]]+).*#\2#p' "$EU_FILE")"
+            FORWARD_DEPLOY="$(python3 - "$PROD_TAG" "$EU_TAG" "$TAG" <<'PY'
+          import re
+          import sys
+
+          def version(value):
+              match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", value)
+              if not match:
+                  raise SystemExit(f"invalid release tag: {value}")
+              return tuple(map(int, match.groups()))
+
+          target = version(sys.argv[3])
+          prod = version(sys.argv[1])
+          eu = version(sys.argv[2])
+          print("yes" if target >= prod and target >= eu and (target > prod or target > eu) else "no")
+          PY
+            )"
+            if [ "$FORWARD_DEPLOY" != "yes" ]; then
+              echo "Prod/EU already pin ${PROD_TAG}/${EU_TAG}; refusing non-forward deploy ${TAG}"
+              exit 0
+            fi
+          fi
           if grep -qE 'ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):' "$FILE"; then
             sed -i -E "s#ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):[^[:space:]]+#ghcr.io/teslashibe/open-agent-api:${TAG}#g" "$FILE"
           else
@@ -173,19 +205,36 @@ jobs:
             echo "deploy verification failed: open-agent-api was not pinned to ${TAG}" >&2
             exit 1
           fi
+          if [ -n "$EU_FILE" ]; then
+            if ! grep -qE 'value: ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):' "$EU_FILE"; then
+              echo "deploy verification failed: no EU open-agent-api image pin in ${EU_FILE}" >&2
+              exit 1
+            fi
+            sed -i -E "s#value: ghcr\\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):[^[:space:]]+#value: ghcr.io/teslashibe/open-agent-api:${TAG}#g" "$EU_FILE"
+            if ! grep -q "value: ghcr.io/teslashibe/open-agent-api:${TAG}" "$EU_FILE"; then
+              echo "deploy verification failed: EU open-agent-api was not pinned to ${TAG}" >&2
+              exit 1
+            fi
+          fi
           echo "---- diff ----"
-          git --no-pager diff -- "$FILE" || true
+          git --no-pager diff -- "$FILE" ${EU_FILE:+"$EU_FILE"} || true
 
       - name: Commit & push to k8s-control
         run: |
           set -euo pipefail
           FILE="${{ steps.target.outputs.file }}"
-          if git diff --quiet -- "$FILE"; then
+          EU_FILE="${{ steps.target.outputs.eu_file }}"
+          if git diff --quiet -- "$FILE" ${EU_FILE:+"$EU_FILE"}; then
             echo "No image change for ${{ steps.target.outputs.env }}; nothing to commit."
             exit 0
           fi
           git config user.name "open-agent-api-ci[bot]"
           git config user.email "open-agent-api-ci@users.noreply.github.com"
-          git add "$FILE"
-          git commit -m "deploy(open-agent-api): ${{ steps.target.outputs.env }} -> ${{ steps.target.outputs.tag }}"
+          git add "$FILE" ${EU_FILE:+"$EU_FILE"}
+          if [ -n "$EU_FILE" ]; then
+            git commit -m "deploy(open-agent-api): prod + eu -> ${{ steps.target.outputs.tag }}"
+          else
+            git commit -m "deploy(open-agent-api): ${{ steps.target.outputs.env }} -> ${{ steps.target.outputs.tag }}"
+          fi
+          git pull --rebase origin main
           git push origin main
