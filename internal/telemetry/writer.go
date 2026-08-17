@@ -1,22 +1,25 @@
 package telemetry
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Writer mirrors telemetry to stdout and an optional bounded, rotating file.
 type Writer struct {
-	mu      sync.Mutex
-	stdout  io.Writer
-	path    string
-	maxSize int64
-	backups int
-	file    *os.File
-	size    int64
+	mu       sync.Mutex
+	stdout   io.Writer
+	path     string
+	maxSize  int64
+	backups  int
+	file     *os.File
+	size     int64
+	lineOpen bool
 }
 
 func New(stdout io.Writer, path string, maxSize int64, backups int) (*Writer, error) {
@@ -41,12 +44,30 @@ func (w *Writer) Write(p []byte) (int, error) {
 	if w.file == nil {
 		return n, stdoutErr
 	}
-	if w.maxSize > 0 && w.size+int64(len(p)) > w.maxSize {
+	lines := bytes.SplitAfter(p, []byte("\n"))
+	timestamped := make([]byte, 0, len(p)+len(lines)*len(time.RFC3339Nano))
+	startedAsContinuation := w.lineOpen
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		if !w.lineOpen {
+			timestamped = append(timestamped, time.Now().UTC().Format(time.RFC3339Nano)...)
+			timestamped = append(timestamped, ' ')
+		}
+		timestamped = append(timestamped, line...)
+		w.lineOpen = line[len(line)-1] != '\n'
+	}
+	if w.maxSize > 0 && w.size+int64(len(timestamped)) > w.maxSize {
 		if err := w.rotate(); err != nil {
 			return n, fmt.Errorf("rotate telemetry file: %w", err)
 		}
+		if startedAsContinuation {
+			prefix := []byte(time.Now().UTC().Format(time.RFC3339Nano) + " ")
+			timestamped = append(prefix, timestamped...)
+		}
 	}
-	fileN, fileErr := w.file.Write(p)
+	fileN, fileErr := w.file.Write(timestamped)
 	w.size += int64(fileN)
 	if stdoutErr != nil {
 		return n, stdoutErr
@@ -67,7 +88,7 @@ func (w *Writer) Close() error {
 }
 
 func (w *Writer) open() error {
-	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o640)
 	if err != nil {
 		return fmt.Errorf("open telemetry file: %w", err)
 	}
@@ -78,6 +99,20 @@ func (w *Writer) open() error {
 	}
 	w.file = file
 	w.size = info.Size()
+	if w.size > 0 {
+		last := []byte{0}
+		if _, err := file.ReadAt(last, w.size-1); err != nil {
+			file.Close()
+			return fmt.Errorf("read telemetry file tail: %w", err)
+		}
+		if last[0] != '\n' {
+			if _, err := file.Write([]byte("\n")); err != nil {
+				file.Close()
+				return fmt.Errorf("terminate telemetry file tail: %w", err)
+			}
+			w.size++
+		}
+	}
 	return nil
 }
 

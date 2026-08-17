@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWriterMirrorsAndPersists(t *testing.T) {
@@ -27,8 +28,13 @@ func TestWriterMirrorsAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(content); got != "request completed\n" {
+	got := string(content)
+	parts := strings.SplitN(got, " ", 2)
+	if len(parts) != 2 || parts[1] != "request completed\n" {
 		t.Fatalf("file = %q", got)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, parts[0]); err != nil {
+		t.Fatalf("timestamp = %q: %v", parts[0], err)
 	}
 }
 
