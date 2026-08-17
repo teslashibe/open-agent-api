@@ -651,10 +651,20 @@ func (p *PooledService) unpinReason(err error, phase FailurePhase) (string, bool
 	}
 	// A TLS record failure before the first upstream event is safe to retry:
 	// no assistant content or tool call has reached the caller.
-	if phase == PhaseFirstEvent && strings.Contains(err.Error(), "tls: bad record MAC") {
+	if phase == PhaseFirstEvent && errorChainContains(err, "tls: bad record MAC") {
 		return unpinReasonTransport, true
 	}
 	return "", false
+}
+
+func errorChainContains(err error, marker string) bool {
+	for err != nil {
+		if strings.Contains(err.Error(), marker) {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }
 
 func firstPendingUnpin(req Request, current *pendingUnpin, from int, reason string) *pendingUnpin {
