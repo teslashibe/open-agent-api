@@ -425,6 +425,25 @@ func (p *PooledService) forwardAttempt(
 				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
 				return
 			}
+			if reason == unpinReasonTransport {
+				cancel()
+				release()
+				tentativePending = false
+				inflight, retryRelease, available, _, _ := p.tryAcquireClient(req, index, false)
+				if !available {
+					p.releaseTentative(tentative)
+					p.sendPoolEvent(ctx, out, first)
+					return
+				}
+				p.logSelection(req, index, false, true, false, inflight)
+				retryEvents, err := p.streamAttempt(ctx, req, index, true, retryRelease, unpin, refreshPin, tentative)
+				if err != nil {
+					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
+					return
+				}
+				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
+				return
+			}
 		}
 	}
 
