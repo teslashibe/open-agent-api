@@ -246,7 +246,7 @@ func (p *PooledService) Stream(ctx context.Context, req Request) (<-chan StreamE
 		refreshPin = acquisition.preferred
 	}
 	p.logSelection(req, acquisition.index, false, acquisition.index != acquisition.preferred, acquisition.pinned && acquisition.index == acquisition.preferred, acquisition.inflight)
-	return p.streamAttempt(ctx, req, acquisition.index, false, acquisition.release, acquisition.unpin, refreshPin, acquisition.tentative)
+	return p.streamAttempt(ctx, req, acquisition.index, 0, acquisition.release, acquisition.unpin, refreshPin, acquisition.tentative)
 }
 
 // shouldWaitForAcquire waits on pool saturation for all traffic, and on
@@ -332,7 +332,7 @@ func (p *PooledService) earliestCooldownExpiry() (time.Time, bool) {
 	return earliest, found
 }
 
-func (p *PooledService) streamAttempt(ctx context.Context, req Request, index int, retried bool, release func(), unpin *pendingUnpin, refreshPin int, tentative *tentativePin) (<-chan StreamEvent, error) {
+func (p *PooledService) streamAttempt(ctx context.Context, req Request, index, retryCount int, release func(), unpin *pendingUnpin, refreshPin int, tentative *tentativePin) (<-chan StreamEvent, error) {
 	attemptCtx, cancel := context.WithCancel(ctx)
 	events, err := p.clients[index].service.Stream(attemptCtx, req)
 	if err != nil {
@@ -342,23 +342,23 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 				p.coolClient(index, err)
 			}
 			release()
-			if !retried {
+			if retryCount == 0 {
 				if alternate, inflight, altRelease, ok := p.acquireAlternate(req, index); ok {
 					unpin = firstPendingUnpin(req, unpin, index, reason)
 					p.moveTentative(tentative, index, alternate)
 					p.logSelection(req, alternate, false, true, false, inflight)
-					return p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin, tentative)
+					return p.streamAttempt(ctx, req, alternate, retryCount+1, altRelease, unpin, refreshPin, tentative)
 				}
 			}
 			p.releaseTentative(tentative)
 			return nil, err
 		}
 		release()
-		if !retried && p.shouldFallback(index, err) {
+		if retryCount == 0 && p.shouldFallback(index, err) {
 			p.releaseTentative(tentative)
 			if inflight, fbRelease, ok, _, _ := p.tryAcquireClient(req, 0, false); ok {
 				p.logSelection(req, 0, true, false, false, inflight)
-				return p.streamAttempt(ctx, req, 0, true, fbRelease, unpin, refreshPin, nil)
+				return p.streamAttempt(ctx, req, 0, retryCount+1, fbRelease, unpin, refreshPin, nil)
 			}
 			return nil, err
 		}
@@ -367,7 +367,7 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index in
 	}
 
 	out := make(chan StreamEvent, 1)
-	go p.forwardAttempt(ctx, cancel, req, index, events, out, retried, release, unpin, refreshPin, tentative)
+	go p.forwardAttempt(ctx, cancel, req, index, events, out, retryCount, release, unpin, refreshPin, tentative)
 	return out, nil
 }
 
@@ -378,7 +378,7 @@ func (p *PooledService) forwardAttempt(
 	index int,
 	events <-chan StreamEvent,
 	out chan<- StreamEvent,
-	retried bool,
+	retryCount int,
 	release func(),
 	unpin *pendingUnpin,
 	refreshPin int,
@@ -433,11 +433,11 @@ func (p *PooledService) forwardAttempt(
 	reason, unhealthy := p.unpinReason(first.Err, PhaseFirstEvent)
 	if first.Err != nil {
 		p.logf(
-			"codex_first_event_retry_check request_id=%s shard=%d client_label=%s retried=%t eligible=%t reason=%s failure_class=%s\n",
+			"codex_first_event_retry_check request_id=%s shard=%d client_label=%s retry_count=%d eligible=%t reason=%s failure_class=%s\n",
 			requestID(req),
 			index,
 			p.clients[index].label,
-			retried,
+			retryCount,
 			unhealthy,
 			reason,
 			ClassifyFailure(first.Err),
@@ -447,7 +447,7 @@ func (p *PooledService) forwardAttempt(
 		if reason == unpinReasonCooldown {
 			p.coolClient(index, first.Err)
 		}
-		if !retried {
+		if retryCount == 0 {
 			if alternate, inflight, altRelease, available := p.acquireAlternate(req, index); available {
 				p.logTransportRetry(req, index, "alternate", "acquired", alternate, inflight, "", false)
 				cancel()
@@ -456,7 +456,7 @@ func (p *PooledService) forwardAttempt(
 				p.moveTentative(tentative, index, alternate)
 				p.logSelection(req, alternate, false, true, false, inflight)
 				tentativePending = false
-				retryEvents, err := p.streamAttempt(ctx, req, alternate, true, altRelease, unpin, refreshPin, tentative)
+				retryEvents, err := p.streamAttempt(ctx, req, alternate, retryCount+1, altRelease, unpin, refreshPin, tentative)
 				if err != nil {
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
@@ -482,7 +482,7 @@ func (p *PooledService) forwardAttempt(
 				}
 				p.logTransportRetry(req, index, "same_client", "acquired", index, inflight, "", false)
 				p.logSelection(req, index, false, true, false, inflight)
-				retryEvents, err := p.streamAttempt(ctx, req, index, true, retryRelease, unpin, refreshPin, tentative)
+				retryEvents, err := p.streamAttempt(ctx, req, index, retryCount+1, retryRelease, unpin, refreshPin, tentative)
 				if err != nil {
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
@@ -490,6 +490,31 @@ func (p *PooledService) forwardAttempt(
 				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
 				return
 			}
+		}
+		if retryCount == 1 && reason == unpinReasonTransport {
+			cancel()
+			release()
+			tentativePending = false
+			inflight, retryRelease, available, cooldownClass, cooling := p.tryAcquireClient(req, index, false)
+			if available {
+				p.logTransportRetry(req, index, "same_client", "acquired", index, inflight, "", false)
+				p.logSelection(req, index, false, true, false, inflight)
+				retryEvents, err := p.streamAttempt(ctx, req, index, retryCount+1, retryRelease, unpin, refreshPin, tentative)
+				if err != nil {
+					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
+					return
+				}
+				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
+				return
+			}
+			blockedBy := "saturated"
+			if cooling {
+				blockedBy = "cooldown"
+			}
+			p.logTransportRetry(req, index, "same_client", blockedBy, index, inflight, cooldownClass, cooling)
+			p.releaseTentative(tentative)
+			p.sendPoolEvent(ctx, out, first)
+			return
 		}
 	}
 	if first.Err != nil && reason == unpinReasonTransport {
