@@ -33,6 +33,7 @@ const (
 	initialLoadBalanceGap    = 2
 	unpinReasonAuth          = "auth"
 	unpinReasonCooldown      = "cooldown"
+	unpinReasonServer        = "server"
 	unpinReasonTransport     = "transport"
 	unpinReasonUnavailable   = "unavailable"
 )
@@ -465,7 +466,7 @@ func (p *PooledService) forwardAttempt(
 				return
 			}
 			p.logTransportRetry(req, index, "alternate", "unavailable", -1, 0, "", false)
-			if reason == unpinReasonTransport {
+			if reason == unpinReasonTransport || reason == unpinReasonServer {
 				cancel()
 				release()
 				tentativePending = false
@@ -491,7 +492,7 @@ func (p *PooledService) forwardAttempt(
 				return
 			}
 		}
-		if retryCount == 1 && reason == unpinReasonTransport {
+		if retryCount == 1 && (reason == unpinReasonTransport || reason == unpinReasonServer) {
 			cancel()
 			release()
 			tentativePending = false
@@ -673,6 +674,13 @@ func (p *PooledService) unpinReason(err error, phase FailurePhase) (string, bool
 	}
 	if class == FailureAuth {
 		return unpinReasonAuth, true
+	}
+	if phase == PhaseFirstEvent {
+		if codexErr, ok := ErrorAs(err); ok &&
+			codexErr.Kind == ErrorKindUpstream &&
+			codexErr.Status >= http.StatusInternalServerError {
+			return unpinReasonServer, true
+		}
 	}
 	// A TLS record failure before the first upstream event is safe to retry:
 	// no assistant content or tool call has reached the caller.
