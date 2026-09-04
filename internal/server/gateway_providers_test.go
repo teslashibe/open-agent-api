@@ -115,3 +115,84 @@ func TestChatCompletionsAllowsEnabledProviders(t *testing.T) {
 		})
 	}
 }
+
+func TestChatCompletionsRoutesAllEnabledProviders(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.GatewayProviders = []string{"codex", "gemini", "claude"}
+
+	calls := map[string][]string{}
+	service := func(provider string) codex.Service {
+		return fakeCodexService{
+			complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+				calls[provider] = append(calls[provider], req.Model)
+				return codex.Completion{Text: provider, Model: req.Model}, nil
+			},
+		}
+	}
+	router := codex.Router{
+		Codex:  service("codex"),
+		Gemini: service("gemini"),
+		Claude: service("claude"),
+	}
+	app := New(cfg, WithCodexService(router), WithLogOutput(io.Discard), fixedServerOptions())
+
+	for _, model := range []string{"gpt-5.6-sol", "gpt-6-astra", "gemini-2.5-pro", "claude-sonnet-5"} {
+		resp := doJSON(t, app, `{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d, want %d", model, resp.StatusCode, http.StatusOK)
+		}
+	}
+
+	want := map[string][]string{
+		"codex":  {"gpt-5.6-sol", "gpt-6-astra"},
+		"gemini": {"gemini-2.5-pro"},
+		"claude": {"claude-sonnet-5"},
+	}
+	for provider, wantModels := range want {
+		if got := calls[provider]; strings.Join(got, ",") != strings.Join(wantModels, ",") {
+			t.Errorf("%s calls = %v, want %v", provider, got, wantModels)
+		}
+	}
+}
+
+func TestAstraUnavailableWhenCodexDisabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.GatewayProviders = []string{"gemini", "claude"}
+	var upstreamCalls atomic.Int64
+	service := fakeCodexService{
+		complete: func(ctx context.Context, req codex.Request) (codex.Completion, error) {
+			upstreamCalls.Add(1)
+			return codex.Completion{Text: "unexpected"}, nil
+		},
+	}
+	app := New(cfg, WithCodexService(service), WithLogOutput(io.Discard), fixedServerOptions())
+
+	modelsReq, err := http.NewRequest(http.MethodGet, "/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelsResp, err := app.Test(modelsReq)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer modelsResp.Body.Close()
+	var modelsBody openai.ModelListResponse
+	if err := json.NewDecoder(modelsResp.Body).Decode(&modelsBody); err != nil {
+		t.Fatalf("decode models response: %v", err)
+	}
+	for _, model := range modelsBody.Data {
+		if strings.HasPrefix(model.ID, "gpt-6-astra") {
+			t.Fatalf("model list contains disabled Codex model %q", model.ID)
+		}
+	}
+
+	resp := doJSON(t, app, `{"model":"gpt-6-astra","messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if calls := upstreamCalls.Load(); calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls)
+	}
+}

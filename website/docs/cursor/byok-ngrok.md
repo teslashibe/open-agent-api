@@ -6,7 +6,7 @@ description: Point Cursor at the API over a public HTTPS tunnel — localhost wo
 
 # Cursor BYOK + ngrok
 
-Use this API as a custom OpenAI-compatible endpoint for Cursor Chat, Cmd+K, and **Agent**. Tab autocomplete ignores custom endpoints.
+Use this API as a custom OpenAI-compatible endpoint for Cursor Chat, Cmd+K, and **Agent**. Tab autocomplete ignores custom endpoints. Available Codex IDs include GPT-6 Astra normal and `-fast` priority-tier aliases; GPT-5.6 Sol remains the default.
 
 ## Localhost doesn’t work
 

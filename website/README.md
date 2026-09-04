@@ -1,6 +1,6 @@
 # Open Agent API docs
 
-Docusaurus site for install, auth, Cursor BYOK, models, and contribution notes.
+Docusaurus site for install, auth, Cursor BYOK, models, Codex account usage/redemption, and contribution notes.
 
 ```bash
 npm install

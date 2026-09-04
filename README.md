@@ -9,9 +9,14 @@ A Go proxy that looks like OpenAI Chat Completions. Point Cursor BYOK (or any Op
 
 | Surface | Auth | Serves |
 | --- | --- | --- |
-| **Codex / ChatGPT** | `codex login` → `~/.codex/auth.json` | GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
+| **Codex / ChatGPT** | `codex login` → `~/.codex/auth.json` | GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
 | **Gemini / Antigravity** | `scripts/sync-antigravity-auth.sh` | Gemini 2.5/3.x + Antigravity gateway IDs |
 | **Claude Code** | `claude` CLI login / OAuth env | Haiku / Sonnet / Opus / Fable |
+
+GPT-6 Astra exposes `low` through `max`. Ultra is intentionally unsupported
+because official Codex Ultra adds proactive multi-agent delegation, while this
+gateway makes one upstream API request and cannot provide that orchestration
+honestly.
 
 > The Codex path is reverse-engineered from `codex_cli_rs`. Stay within each provider’s terms. Licensed under [MIT](LICENSE).
 
@@ -71,7 +76,7 @@ persist; they remain outside the repository.
 | --- | --- |
 | OpenAI API Key | `local-open-agent-api` (any non-empty string) |
 | Override OpenAI Base URL | `https://${NGROK_DOMAIN}/v1` (**not** `http://127.0.0.1…`) |
-| Model | e.g. `gpt-5.6-terra` — see [model catalog](https://teslashibe.github.io/open-agent-api/docs/models/catalog) |
+| Model | e.g. `gpt-6-astra` or `gpt-5.6-terra` — see [model catalog](https://teslashibe.github.io/open-agent-api/docs/models/catalog); `gpt-5.6-sol` remains the default |
 
 `docker-compose.cursor.yml` uses the high-throughput baseline proven by the
 shared Cursor/Report Studio gateway: 20 active requests globally and per key,

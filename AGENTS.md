@@ -4,11 +4,14 @@ OpenAI-compatible Go HTTP proxy for **Cursor BYOK** and any OpenAI SDK client. R
 
 | Surface | Auth | Models |
 | --- | --- | --- |
-| **Codex / ChatGPT** | `~/.codex/auth.json` (`codex login`) | GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
+| **Codex / ChatGPT** | `~/.codex/auth.json` (`codex login`) | GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
 | **Gemini / Antigravity** | `~/.gemini/antigravity_oauth_creds.json` (preferred) or CLI oauth | Gemini 2.5/3.x + Antigravity gateway IDs |
 | **Claude Code** | `claude` on PATH + CLI login | `haiku`, `sonnet`, `opus`, `fable`, dated/`api/claude-*` IDs |
 
-Default model when `model` is omitted: **`gpt-5.6-sol`**.
+Default model when `model` is omitted: **`gpt-5.6-sol`**. GPT-6 Astra exposes
+`low` through `max`; Ultra is intentionally unsupported because official
+Codex Ultra adds proactive multi-agent delegation, while this gateway makes
+one upstream API request and cannot provide that orchestration honestly.
 
 ## Run instantly
 
@@ -41,7 +44,7 @@ curl -s http://127.0.0.1:8088/health
 curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 ```
 
-Endpoints: `GET /health`, `GET /v1/models`, `POST /v1/chat/completions` (stream + non-stream).
+Endpoints: `GET /health`, `GET /v1/models`, `POST /v1/chat/completions` (stream + non-stream), plus bearer-protected Codex account usage and reset-credit redemption under `/v1/accounts`. Redemption requires `confirm: true` and a caller-generated UUID in `redeem_request_id`.
 
 `GATEWAY_PROVIDERS` (default `codex,gemini,claude`) filters `/v1/models` listing and routable models.
 

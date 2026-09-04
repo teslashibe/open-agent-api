@@ -8,7 +8,7 @@ If you’re a coding agent (Cursor Agent, Codex, Claude Code, and friends), star
 
 ## Quick version
 
-This service is an OpenAI-compatible proxy in front of Codex/ChatGPT, Gemini/Antigravity, and Claude Code — still no `sk-` keys.
+This service is an OpenAI-compatible proxy in front of Codex/ChatGPT, Gemini/Antigravity, and Claude Code — still no `sk-` keys. GPT-6 Astra uses canonical upstream ID `gpt-6-astra`; GPT-5.6 Sol remains the default.
 
 **Run it:**
 

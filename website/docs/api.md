@@ -13,10 +13,28 @@ The public surface is intentionally small — enough to look like OpenAI Chat Co
 | `GET` | `/health`, `/health/live` | Liveness — `{"status":"ok"}` when the process is up |
 | `GET` | `/health/ready` | Readiness — `503` while draining |
 | `GET` | `/v1/models` | Model list (filtered by `GATEWAY_PROVIDERS`) |
+| `GET` | `/v1/accounts/usage` | Codex account rate-limit windows and banked reset counts |
+| `POST` | `/v1/accounts/:label/reset-credits/redeem` | Redeem a banked Codex reset |
 | `POST` | `/v1/chat/completions` | Streaming and non-streaming chat |
 | `POST` | `/v1/structured/inference` | Structured JSON extraction — **off by default** |
 
 If you set `GATEWAY_BEARER_SECRET`, `/v1/*` needs `Authorization: Bearer …`. Health endpoints stay open for probes. Locally the secret is usually unset, so any non-empty bearer is fine.
+
+The account endpoints are Codex-only and always sit behind the `/v1` bearer
+gate. Redemption is an explicit mutation: send `confirm: true` and a
+caller-generated UUID as `redeem_request_id`. Reusing that UUID makes retries
+safe at the upstream redemption boundary.
+
+```bash
+curl -H "Authorization: Bearer $GATEWAY_BEARER_SECRET" \
+  http://127.0.0.1:8088/v1/accounts/usage
+
+curl -X POST \
+  -H "Authorization: Bearer $GATEWAY_BEARER_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"confirm":true,"redeem_request_id":"16fd2706-8baf-433b-82eb-8c7fada847da"}' \
+  http://127.0.0.1:8088/v1/accounts/default/reset-credits/redeem
+```
 
 ## Build provenance
 
