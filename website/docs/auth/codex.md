@@ -12,7 +12,7 @@ description: Authenticate the Codex upstream with codex login.
 codex login
 ```
 
-That writes `~/.codex/auth.json`.
+That writes `~/.codex/auth.json`. The same Codex credentials power chat plus the bearer-protected account usage and reset-credit redemption endpoints.
 
 ## Configuration
 

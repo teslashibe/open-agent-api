@@ -116,3 +116,24 @@ func TestRouterPassesAPIClaudeModelThrough(t *testing.T) {
 		t.Fatalf("claude model = %q", claudeSvc.model)
 	}
 }
+
+func TestProviderForModelCoversCLIProviders(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "gpt-6-astra", want: ProviderCodex},
+		{model: "gpt-6-astra-fast-max", want: ProviderCodex},
+		{model: "gemini-3.1-pro", want: ProviderGemini},
+		{model: "claude-sonnet-5", want: ProviderClaude},
+		{model: "api/claude-opus-4-8", want: ProviderClaude},
+		{model: "claude-sonnet-4-6", want: ProviderGemini},
+	}
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			if got := ProviderForModel(tc.model); got != tc.want {
+				t.Fatalf("ProviderForModel(%q) = %q, want %q", tc.model, got, tc.want)
+			}
+		})
+	}
+}

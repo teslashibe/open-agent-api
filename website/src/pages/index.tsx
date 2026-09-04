@@ -60,7 +60,7 @@ export default function Home(): ReactNode {
                 <h3>
                   <Link to="/docs/models/catalog">Models</Link>
                 </h3>
-                <p>Every public slug across Codex, Gemini, and Claude.</p>
+                <p>GPT-6 Astra and every public slug across Codex, Gemini, and Claude.</p>
               </div>
             </div>
           </div>

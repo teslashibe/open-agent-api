@@ -8,7 +8,7 @@ A small Go proxy that looks like the OpenAI Chat Completions API. Point Cursor B
 
 | Surface | Auth | What it serves |
 | --- | --- | --- |
-| **Codex / ChatGPT** | `codex login` → `~/.codex/auth.json` | GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
+| **Codex / ChatGPT** | `codex login` → `~/.codex/auth.json` | GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
 | **Gemini / Antigravity** | Antigravity or Gemini CLI oauth | Gemini 2.5/3.x + Antigravity gateway Claude/GPT-OSS IDs |
 | **Claude Code** | `claude` CLI login | Haiku / Sonnet / Opus / Fable |
 

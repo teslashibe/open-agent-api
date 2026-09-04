@@ -20,13 +20,28 @@ curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 
 GPT-5.6 ChatGPT/Codex context is ~272K tokens (not the API card’s 1.05M).
 
-`ultra` is a Codex product multi-agent mode, **not** a `reasoning.effort` value — there’s no `-ultra` alias.
+Ultra is intentionally unsupported. Official Codex Ultra adds proactive
+multi-agent delegation beyond `max` reasoning; this gateway makes one upstream
+API request and cannot provide that orchestration honestly. Raw Astra
+`reasoning.effort` values stop at `max`.
 
 ---
 
 ## Surface: Codex / ChatGPT
 
 Routed when the upstream model is not Gemini/Claude/Antigravity-gateway. Auth: `CODEX_HOME` / `CODEX_AUTH_PATH` (`~/.codex/auth.json`).
+
+### GPT-6 Astra (default and Fast tiers)
+
+| Public ID pattern | Upstream | Effort | Verbosity | Service tier |
+| --- | --- | --- | --- | --- |
+| `gpt-6-astra` | `gpt-6-astra` | `low` | `medium` | default |
+| `gpt-6-astra-{low,medium,high,xhigh,max}` | `gpt-6-astra` | suffix value | `medium` | default |
+| `gpt-6-astra-fast` | `gpt-6-astra` | `low` | `medium` | priority |
+| `gpt-6-astra-fast-{low,medium,high,xhigh,max}` | `gpt-6-astra` | suffix value | `medium` | priority |
+
+`fast` is the repository's public/legacy alias for upstream
+`service_tier: priority`.
 
 ### GPT-5.6 Sol (default and Fast tiers)
 

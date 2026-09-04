@@ -17,6 +17,8 @@ func TestModelAliases(t *testing.T) {
 		"gpt-5.6-sol", "gpt-5.6",
 		"gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max",
 		"gpt-5.6-sol-fast", "gpt-5.6-sol-fast-low", "gpt-5.6-sol-fast-medium", "gpt-5.6-sol-fast-high", "gpt-5.6-sol-fast-xhigh", "gpt-5.6-sol-fast-max",
+		"gpt-6-astra", "gpt-6-astra-low", "gpt-6-astra-medium", "gpt-6-astra-high", "gpt-6-astra-xhigh", "gpt-6-astra-max",
+		"gpt-6-astra-fast", "gpt-6-astra-fast-low", "gpt-6-astra-fast-medium", "gpt-6-astra-fast-high", "gpt-6-astra-fast-xhigh", "gpt-6-astra-fast-max",
 		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max",
 		"gpt-5.6-terra-fast", "gpt-5.6-terra-fast-low", "gpt-5.6-terra-fast-medium", "gpt-5.6-terra-fast-high", "gpt-5.6-terra-fast-xhigh", "gpt-5.6-terra-fast-max",
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
@@ -54,6 +56,41 @@ func TestModelAliases(t *testing.T) {
 	aliases[0].ID = "mutated"
 	if ModelAliases()[0].ID != DefaultModel {
 		t.Fatal("ModelAliases returned mutable package state")
+	}
+}
+
+func TestAstraAliases(t *testing.T) {
+	efforts := []string{"low", "medium", "high", "xhigh", "max"}
+	tests := []struct {
+		id     string
+		effort string
+		tier   string
+	}{
+		{id: "gpt-6-astra", effort: "low"},
+		{id: "gpt-6-astra-fast", effort: "low", tier: "priority"},
+	}
+	for _, effort := range efforts {
+		tests = append(tests,
+			struct {
+				id     string
+				effort string
+				tier   string
+			}{id: "gpt-6-astra-" + effort, effort: effort},
+			struct {
+				id     string
+				effort string
+				tier   string
+			}{id: "gpt-6-astra-fast-" + effort, effort: effort, tier: "priority"},
+		)
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.id, func(t *testing.T) {
+			got := ResolveModelAlias(tc.id)
+			if got.ID != tc.id || got.UpstreamModel != "gpt-6-astra" || got.ReasoningEffort != tc.effort || got.ServiceTier != tc.tier {
+				t.Fatalf("ResolveModelAlias(%q) = %#v", tc.id, got)
+			}
+		})
 	}
 }
 

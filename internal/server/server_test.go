@@ -230,13 +230,15 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 92 {
+	if body.Object != "list" || len(body.Data) != 104 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
 	wantIDs := []string{
 		"gpt-5.6-sol", "gpt-5.6",
 		"gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max",
 		"gpt-5.6-sol-fast", "gpt-5.6-sol-fast-low", "gpt-5.6-sol-fast-medium", "gpt-5.6-sol-fast-high", "gpt-5.6-sol-fast-xhigh", "gpt-5.6-sol-fast-max",
+		"gpt-6-astra", "gpt-6-astra-low", "gpt-6-astra-medium", "gpt-6-astra-high", "gpt-6-astra-xhigh", "gpt-6-astra-max",
+		"gpt-6-astra-fast", "gpt-6-astra-fast-low", "gpt-6-astra-fast-medium", "gpt-6-astra-fast-high", "gpt-6-astra-fast-xhigh", "gpt-6-astra-fast-max",
 		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max",
 		"gpt-5.6-terra-fast", "gpt-5.6-terra-fast-low", "gpt-5.6-terra-fast-medium", "gpt-5.6-terra-fast-high", "gpt-5.6-terra-fast-xhigh", "gpt-5.6-terra-fast-max",
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
@@ -406,6 +408,23 @@ func TestChatCompletionsModelAliases(t *testing.T) {
 			wantEffort:    "max",
 			wantVerbosity: "low",
 			wantFaithful:  true,
+		},
+		{
+			name:          "astra bare alias",
+			body:          `{"model":"gpt-6-astra","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gpt-6-astra",
+			wantEffort:    "low",
+			wantVerbosity: "medium",
+			wantFaithful:  true,
+		},
+		{
+			name:            "astra fast max alias",
+			body:            `{"model":"gpt-6-astra-fast-max","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:       "gpt-6-astra",
+			wantEffort:      "max",
+			wantVerbosity:   "medium",
+			wantServiceTier: "priority",
+			wantFaithful:    true,
 		},
 		{
 			name:            "sol fast alias",

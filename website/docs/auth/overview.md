@@ -10,7 +10,7 @@ Upstream auth uses **local CLI / OAuth credentials** — not OpenAI `sk-` keys. 
 
 | Surface | Credential | Setup |
 | --- | --- | --- |
-| **Codex / ChatGPT** | `~/.codex/auth.json` | [`codex login`](./codex) |
+| **Codex / ChatGPT** | `~/.codex/auth.json` | [`codex login`](./codex); chat plus account usage/redemption |
 | **Gemini / Antigravity** | `~/.gemini/antigravity_oauth_creds.json` (preferred) or `oauth_creds.json` | [Antigravity sync](./antigravity) |
 | **Claude Code** | `claude` CLI login / `CLAUDE_CODE_OAUTH_TOKEN` | [Claude Code](./claude-code) |
 

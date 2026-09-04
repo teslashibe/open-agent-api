@@ -61,6 +61,22 @@ func gpt56FastEffortLadder(upstream string) []ModelAlias {
 	}
 }
 
+// astraEffortLadders returns API-native normal and priority-tier aliases.
+// Codex Ultra also requires multi-agent orchestration this proxy cannot provide.
+func astraEffortLadders() []ModelAlias {
+	const upstream = "gpt-6-astra"
+	efforts := []string{"low", "medium", "high", "xhigh", "max"}
+	out := []ModelAlias{alias(upstream, upstream, "low", DefaultVerbosity)}
+	for _, effort := range efforts {
+		out = append(out, alias(upstream+"-"+effort, upstream, effort, DefaultVerbosity))
+	}
+	out = append(out, serviceTierAlias(upstream+"-fast", upstream, "low", DefaultVerbosity, "priority"))
+	for _, effort := range efforts {
+		out = append(out, serviceTierAlias(upstream+"-fast-"+effort, upstream, effort, DefaultVerbosity, "priority"))
+	}
+	return out
+}
+
 func gpt54EffortLadders() []ModelAlias {
 	const upstream = "gpt-5.4"
 	return []ModelAlias{
@@ -94,6 +110,7 @@ func buildModelAliases() []ModelAlias {
 		alias("gpt-5.6-sol-max", DefaultModel, "max", gpt56DefaultVerbosity),
 	}
 	out = append(out, gpt56FastEffortLadder(DefaultModel)...)
+	out = append(out, astraEffortLadders()...)
 	out = append(out, gpt56EffortLadder("gpt-5.6-terra")...)
 	out = append(out, gpt56FastEffortLadder("gpt-5.6-terra")...)
 	out = append(out, gpt56EffortLadder("gpt-5.6-luna")...)
