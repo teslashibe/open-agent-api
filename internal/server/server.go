@@ -34,6 +34,11 @@ import (
 
 type Option func(*options)
 
+type usageMonitor interface {
+	Usage(context.Context) codex.UsageResponse
+	Redeem(context.Context, string, string) (codex.RedemptionOutcome, error)
+}
+
 type options struct {
 	codexService       codex.Service
 	requestContext     func(*fiber.Ctx) context.Context
@@ -49,6 +54,7 @@ type options struct {
 	drain              *atomic.Bool
 	isLocal            func(*fiber.Ctx) bool
 	metrics            *metricspkg.Metrics
+	usageMonitor       usageMonitor
 	// Structured inference shares the Codex admission queue with interactive
 	// traffic. Interactive requests receive a higher queue priority while
 	// queued batch extraction uses every otherwise-idle slot.
@@ -85,6 +91,12 @@ func WithLogOutput(output io.Writer) Option {
 func WithMetrics(metrics *metricspkg.Metrics) Option {
 	return func(opts *options) {
 		opts.metrics = metrics
+	}
+}
+
+func WithUsageMonitor(monitor usageMonitor) Option {
+	return func(opts *options) {
+		opts.usageMonitor = monitor
 	}
 }
 
@@ -248,6 +260,10 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
 	app.Get("/v1/models", models(cfg))
+	if opts.usageMonitor != nil {
+		app.Get("/v1/accounts/usage", accountUsage(opts))
+		app.Post("/v1/accounts/:label/reset-credits/redeem", redeemResetCredit(opts))
+	}
 	app.Post("/v1/chat/completions", chatCompletions(opts))
 	// Registered only when explicitly enabled. While disabled the path falls
 	// through to the 404 handler, so the pre-ticket surface is unchanged.
@@ -259,6 +275,44 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	})
 
 	return app
+}
+
+func accountUsage(opts options) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		return c.JSON(opts.usageMonitor.Usage(opts.requestContext(c)))
+	}
+}
+
+func redeemResetCredit(opts options) fiber.Handler {
+	type redemptionRequest struct {
+		RedeemRequestID string `json:"redeem_request_id"`
+		Confirm         bool   `json:"confirm"`
+	}
+	return func(c *fiber.Ctx) error {
+		var request redemptionRequest
+		if err := c.BodyParser(&request); err != nil {
+			return writeError(c, fiber.StatusBadRequest, "invalid_request_error", "invalid request")
+		}
+		if !request.Confirm {
+			return writeError(c, fiber.StatusBadRequest, "confirmation_required", "explicit confirmation is required")
+		}
+		if _, err := uuid.Parse(request.RedeemRequestID); err != nil {
+			return writeError(c, fiber.StatusBadRequest, "invalid_idempotency_key", "redeem_request_id must be a UUID")
+		}
+		result, err := opts.usageMonitor.Redeem(opts.requestContext(c), c.Params("label"), request.RedeemRequestID)
+		if err == nil {
+			return c.JSON(result)
+		}
+		var redemptionErr *codex.RedemptionError
+		if errors.As(err, &redemptionErr) {
+			message := "redemption failed"
+			if redemptionErr.Code == "unknown_account" {
+				message = "account not found"
+			}
+			return writeError(c, redemptionErr.HTTPStatus, redemptionErr.Code, message)
+		}
+		return writeError(c, fiber.StatusBadGateway, "upstream_error", "redemption failed")
+	}
 }
 
 // skipResponseCompression disables Fiber compress for streaming chat

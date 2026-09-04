@@ -30,6 +30,9 @@ type Metrics struct {
 	codexInflight     *prometheus.GaugeVec
 	codexQueueDepth   prometheus.Gauge
 	codexRateLimit    *prometheus.GaugeVec
+	codexResetCredits *prometheus.GaugeVec
+	codexUsageSuccess *prometheus.GaugeVec
+	codexUsagePolls   *prometheus.CounterVec
 	queueWait         *prometheus.HistogramVec
 	activeStreams     *prometheus.GaugeVec
 	chatDuration      *prometheus.HistogramVec
@@ -95,6 +98,18 @@ func New(enabled bool) *Metrics {
 		Name: "codex_chat_api_upstream_rate_limit",
 		Help: "Latest recognized sanitized Codex rate-limit value by safe client label, source, limit type, and field.",
 	}, []string{"client_label", "source", "limit_type", "field"})
+	m.codexResetCredits = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "codex_chat_api_upstream_reset_credits",
+		Help: "Latest available Codex rate-limit reset credits by safe client label.",
+	}, []string{"client_label"})
+	m.codexUsageSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "codex_chat_api_upstream_usage_last_success_timestamp_seconds",
+		Help: "Unix timestamp of the latest successful Codex usage poll by safe client label.",
+	}, []string{"client_label"})
+	m.codexUsagePolls = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "codex_chat_api_upstream_usage_polls_total",
+		Help: "Total Codex usage polls by safe client label and bounded result.",
+	}, []string{"client_label", "result"})
 	m.queueWait = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "codex_chat_api_queue_wait_seconds",
 		Help:    "Agent queue wait time by provider and terminal admission result.",
@@ -153,6 +168,9 @@ func New(enabled bool) *Metrics {
 		m.codexInflight,
 		m.codexQueueDepth,
 		m.codexRateLimit,
+		m.codexResetCredits,
+		m.codexUsageSuccess,
+		m.codexUsagePolls,
 		m.queueWait,
 		m.activeStreams,
 		m.chatDuration,
@@ -206,7 +224,7 @@ func (m *Metrics) SetCodexRateLimit(clientLabel, source, limitType, field string
 		return
 	}
 	switch source {
-	case "event", "header":
+	case "event", "header", "usage":
 	default:
 		source = "other"
 	}
@@ -221,6 +239,23 @@ func (m *Metrics) SetCodexRateLimit(clientLabel, source, limitType, field string
 		return
 	}
 	m.codexRateLimit.WithLabelValues(normalizeClientLabel(clientLabel), source, limitType, field).Set(value)
+}
+
+func (m *Metrics) ObserveCodexUsage(clientLabel, result string, resetCredits int, observedAt time.Time) {
+	if !m.Enabled() {
+		return
+	}
+	switch result {
+	case "success", "auth_error", "timeout", "upstream_error", "invalid_response":
+	default:
+		result = "other"
+	}
+	label := normalizeClientLabel(clientLabel)
+	m.codexUsagePolls.WithLabelValues(label, result).Inc()
+	if result == "success" {
+		m.codexResetCredits.WithLabelValues(label).Set(float64(max(resetCredits, 0)))
+		m.codexUsageSuccess.WithLabelValues(label).Set(float64(observedAt.Unix()))
+	}
 }
 
 func (m *Metrics) ObserveChatDuration(provider, result string, duration time.Duration) {

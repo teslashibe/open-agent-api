@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/teslashibe/open-agent-api/internal/auth"
 	"github.com/teslashibe/open-agent-api/internal/claude"
 	"github.com/teslashibe/open-agent-api/internal/codex"
 	"github.com/teslashibe/open-agent-api/internal/config"
@@ -57,8 +58,16 @@ func run(args []string) error {
 		}
 	}
 	service := codex.Router{Codex: codexService, Gemini: geminiService, Claude: claudeService}
+	usageAccounts := make([]codex.UsageAccount, 0, len(cfg.CodexClients))
+	for _, client := range cfg.CodexClients {
+		usageAccounts = append(usageAccounts, codex.UsageAccount{
+			Label:  client.Label,
+			Source: auth.NewSource(client.AuthPath),
+		})
+	}
+	usageMonitor := codex.NewUsageMonitor(usageAccounts, metrics)
 
-	app := server.New(cfg, server.WithCodexService(service), server.WithMetrics(metrics), server.WithLogOutput(logOutput))
+	app := server.New(cfg, server.WithCodexService(service), server.WithMetrics(metrics), server.WithLogOutput(logOutput), server.WithUsageMonitor(usageMonitor))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
