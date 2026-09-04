@@ -49,6 +49,7 @@ type options struct {
 	drain              *atomic.Bool
 	isLocal            func(*fiber.Ctx) bool
 	metrics            *metricspkg.Metrics
+	usageMonitor       *codex.UsageMonitor
 	// Structured inference shares the Codex admission queue with interactive
 	// traffic. Interactive requests receive a higher queue priority while
 	// queued batch extraction uses every otherwise-idle slot.
@@ -85,6 +86,12 @@ func WithLogOutput(output io.Writer) Option {
 func WithMetrics(metrics *metricspkg.Metrics) Option {
 	return func(opts *options) {
 		opts.metrics = metrics
+	}
+}
+
+func WithUsageMonitor(monitor *codex.UsageMonitor) Option {
+	return func(opts *options) {
+		opts.usageMonitor = monitor
 	}
 }
 
@@ -248,6 +255,9 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
 	app.Get("/v1/models", models(cfg))
+	if opts.usageMonitor != nil {
+		app.Get("/v1/accounts/usage", accountUsage(opts))
+	}
 	app.Post("/v1/chat/completions", chatCompletions(opts))
 	// Registered only when explicitly enabled. While disabled the path falls
 	// through to the 404 handler, so the pre-ticket surface is unchanged.
@@ -259,6 +269,12 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	})
 
 	return app
+}
+
+func accountUsage(opts options) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		return c.JSON(opts.usageMonitor.Usage(opts.requestContext(c)))
+	}
 }
 
 // skipResponseCompression disables Fiber compress for streaming chat

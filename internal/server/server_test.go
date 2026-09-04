@@ -15,6 +15,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/teslashibe/open-agent-api/internal/auth"
 	"github.com/teslashibe/open-agent-api/internal/codex"
 	"github.com/teslashibe/open-agent-api/internal/config"
 	"github.com/teslashibe/open-agent-api/internal/openai"
@@ -261,6 +262,45 @@ func TestModels(t *testing.T) {
 			t.Fatalf("model[%d] = %#v, want id %q", i, model, wantID)
 		}
 	}
+}
+
+func TestAccountUsageRequiresBearerAndDoesNotLeakCredentials(t *testing.T) {
+	monitor := codex.NewUsageMonitor([]codex.UsageAccount{{
+		Label:  "configured-label",
+		Source: serverUsageSource{err: errors.New("secret@example.test secret-token secret-account /secret/auth.json")},
+	}}, nil)
+	cfg := config.Defaults()
+	cfg.GatewayBearerSecret = "gateway-secret"
+	app := New(cfg, WithUsageMonitor(monitor), WithLogOutput(io.Discard))
+
+	unauthorized := getStatus(t, app, "/v1/accounts/usage")
+	if unauthorized != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorized)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "/v1/accounts/usage", nil)
+	req.Header.Set("Authorization", "Bearer gateway-secret")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"label":"configured-label"`) {
+		t.Fatalf("status/body = %d %s", resp.StatusCode, body)
+	}
+	for _, secret := range []string{"secret@example.test", "secret-token", "secret-account", "auth.json"} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("response leaked %q: %s", secret, body)
+		}
+	}
+}
+
+type serverUsageSource struct {
+	err error
+}
+
+func (s serverUsageSource) Get(context.Context) (auth.Credentials, error) {
+	return auth.Credentials{}, s.err
 }
 
 func TestChatCompletionsModelAliases(t *testing.T) {
