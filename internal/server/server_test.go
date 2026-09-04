@@ -296,11 +296,95 @@ func TestAccountUsageRequiresBearerAndDoesNotLeakCredentials(t *testing.T) {
 }
 
 type serverUsageSource struct {
-	err error
+	creds auth.Credentials
+	err   error
+}
+
+type serverUsageMonitor struct {
+	usage      codex.UsageResponse
+	redemption codex.RedemptionOutcome
+	err        error
+	calls      int
+}
+
+func (m *serverUsageMonitor) Usage(context.Context) codex.UsageResponse {
+	m.calls++
+	return m.usage
+}
+
+func (m *serverUsageMonitor) Redeem(_ context.Context, label, _ string) (codex.RedemptionOutcome, error) {
+	m.calls++
+	if label != "configured-label" {
+		return codex.RedemptionOutcome{}, &codex.RedemptionError{Code: "unknown_account", HTTPStatus: http.StatusNotFound}
+	}
+	return m.redemption, m.err
 }
 
 func (s serverUsageSource) Get(context.Context) (auth.Credentials, error) {
-	return auth.Credentials{}, s.err
+	return s.creds, s.err
+}
+
+func TestRedeemResetCreditMethodAuthValidationAndSafeResponse(t *testing.T) {
+	const requestID = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	monitor := &serverUsageMonitor{redemption: codex.RedemptionOutcome{
+		Outcome:      "reset",
+		Label:        "configured-label",
+		WindowsReset: 1,
+		Usage:        codex.AccountUsage{Label: "configured-label", Status: "ok"},
+	}}
+	cfg := config.Defaults()
+	cfg.GatewayBearerSecret = "gateway-secret"
+	app := New(cfg, WithUsageMonitor(monitor), WithLogOutput(io.Discard))
+	path := "/v1/accounts/configured-label/reset-credits/redeem"
+
+	tests := []struct {
+		name       string
+		method     string
+		auth       bool
+		body       string
+		wantStatus int
+	}{
+		{"get rejected", http.MethodGet, true, "", http.StatusNotFound},
+		{"auth required", http.MethodPost, false, `{"confirm":true,"redeem_request_id":"` + requestID + `"}`, http.StatusUnauthorized},
+		{"empty rejected", http.MethodPost, true, "", http.StatusBadRequest},
+		{"confirmation required", http.MethodPost, true, `{"redeem_request_id":"` + requestID + `"}`, http.StatusBadRequest},
+		{"malformed uuid", http.MethodPost, true, `{"confirm":true,"redeem_request_id":"not-a-uuid"}`, http.StatusBadRequest},
+		{"unknown label", http.MethodPost, true, `{"confirm":true,"redeem_request_id":"` + requestID + `"}`, http.StatusNotFound},
+		{"success", http.MethodPost, true, `{"confirm":true,"redeem_request_id":"` + requestID + `"}`, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := path
+			if tt.name == "unknown label" {
+				target = "/v1/accounts/secret-account/reset-credits/redeem"
+			}
+			req, _ := http.NewRequest(tt.method, target, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			if tt.auth {
+				req.Header.Set("Authorization", "Bearer gateway-secret")
+			}
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status/body = %d %s", resp.StatusCode, body)
+			}
+			for _, secret := range []string{"secret-token", "secret-account", "secret@example.test"} {
+				if strings.Contains(string(body), secret) {
+					t.Fatalf("response leaked %q: %s", secret, body)
+				}
+			}
+			if tt.name == "success" && (!strings.Contains(string(body), `"outcome":"reset"`) || !strings.Contains(string(body), `"label":"configured-label"`)) {
+				t.Fatalf("unsafe or incomplete response: %s", body)
+			}
+		})
+	}
+	if monitor.calls != 2 {
+		t.Fatalf("monitor calls = %d, want unknown and successful requests", monitor.calls)
+	}
 }
 
 func TestChatCompletionsModelAliases(t *testing.T) {

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,8 +17,10 @@ import (
 
 const (
 	defaultUsageURL     = "https://chatgpt.com/backend-api/wham/usage"
+	defaultRedeemURL    = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
 	defaultUsageTimeout = 5 * time.Second
 	defaultUsageTTL     = 30 * time.Second
+	maxUsageBody        = 1 << 20
 )
 
 type UsageWindow struct {
@@ -53,14 +56,16 @@ type UsageMonitor struct {
 	accounts   []UsageAccount
 	httpClient *http.Client
 	url        string
+	redeemURL  string
 	timeout    time.Duration
 	ttl        time.Duration
 	now        func() time.Time
 	metrics    *metricspkg.Metrics
 
-	mu      sync.Mutex
-	cached  UsageResponse
-	expires time.Time
+	mu         sync.Mutex
+	cached     UsageResponse
+	expires    time.Time
+	generation uint64
 }
 
 func NewUsageMonitor(accounts []UsageAccount, metrics *metricspkg.Metrics) *UsageMonitor {
@@ -71,11 +76,126 @@ func NewUsageMonitor(accounts []UsageAccount, metrics *metricspkg.Metrics) *Usag
 		accounts:   accounts,
 		httpClient: http.DefaultClient,
 		url:        defaultUsageURL,
+		redeemURL:  defaultRedeemURL,
 		timeout:    defaultUsageTimeout,
 		ttl:        defaultUsageTTL,
 		now:        time.Now,
 		metrics:    metrics,
 	}
+}
+
+type RedemptionOutcome struct {
+	Outcome      string       `json:"outcome"`
+	Label        string       `json:"label"`
+	WindowsReset int64        `json:"windows_reset"`
+	Usage        AccountUsage `json:"usage"`
+}
+
+type RedemptionError struct {
+	Code       string
+	HTTPStatus int
+}
+
+func (e *RedemptionError) Error() string { return e.Code }
+
+func (m *UsageMonitor) Redeem(ctx context.Context, label, redeemRequestID string) (RedemptionOutcome, error) {
+	var account *UsageAccount
+	for i := range m.accounts {
+		if m.accounts[i].Label == label {
+			account = &m.accounts[i]
+			break
+		}
+	}
+	if account == nil {
+		return RedemptionOutcome{}, &RedemptionError{Code: "unknown_account", HTTPStatus: http.StatusNotFound}
+	}
+
+	redeemCtx, cancelRedeem := context.WithTimeout(ctx, m.timeout)
+	creds, err := account.Source.Get(redeemCtx)
+	if err != nil {
+		cancelRedeem()
+		return RedemptionOutcome{}, redemptionRequestError(redeemCtx, "auth_error", http.StatusBadGateway)
+	}
+	body, err := json.Marshal(struct {
+		RedeemRequestID string `json:"redeem_request_id"`
+	}{RedeemRequestID: redeemRequestID})
+	if err != nil {
+		cancelRedeem()
+		return RedemptionOutcome{}, &RedemptionError{Code: "invalid_response", HTTPStatus: http.StatusBadGateway}
+	}
+	req, err := http.NewRequestWithContext(redeemCtx, http.MethodPost, m.redeemURL, bytes.NewReader(body))
+	if err != nil {
+		cancelRedeem()
+		return RedemptionOutcome{}, &RedemptionError{Code: "upstream_error", HTTPStatus: http.StatusBadGateway}
+	}
+	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
+	req.Header.Set("ChatGPT-Account-ID", creds.AccountID)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		requestErr := redemptionRequestError(redeemCtx, "upstream_error", http.StatusBadGateway)
+		cancelRedeem()
+		return RedemptionOutcome{}, requestErr
+	}
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUsageBody+1))
+	closeErr := resp.Body.Close()
+	cancelRedeem()
+	if readErr != nil || closeErr != nil || len(responseBody) > maxUsageBody {
+		return RedemptionOutcome{}, &RedemptionError{Code: "invalid_response", HTTPStatus: http.StatusBadGateway}
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return RedemptionOutcome{}, &RedemptionError{Code: "auth_error", HTTPStatus: http.StatusBadGateway}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return RedemptionOutcome{}, &RedemptionError{Code: "rate_limited", HTTPStatus: http.StatusTooManyRequests}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return RedemptionOutcome{}, &RedemptionError{Code: "upstream_error", HTTPStatus: http.StatusBadGateway}
+	}
+	var upstream struct {
+		Code         string `json:"code"`
+		WindowsReset int64  `json:"windows_reset"`
+	}
+	if json.Unmarshal(responseBody, &upstream) != nil || !validRedemptionOutcome(upstream.Code) || upstream.WindowsReset < 0 {
+		return RedemptionOutcome{}, &RedemptionError{Code: "invalid_response", HTTPStatus: http.StatusBadGateway}
+	}
+
+	m.invalidate()
+	refreshCtx, cancelRefresh := context.WithTimeout(ctx, m.timeout)
+	refreshed := m.Usage(refreshCtx)
+	cancelRefresh()
+	usage := AccountUsage{Label: label, Status: "error", ErrorCode: "invalid_response"}
+	for _, current := range refreshed.Accounts {
+		if current.Label == label {
+			usage = current
+			break
+		}
+	}
+	return RedemptionOutcome{Outcome: upstream.Code, Label: label, WindowsReset: upstream.WindowsReset, Usage: usage}, nil
+}
+
+func validRedemptionOutcome(outcome string) bool {
+	switch outcome {
+	case "reset", "nothing_to_reset", "no_credit", "already_redeemed":
+		return true
+	default:
+		return false
+	}
+}
+
+func redemptionRequestError(ctx context.Context, fallback string, status int) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &RedemptionError{Code: "timeout", HTTPStatus: http.StatusGatewayTimeout}
+	}
+	return &RedemptionError{Code: fallback, HTTPStatus: status}
+}
+
+func (m *UsageMonitor) invalidate() {
+	m.mu.Lock()
+	m.generation++
+	m.expires = time.Time{}
+	m.mu.Unlock()
 }
 
 func (m *UsageMonitor) Usage(ctx context.Context) UsageResponse {
@@ -86,6 +206,7 @@ func (m *UsageMonitor) Usage(ctx context.Context) UsageResponse {
 		m.mu.Unlock()
 		return response
 	}
+	generation := m.generation
 	m.mu.Unlock()
 
 	accounts := make([]AccountUsage, len(m.accounts))
@@ -103,8 +224,10 @@ func (m *UsageMonitor) Usage(ctx context.Context) UsageResponse {
 
 	response := UsageResponse{Accounts: accounts}
 	m.mu.Lock()
-	m.cached = response
-	m.expires = m.now().Add(m.ttl)
+	if m.generation == generation {
+		m.cached = response
+		m.expires = m.now().Add(m.ttl)
+	}
 	m.mu.Unlock()
 	return response
 }
@@ -145,7 +268,7 @@ func (m *UsageMonitor) fetch(ctx context.Context, account UsageAccount) AccountU
 		m.metrics.ObserveCodexUsage(account.Label, result.ErrorCode, 0, observedAt)
 		return result
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUsageBody))
 	if err != nil {
 		result.ErrorCode = "invalid_response"
 		m.metrics.ObserveCodexUsage(account.Label, result.ErrorCode, 0, observedAt)
