@@ -104,9 +104,12 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name provenance -p 8088:8088 \
+            --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
             -e GATEWAY_PROVIDERS=codex \
             ghcr.io/${{ github.repository }}@${{ needs.build-and-push.outputs.digest }} \
             --host 0.0.0.0 --port 8088
+          docker exec provenance sh -c \
+            'test -r /app/codex_profile.json && test -r /app/codex_scaffold.json'
 
       - name: Assert /health reports this commit
         run: |
