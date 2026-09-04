@@ -280,6 +280,38 @@ func TestHeadersDoNotExposeTokenInErrors(t *testing.T) {
 	}
 }
 
+func TestHeadersUseCodex01532Identity(t *testing.T) {
+	client := &Client{builder: fixtureBuilder()}
+	creds := auth.Credentials{AccessToken: "token", AccountID: "acct_123"}
+
+	tests := []struct {
+		name      string
+		faithful  bool
+		userAgent string
+	}{
+		{name: "minimal", userAgent: "codex_cli_rs/0.153.2 (api wrapper) dumb"},
+		{name: "faithful", faithful: true, userAgent: "codex_cli_rs/0.153.2 (Mac OS 26.2.0; arm64) dumb"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := client.headers(creds, tt.faithful, "sid", requestKindTurn)
+			if got := headers.Get("Version"); got != "0.153.2" {
+				t.Fatalf("version header = %q, want %q", got, "0.153.2")
+			}
+			if got := headers.Get("User-Agent"); got != tt.userAgent {
+				t.Fatalf("user-agent header = %q, want %q", got, tt.userAgent)
+			}
+			for name, values := range headers {
+				for _, value := range values {
+					if strings.Contains(value, "0.144.1") {
+						t.Fatalf("%s header contains stale Codex identity: %q", name, value)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestOpenCapturesRetryAfterHeader(t *testing.T) {
 	authPath, codexHome := writeAuthFixture(t)
 	client := testClient(t, authPath, codexHome, "ws://example.test/codex")
