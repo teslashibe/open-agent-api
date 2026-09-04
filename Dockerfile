@@ -26,7 +26,7 @@ RUN apk add --no-cache ca-certificates tzdata nodejs npm \
 WORKDIR /app
 
 COPY --from=build /out/open-agent-api /usr/local/bin/open-agent-api
-COPY codex_profile.json codex_scaffold.json ./
+COPY --chmod=0644 codex_profile.json codex_scaffold.json ./
 
 EXPOSE 8088
 
