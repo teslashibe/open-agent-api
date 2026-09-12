@@ -183,7 +183,7 @@ func TestSourceRefreshFailureSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("Get() error = nil")
 	}
-	if !strings.Contains(err.Error(), "refresh_token_revoked") {
+	if !strings.Contains(err.Error(), "reason invalid_grant") || strings.Contains(err.Error(), "refresh_token_revoked") {
 		t.Fatalf("error = %v", err)
 	}
 }

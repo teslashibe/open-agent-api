@@ -16,3 +16,5 @@ coverage.out
 *.test
 .localgit/
 .git-local/
+
+/.worktrees/
