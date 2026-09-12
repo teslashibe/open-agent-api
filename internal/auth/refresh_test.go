@@ -18,6 +18,7 @@ func TestRefreshResponseContract(t *testing.T) {
 	}{
 		{"oauth string", 400, `{"error":"invalid_grant","error_description":"private-account-secret"}`, "invalid_grant"},
 		{"structured code", 401, `{"error":{"code":"refresh_token_reused","message":"private-account-secret"}}`, "refresh_token_reused"},
+		{"invalid refresh token", 401, `{"error":{"code":"invalid_refresh_token","message":"private-account-secret"}}`, "invalid_refresh_token"},
 		{"structured type", 401, `{"error":{"type":"invalid_grant","message":"private-account-secret"}}`, "invalid_grant"},
 		{"unknown code", 400, `{"error":{"code":"private-account-secret"}}`, "unknown_error"},
 		{"unknown string", 400, `{"error":"private-account-secret"}`, "unknown_error"},
