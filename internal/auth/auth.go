@@ -273,7 +273,7 @@ func refreshErrorReason(raw json.RawMessage) string {
 	case "invalid_grant", "invalid_client", "invalid_request", "unauthorized_client",
 		"unsupported_grant_type", "invalid_scope", "access_denied", "server_error",
 		"temporarily_unavailable", "refresh_token_reused", "refresh_token_expired",
-		"refresh_token_invalidated":
+		"refresh_token_invalidated", "invalid_refresh_token":
 		return code
 	default:
 		return "unknown_error"
