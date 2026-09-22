@@ -35,10 +35,10 @@ func alias(id, upstream, effort, verbosity string) ModelAlias {
 	}
 }
 
-// gpt56EffortLadder returns bare + effort aliases for a GPT-5.6 tier.
+// codexEffortLadder returns bare + effort aliases for a Codex model.
 // Upstream accepts none|minimal|low|medium|high|xhigh|max — not "ultra"
 // (ultra is a Codex product multi-agent mode, not a reasoning.effort value).
-func gpt56EffortLadder(upstream string) []ModelAlias {
+func codexEffortLadder(upstream string) []ModelAlias {
 	return []ModelAlias{
 		alias(upstream, upstream, DefaultReasoningEffort, gpt56DefaultVerbosity),
 		alias(upstream+"-low", upstream, "low", gpt56DefaultVerbosity),
@@ -49,8 +49,8 @@ func gpt56EffortLadder(upstream string) []ModelAlias {
 	}
 }
 
-// gpt56FastEffortLadder returns priority-tier aliases for every exposed effort.
-func gpt56FastEffortLadder(upstream string) []ModelAlias {
+// codexFastEffortLadder returns priority-tier aliases for every exposed effort.
+func codexFastEffortLadder(upstream string) []ModelAlias {
 	return []ModelAlias{
 		serviceTierAlias(upstream+"-fast", upstream, "low", gpt56DefaultVerbosity, "priority"),
 		serviceTierAlias(upstream+"-fast-low", upstream, "low", gpt56DefaultVerbosity, "priority"),
@@ -109,12 +109,16 @@ func buildModelAliases() []ModelAlias {
 		alias("gpt-5.6-sol-xhigh", DefaultModel, "xhigh", gpt56DefaultVerbosity),
 		alias("gpt-5.6-sol-max", DefaultModel, "max", gpt56DefaultVerbosity),
 	}
-	out = append(out, gpt56FastEffortLadder(DefaultModel)...)
+	out = append(out, codexFastEffortLadder(DefaultModel)...)
 	out = append(out, astraEffortLadders()...)
-	out = append(out, gpt56EffortLadder("gpt-5.6-terra")...)
-	out = append(out, gpt56FastEffortLadder("gpt-5.6-terra")...)
-	out = append(out, gpt56EffortLadder("gpt-5.6-luna")...)
-	out = append(out, gpt56FastEffortLadder("gpt-5.6-luna")...)
+	out = append(out, codexEffortLadder("gpt-6-sol")...)
+	out = append(out, codexFastEffortLadder("gpt-6-sol")...)
+	out = append(out, codexEffortLadder("gpt-6-luna")...)
+	out = append(out, codexFastEffortLadder("gpt-6-luna")...)
+	out = append(out, codexEffortLadder("gpt-5.6-terra")...)
+	out = append(out, codexFastEffortLadder("gpt-5.6-terra")...)
+	out = append(out, codexEffortLadder("gpt-5.6-luna")...)
+	out = append(out, codexFastEffortLadder("gpt-5.6-luna")...)
 	out = append(out, gpt54EffortLadders()...)
 	out = append(out,
 		alias("codex-sol", DefaultModel, "low", gpt56DefaultVerbosity),

@@ -19,6 +19,10 @@ func TestModelAliases(t *testing.T) {
 		"gpt-5.6-sol-fast", "gpt-5.6-sol-fast-low", "gpt-5.6-sol-fast-medium", "gpt-5.6-sol-fast-high", "gpt-5.6-sol-fast-xhigh", "gpt-5.6-sol-fast-max",
 		"gpt-6-astra", "gpt-6-astra-low", "gpt-6-astra-medium", "gpt-6-astra-high", "gpt-6-astra-xhigh", "gpt-6-astra-max",
 		"gpt-6-astra-fast", "gpt-6-astra-fast-low", "gpt-6-astra-fast-medium", "gpt-6-astra-fast-high", "gpt-6-astra-fast-xhigh", "gpt-6-astra-fast-max",
+		"gpt-6-sol", "gpt-6-sol-low", "gpt-6-sol-medium", "gpt-6-sol-high", "gpt-6-sol-xhigh", "gpt-6-sol-max",
+		"gpt-6-sol-fast", "gpt-6-sol-fast-low", "gpt-6-sol-fast-medium", "gpt-6-sol-fast-high", "gpt-6-sol-fast-xhigh", "gpt-6-sol-fast-max",
+		"gpt-6-luna", "gpt-6-luna-low", "gpt-6-luna-medium", "gpt-6-luna-high", "gpt-6-luna-xhigh", "gpt-6-luna-max",
+		"gpt-6-luna-fast", "gpt-6-luna-fast-low", "gpt-6-luna-fast-medium", "gpt-6-luna-fast-high", "gpt-6-luna-fast-xhigh", "gpt-6-luna-fast-max",
 		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max",
 		"gpt-5.6-terra-fast", "gpt-5.6-terra-fast-low", "gpt-5.6-terra-fast-medium", "gpt-5.6-terra-fast-high", "gpt-5.6-terra-fast-xhigh", "gpt-5.6-terra-fast-max",
 		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
@@ -91,6 +95,30 @@ func TestAstraAliases(t *testing.T) {
 				t.Fatalf("ResolveModelAlias(%q) = %#v", tc.id, got)
 			}
 		})
+	}
+}
+
+func TestGPT6SolAndLunaAliases(t *testing.T) {
+	for _, upstream := range []string{"gpt-6-sol", "gpt-6-luna"} {
+		for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+			for _, fast := range []bool{false, true} {
+				id := upstream + "-" + effort
+				tier := ""
+				if fast {
+					id = upstream + "-fast-" + effort
+					tier = "priority"
+				}
+				got := ResolveModelAlias(id)
+				if got.UpstreamModel != upstream || got.ReasoningEffort != effort || got.Verbosity != "low" || got.ServiceTier != tier {
+					t.Errorf("ResolveModelAlias(%q) = %#v", id, got)
+				}
+			}
+		}
+
+		got := ResolveModelAlias(upstream + "-fast")
+		if got.UpstreamModel != upstream || got.ReasoningEffort != "low" || got.ServiceTier != "priority" {
+			t.Errorf("ResolveModelAlias(%q) = %#v", upstream+"-fast", got)
+		}
 	}
 }
 
