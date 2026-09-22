@@ -260,6 +260,7 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
 	app.Get("/v1/models", models(cfg))
+	app.Get("/v1/accounts", codexAccounts(cfg))
 	if opts.usageMonitor != nil {
 		app.Get("/v1/accounts/usage", accountUsage(opts))
 		app.Post("/v1/accounts/:label/reset-credits/redeem", redeemResetCredit(opts))
@@ -275,6 +276,23 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	})
 
 	return app
+}
+
+func codexAccounts(cfg config.Config) fiber.Handler {
+	type account struct {
+		Label       string `json:"label"`
+		AccountName string `json:"account_name,omitempty"`
+	}
+	accounts := make([]account, 0, len(cfg.CodexClients))
+	for _, client := range cfg.CodexClients {
+		accounts = append(accounts, account{Label: client.Label, AccountName: client.AccountName})
+	}
+	body := struct {
+		Accounts []account `json:"accounts"`
+	}{Accounts: accounts}
+	return func(c *fiber.Ctx) error {
+		return c.JSON(body)
+	}
 }
 
 func accountUsage(opts options) fiber.Handler {

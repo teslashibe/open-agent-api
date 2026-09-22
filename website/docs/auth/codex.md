@@ -29,6 +29,16 @@ On each request we load `auth.json` through a token source that:
 
 If refresh fails with `invalid_grant` / revoked refresh token, run `codex login` again and re-seed the gateway secret.
 
+## Which login is which
+
+`label` is the stable pool slot (`primary`, `secondary`). It is not the ChatGPT account. Set `account_name` on that `CODEX_CLIENTS` entry, or write `account.json` next to the auth file:
+
+```json
+{"name":"ada@example.com"}
+```
+
+An explicit `account_name` wins over the file. `GET /v1/accounts` returns both fields and does not return tokens or auth paths. The same name is included on `GET /v1/accounts/usage`.
+
 ## Docker
 
 Compose mounts `${HOME}/.codex` → `/home/codex/.codex` **read-only** and sets `CODEX_HOME=/home/codex/.codex`. Prefer a writable mount in long-lived deployments so refresh can persist.

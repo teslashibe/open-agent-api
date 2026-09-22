@@ -570,6 +570,57 @@ func TestLoadInvalidContextLimits(t *testing.T) {
 	}
 }
 
+func TestLoadAccountNameFromClientJSONAndAccountFile(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "account.json"), []byte(`{"name":"ada@example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	override := t.TempDir()
+	if err := os.WriteFile(filepath.Join(override, "account.json"), []byte(`{"name":"from-file@example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_CLIENTS", `[
+		{"label":"from-file","codex_home":"`+home+`"},
+		{"label":"explicit","codex_home":"`+override+`","account_name":"  explicit@example.com  "}
+	]`)
+	chdir(t, t.TempDir())
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.CodexClients[0].AccountName != "ada@example.com" {
+		t.Fatalf("file account name = %q", cfg.CodexClients[0].AccountName)
+	}
+	if cfg.CodexClients[1].AccountName != "explicit@example.com" {
+		t.Fatalf("explicit account name = %q, want the trimmed CODEX_CLIENTS value", cfg.CodexClients[1].AccountName)
+	}
+}
+
+func TestLoadRejectsInvalidAccountName(t *testing.T) {
+	tests := map[string]string{
+		"control_character": `[{"label":"primary","account_name":"ada\nexample.com"}]`,
+		"too_long":          `[{"label":"primary","account_name":"` + strings.Repeat("a", 129) + `"}]`,
+		"bad_account_file":  "",
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			if name == "bad_account_file" {
+				home := t.TempDir()
+				if err := os.WriteFile(filepath.Join(home, "account.json"), []byte(`{"name":`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				value = `[{"label":"primary","codex_home":"` + home + `"}]`
+			}
+			t.Setenv("CODEX_CLIENTS", value)
+			chdir(t, t.TempDir())
+			if _, err := Load(nil); err == nil {
+				t.Fatal("Load() error = nil, want invalid account name")
+			}
+		})
+	}
+}
+
 func TestLoadInvalidCodexClients(t *testing.T) {
 	tests := map[string]string{
 		"empty":           `[]`,

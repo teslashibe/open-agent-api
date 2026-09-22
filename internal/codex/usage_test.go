@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -259,7 +260,7 @@ func TestUsageMonitorPartialFailureAuthHeadersCacheAndMetrics(t *testing.T) {
 
 	metrics := metricspkg.New(true)
 	monitor := NewUsageMonitor([]UsageAccount{
-		{Label: "good", Source: usageSourceFunc(func(context.Context) (auth.Credentials, error) {
+		{Label: "good", AccountName: "ada@example.com", Source: usageSourceFunc(func(context.Context) (auth.Credentials, error) {
 			return auth.Credentials{AccessToken: "access-secret", AccountID: "account-secret"}, nil
 		})},
 		{Label: "bad", Source: usageSourceFunc(func(context.Context) (auth.Credentials, error) {
@@ -279,6 +280,16 @@ func TestUsageMonitorPartialFailureAuthHeadersCacheAndMetrics(t *testing.T) {
 	}
 	if first.Accounts[1].ErrorCode != "auth_error" || second.Accounts[1].ErrorCode != "auth_error" {
 		t.Fatalf("failure response = %#v", first.Accounts[1])
+	}
+	if first.Accounts[0].AccountName != "ada@example.com" || first.Accounts[1].AccountName != "" {
+		t.Fatalf("account names = %q %q", first.Accounts[0].AccountName, first.Accounts[1].AccountName)
+	}
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "secret@example.test") || strings.Contains(string(encoded), "access-secret") {
+		t.Fatalf("usage response leaked upstream identity or credentials: %s", encoded)
 	}
 
 	recorder := httptest.NewRecorder()
