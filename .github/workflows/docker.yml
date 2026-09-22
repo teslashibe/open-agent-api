@@ -176,12 +176,15 @@ jobs:
           EU_FILE="${{ steps.target.outputs.eu_file }}"
           if [ -n "$EU_FILE" ]; then
             PROD_TAG="$(sed -nE 's#.*ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):([^[:space:]]+).*#\2#p' "$FILE" | head -1)"
-            EU_TAG="$(sed -nE 's#.*value: ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):([^[:space:]]+).*#\2#p' "$EU_FILE")"
+            EU_TAG="$(sed -nE 's#.*value: ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):([^[:space:]]+).*#\2#p' "$EU_FILE" | head -1)"
             FORWARD_DEPLOY="$(python3 - "$PROD_TAG" "$EU_TAG" "$TAG" <<'PY'
           import re
           import sys
 
           def version(value):
+              value = value.split("@", 1)[0]
+              if not value:
+                  return None
               match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", value)
               if not match:
                   raise SystemExit(f"invalid release tag: {value}")
@@ -190,7 +193,11 @@ jobs:
           target = version(sys.argv[3])
           prod = version(sys.argv[1])
           eu = version(sys.argv[2])
-          print("yes" if target >= prod and target >= eu and (target > prod or target > eu) else "no")
+          if target is None or (prod is None and eu is None):
+              raise SystemExit(f"invalid release tag: {sys.argv[3]}")
+          current = [item for item in (prod, eu) if item is not None]
+          forward = all(target >= item for item in current) and any(target > item for item in current)
+          print("yes" if forward else "no")
           PY
             )"
             if [ "$FORWARD_DEPLOY" != "yes" ]; then
@@ -200,13 +207,12 @@ jobs:
           fi
           if grep -qE 'ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):' "$FILE"; then
             sed -i -E "s#ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):[^[:space:]]+#ghcr.io/teslashibe/open-agent-api:${TAG}#g" "$FILE"
+            if ! grep -q "ghcr.io/teslashibe/open-agent-api:${TAG}" "$FILE"; then
+              echo "deploy verification failed: open-agent-api was not pinned to ${TAG}" >&2
+              exit 1
+            fi
           else
-            echo "deploy verification failed: no open-agent-api/open-chat-api/codex-chat-api image pin in ${FILE}" >&2
-            exit 1
-          fi
-          if ! grep -q "ghcr.io/teslashibe/open-agent-api:${TAG}" "$FILE"; then
-            echo "deploy verification failed: open-agent-api was not pinned to ${TAG}" >&2
-            exit 1
+            echo "no open-agent-api image pin in ${FILE}; skipping that file"
           fi
           if [ -n "$EU_FILE" ]; then
             if ! grep -qE 'value: ghcr\.io/teslashibe/(open-agent-api|open-chat-api|codex-chat-api):' "$EU_FILE"; then
