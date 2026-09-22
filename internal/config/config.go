@@ -149,7 +149,10 @@ type Config struct {
 }
 
 type CodexClient struct {
-	Label             string `json:"label"`
+	Label string `json:"label"`
+	// AccountName is the operator-facing login name for this auth file, usually
+	// an email. It is not a pool slot: Label stays the stable routing id.
+	AccountName       string `json:"account_name,omitempty"`
 	CodexHome         string `json:"codex_home"`
 	AuthPath          string `json:"auth_path"`
 	CodexProfilePath  string `json:"profile_path"`
@@ -576,6 +579,9 @@ func Load(args []string) (Config, error) {
 	} else {
 		cfg.CodexClients = []CodexClient{cfg.defaultCodexClient()}
 	}
+	if err := cfg.applyAccountNames(); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -962,6 +968,62 @@ func validateCodexClients(clients []CodexClient) error {
 		}
 		if client.CodexScaffoldPath == "" {
 			return fmt.Errorf("codex client %q scaffold path is required", client.Label)
+		}
+		if err := validateAccountName(client.AccountName); err != nil {
+			return fmt.Errorf("codex client %q account name: %w", client.Label, err)
+		}
+	}
+	return nil
+}
+
+// applyAccountNames trims an explicit account_name and, when that is empty,
+// reads {"name":"..."} from account.json beside the Codex home. The file is
+// how an auth directory records which login it belongs to.
+func (c *Config) applyAccountNames() error {
+	for i := range c.CodexClients {
+		name := strings.TrimSpace(c.CodexClients[i].AccountName)
+		if name == "" {
+			loaded, err := accountNameFromHome(c.CodexClients[i].CodexHome)
+			if err != nil {
+				return fmt.Errorf("codex client %q: %w", c.CodexClients[i].Label, err)
+			}
+			name = loaded
+		}
+		c.CodexClients[i].AccountName = name
+	}
+	return nil
+}
+
+func accountNameFromHome(home string) (string, error) {
+	if strings.TrimSpace(home) == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(filepath.Join(home, "account.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read account.json: %w", err)
+	}
+	var file struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return "", fmt.Errorf("account.json: %w", err)
+	}
+	return strings.TrimSpace(file.Name), nil
+}
+
+func validateAccountName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if len(name) > 128 {
+		return errors.New("must be at most 128 characters")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("must not contain control characters")
 		}
 	}
 	return nil

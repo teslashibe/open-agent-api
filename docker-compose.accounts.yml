@@ -3,7 +3,12 @@
 #
 # Expected host layout:
 #   ~/.open-agent-api/accounts/primary/auth.json
+#   ~/.open-agent-api/accounts/primary/account.json    {"name":"the login this auth belongs to"}
 #   ~/.open-agent-api/accounts/secondary/auth.json
+#   ~/.open-agent-api/accounts/secondary/account.json
+#
+# account.json is optional. CODEX_CLIENTS account_name overrides it. Labels stay
+# the pool slot; the name is how you tell which ChatGPT login an auth file is.
 services:
   api:
     environment:

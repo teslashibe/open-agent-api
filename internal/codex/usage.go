@@ -32,6 +32,7 @@ type UsageWindow struct {
 
 type AccountUsage struct {
 	Label            string        `json:"label"`
+	AccountName      string        `json:"account_name,omitempty"`
 	Windows          []UsageWindow `json:"windows"`
 	BankedResetCount int           `json:"banked_reset_count"`
 	ObservedAt       time.Time     `json:"observed_at"`
@@ -48,8 +49,9 @@ type credentialSource interface {
 }
 
 type UsageAccount struct {
-	Label  string
-	Source credentialSource
+	Label       string
+	AccountName string
+	Source      credentialSource
 }
 
 type UsageMonitor struct {
@@ -234,7 +236,7 @@ func (m *UsageMonitor) Usage(ctx context.Context) UsageResponse {
 
 func (m *UsageMonitor) fetch(ctx context.Context, account UsageAccount) AccountUsage {
 	observedAt := m.now().UTC()
-	result := AccountUsage{Label: account.Label, ObservedAt: observedAt, Status: "error"}
+	result := AccountUsage{Label: account.Label, AccountName: account.AccountName, ObservedAt: observedAt, Status: "error"}
 	creds, err := account.Source.Get(ctx)
 	if err != nil {
 		result.ErrorCode = usageErrorCode(ctx, "auth_error")

@@ -60,9 +60,11 @@ func run(args []string) error {
 	service := codex.Router{Codex: codexService, Gemini: geminiService, Claude: claudeService}
 	usageAccounts := make([]codex.UsageAccount, 0, len(cfg.CodexClients))
 	for _, client := range cfg.CodexClients {
+		fmt.Fprintf(logOutput, "codex_client_roster label=%s account_name=%q\n", client.Label, client.AccountName)
 		usageAccounts = append(usageAccounts, codex.UsageAccount{
-			Label:  client.Label,
-			Source: auth.NewSource(client.AuthPath),
+			Label:       client.Label,
+			AccountName: client.AccountName,
+			Source:      auth.NewSource(client.AuthPath),
 		})
 	}
 	usageMonitor := codex.NewUsageMonitor(usageAccounts, metrics)

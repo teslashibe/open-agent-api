@@ -13,6 +13,7 @@ The public surface is intentionally small — enough to look like OpenAI Chat Co
 | `GET` | `/health`, `/health/live` | Liveness — `{"status":"ok"}` when the process is up |
 | `GET` | `/health/ready` | Readiness — `503` while draining |
 | `GET` | `/v1/models` | Model list (filtered by `GATEWAY_PROVIDERS`) |
+| `GET` | `/v1/accounts` | Codex pool roster: slot `label` and operator `account_name` |
 | `GET` | `/v1/accounts/usage` | Codex account rate-limit windows and banked reset counts |
 | `POST` | `/v1/accounts/:label/reset-credits/redeem` | Redeem a banked Codex reset |
 | `POST` | `/v1/chat/completions` | Streaming and non-streaming chat |
@@ -26,6 +27,9 @@ caller-generated UUID as `redeem_request_id`. Reusing that UUID makes retries
 safe at the upstream redemption boundary.
 
 ```bash
+curl -H "Authorization: Bearer $GATEWAY_BEARER_SECRET" \
+  http://127.0.0.1:8088/v1/accounts
+
 curl -H "Authorization: Bearer $GATEWAY_BEARER_SECRET" \
   http://127.0.0.1:8088/v1/accounts/usage
 

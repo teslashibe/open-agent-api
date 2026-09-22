@@ -266,6 +266,49 @@ func TestModels(t *testing.T) {
 	}
 }
 
+func TestCodexAccountsListsConfiguredNamesBehindBearer(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.GatewayBearerSecret = "gateway-secret"
+	cfg.CodexClients = []config.CodexClient{
+		{Label: "primary", AccountName: "ada@example.com"},
+		{Label: "secondary"},
+	}
+	app := New(cfg, WithLogOutput(io.Discard))
+
+	if got := getStatus(t, app, "/v1/accounts"); got != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", got)
+	}
+	req, err := http.NewRequest(http.MethodGet, "/v1/accounts", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer gateway-secret")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, body)
+	}
+	var parsed struct {
+		Accounts []struct {
+			Label       string `json:"label"`
+			AccountName string `json:"account_name"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	if len(parsed.Accounts) != 2 || parsed.Accounts[0].Label != "primary" || parsed.Accounts[0].AccountName != "ada@example.com" || parsed.Accounts[1].Label != "secondary" || parsed.Accounts[1].AccountName != "" {
+		t.Fatalf("accounts = %#v", parsed.Accounts)
+	}
+	if strings.Contains(string(body), "auth.json") || strings.Contains(string(body), "access_token") {
+		t.Fatalf("roster leaked credential material: %s", body)
+	}
+}
+
 func TestAccountUsageRequiresBearerAndDoesNotLeakCredentials(t *testing.T) {
 	monitor := codex.NewUsageMonitor([]codex.UsageAccount{{
 		Label:  "configured-label",
