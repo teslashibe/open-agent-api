@@ -256,6 +256,9 @@ func New(cfg config.Config, setters ...Option) *fiber.App {
 	if cfg.StructuredEnabled {
 		app.Use(StructuredPath, structuredAuthMiddleware(opts, cfg.GatewayBearerSecret))
 	}
+	// The page contains no account data or credentials. Its fetch uses the
+	// existing bearer-protected API; browser navigation cannot set that header.
+	app.Get("/usage", accountUsagePage)
 	// Bearer auth guards every /v1 route but never /health, which k8s probes
 	// must reach unauthenticated.
 	app.Use("/v1", bearerAuthMiddleware(cfg.GatewayBearerSecret))
