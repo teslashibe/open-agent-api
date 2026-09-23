@@ -313,6 +313,30 @@ func TestCodexAccountsListsConfiguredNamesBehindBearer(t *testing.T) {
 	}
 }
 
+func TestAccountUsagePageDoesNotExposeCredentials(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.GatewayBearerSecret = "gateway-secret"
+	app := New(cfg, WithLogOutput(io.Discard))
+	req, _ := http.NewRequest(http.MethodGet, "/usage", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "'/v1/accounts/usage'") {
+		t.Fatalf("status/body = %d %s", resp.StatusCode, body)
+	}
+	for _, secret := range []string{"gateway-secret", "auth.json", "refresh_token"} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("page leaked %q", secret)
+		}
+	}
+	if resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Content-Security-Policy") == "" {
+		t.Fatalf("missing browser safety headers: %v", resp.Header)
+	}
+}
+
 func TestAccountUsageRequiresBearerAndDoesNotLeakCredentials(t *testing.T) {
 	monitor := codex.NewUsageMonitor([]codex.UsageAccount{{
 		Label:  "configured-label",
