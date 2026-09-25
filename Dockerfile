@@ -21,7 +21,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates tzdata nodejs npm \
-	&& npm install -g @anthropic-ai/claude-code@2.1.200
+	&& npm install -g @anthropic-ai/claude-code@2.1.200 \
+	&& mkdir -p /var/lib/open-agent-api/telemetry \
+	&& chown -R 1000:1000 /var/lib/open-agent-api
 
 WORKDIR /app
 
