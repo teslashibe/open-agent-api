@@ -10,11 +10,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
+	"github.com/teslashibe/open-agent-api/internal/metrics"
 )
 
 const (
@@ -50,7 +51,9 @@ type PooledService struct {
 	cooldownDefault   time.Duration
 	cooldownMax       time.Duration
 	now               func() time.Time
-	metrics           *metricspkg.Metrics
+	metrics           *metrics.Metrics
+	capacity          CapacityFunc
+	loadHistory       *LoadHistory
 
 	mu              sync.Mutex
 	cooldowns       []clientCooldown
@@ -121,8 +124,38 @@ type PooledServiceConfig struct {
 	// Negative disables the cap (honor upstream resets_at fully).
 	CooldownMax time.Duration
 	Now         func() time.Time
-	Metrics     *metricspkg.Metrics
+	Metrics     *metrics.Metrics
+	// Capacity, when set, supplies a non-blocking usage snapshot. A fresh
+	// auth failure is skipped. New conversations are shared across accounts
+	// that still have weekly room, in proportion to remaining quota per hour
+	// until reset, so each window is spent before it expires. A fresh reading
+	// of 100% stays available for an already pinned conversation until a
+	// request is rejected. A stale reading never marks an account exhausted.
+	Capacity CapacityFunc
+	// LoadHistory persists request and token aggregates across restarts.
+	LoadHistory *LoadHistory
 }
+
+// AccountCapacity is one Codex login's latest usage reading.
+type AccountCapacity struct {
+	Label       string
+	Fresh       bool
+	Status      string
+	ErrorCode   string
+	UsedPercent float64
+	HasUsage    bool
+	ResetAt     time.Time
+}
+
+// CapacityFunc returns the latest usage readings without performing I/O.
+type CapacityFunc func() []AccountCapacity
+
+const (
+	capacityOpen = iota
+	capacityUnknown
+	capacityFull
+	capacityAuth
+)
 
 type PooledClientConfig struct {
 	Label   string
@@ -179,7 +212,7 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		cfg.Now = time.Now
 	}
 	if cfg.Metrics == nil {
-		cfg.Metrics = metricspkg.New(false)
+		cfg.Metrics = metrics.New(false)
 	}
 	return &PooledService{
 		clients:           clients,
@@ -190,6 +223,8 @@ func NewPooledService(cfg PooledServiceConfig) (*PooledService, error) {
 		cooldownMax:       cfg.CooldownMax,
 		now:               cfg.Now,
 		metrics:           cfg.Metrics,
+		capacity:          cfg.Capacity,
+		loadHistory:       cfg.LoadHistory,
 		cooldowns:         make([]clientCooldown, len(clients)),
 		inflight:          map[string]int{},
 		softPins:          map[string]*list.Element{},
@@ -343,7 +378,7 @@ func (p *PooledService) streamAttempt(ctx context.Context, req Request, index, r
 				p.coolClient(index, err)
 			}
 			release()
-			if retryCount == 0 {
+			if retryCount == 0 || reason == unpinReasonCooldown {
 				if alternate, inflight, altRelease, ok := p.acquireAlternate(req, index); ok {
 					unpin = firstPendingUnpin(req, unpin, index, reason)
 					p.moveTentative(tentative, index, alternate)
@@ -448,7 +483,7 @@ func (p *PooledService) forwardAttempt(
 		if reason == unpinReasonCooldown {
 			p.coolClient(index, first.Err)
 		}
-		if retryCount == 0 {
+		if retryCount == 0 || reason == unpinReasonCooldown {
 			if alternate, inflight, altRelease, available := p.acquireAlternate(req, index); available {
 				p.logTransportRetry(req, index, "alternate", "acquired", alternate, inflight, "", false)
 				cancel()
@@ -462,7 +497,7 @@ func (p *PooledService) forwardAttempt(
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
 				}
-				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
+				p.forwardRemaining(req, -1, ctx, out, retryEvents, nil, nil)
 				return
 			}
 			p.logTransportRetry(req, index, "alternate", "unavailable", -1, 0, "", false)
@@ -488,7 +523,7 @@ func (p *PooledService) forwardAttempt(
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
 				}
-				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
+				p.forwardRemaining(req, -1, ctx, out, retryEvents, nil, nil)
 				return
 			}
 		}
@@ -505,7 +540,7 @@ func (p *PooledService) forwardAttempt(
 					p.sendPoolEvent(ctx, out, StreamEvent{Err: err})
 					return
 				}
-				p.forwardRemaining(ctx, out, retryEvents, nil, nil)
+				p.forwardRemaining(req, -1, ctx, out, retryEvents, nil, nil)
 				return
 			}
 			blockedBy := "saturated"
@@ -532,6 +567,7 @@ func (p *PooledService) forwardAttempt(
 		return
 	}
 	if first.Done {
+		p.recordEventUsage(req, index, first)
 		// Commit affinity before the terminal event can release a queued turn.
 		p.recordSuccessfulTentativeSelection(req, index, unpin, refreshPin, tentative)
 		tentativePending = false
@@ -541,7 +577,7 @@ func (p *PooledService) forwardAttempt(
 	if !p.sendPoolEvent(ctx, out, first) {
 		return
 	}
-	p.forwardRemaining(ctx, out, events, func() {
+	p.forwardRemaining(req, index, ctx, out, events, func() {
 		p.recordSuccessfulTentativeSelection(req, index, unpin, refreshPin, tentative)
 		tentativePending = false
 	}, func() {
@@ -584,7 +620,7 @@ func (p *PooledService) logTransportRetry(req Request, from int, target, result 
 	)
 }
 
-func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func(), failure func()) {
+func (p *PooledService) forwardRemaining(req Request, index int, ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, success func(), failure func()) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -608,6 +644,9 @@ func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamE
 				return
 			}
 			if event.Done {
+				if index >= 0 {
+					p.recordEventUsage(req, index, event)
+				}
 				// Commit affinity before the terminal event can release a queued turn.
 				if success != nil {
 					success()
@@ -623,6 +662,25 @@ func (p *PooledService) forwardRemaining(ctx context.Context, out chan<- StreamE
 			}
 		}
 	}
+}
+
+func (p *PooledService) recordEventUsage(req Request, index int, event StreamEvent) {
+	if p.loadHistory == nil || (event.Usage.PromptTokens == 0 && event.Usage.CompletionTokens == 0) {
+		return
+	}
+	if err := p.loadHistory.Record(LoadEvent{
+		At: p.now().UTC(), Account: p.clients[index].label, Model: modelOrFallback(event.Model, req.Model),
+		InputTokens: int64(event.Usage.PromptTokens), OutputTokens: int64(event.Usage.CompletionTokens), InputTokenSource: "upstream",
+	}); err != nil {
+		p.logf("codex_load_history_error operation=tokens err=%q\n", err.Error())
+	}
+}
+
+func modelOrFallback(model, fallback string) string {
+	if model != "" {
+		return model
+	}
+	return fallback
 }
 
 func (p *PooledService) sendPoolEvent(ctx context.Context, out chan<- StreamEvent, event StreamEvent) bool {
@@ -756,6 +814,7 @@ func (p *PooledService) shouldFallback(index int, err error) bool {
 // immediately so concurrent sibling turns cannot choose different accounts.
 func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 	now := p.now()
+	ranks := p.capacityRanks()
 	var cooldownSkips []acquireCooldownSkip
 	var saturated []acquireSaturatedClient
 
@@ -793,6 +852,8 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 	candidateInflight := p.maxInflight
 	var preferredCooldownClass FailureClass
 	preferredCooling := false
+	preferredAuth := false
+	var placements []capacityPlacement
 	for offset := range len(p.clients) {
 		index := (preferred + offset) % len(p.clients)
 		cooldown := p.cooldowns[index]
@@ -805,6 +866,12 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 			}
 			if !sticky || !preferredEligible || index == preferred {
 				cooldownSkips = append(cooldownSkips, acquireCooldownSkip{index: index, class: cooldown.class})
+			}
+			continue
+		}
+		if ranks != nil && rankFor(ranks, p.clients[index].label).class == capacityAuth {
+			if index == preferred {
+				preferredAuth = true
 			}
 			continue
 		}
@@ -822,6 +889,7 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 			preferredEligible = true
 			preferredInflight = current
 		}
+		placements = append(placements, capacityPlacement{index: index, inflight: current})
 		if candidate == -1 || current < candidateInflight {
 			candidate = index
 			candidateInflight = current
@@ -829,7 +897,9 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 	}
 
 	if candidate != -1 {
-		if preferredEligible && (sticky || preferredInflight-candidateInflight < initialLoadBalanceGap) {
+		if ranks != nil && (!sticky || !preferredEligible) {
+			candidate = chooseCapacityPlacement(placements, ranks, p.clients, affinityFraction(req))
+		} else if preferredEligible && (sticky || preferredInflight-candidateInflight < initialLoadBalanceGap) {
 			candidate = preferred
 		}
 		label := p.clients[candidate].label
@@ -841,7 +911,7 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 			if tentative == nil {
 				tentative = &tentativePin{key: key, index: candidate}
 				p.tentativePins[key] = tentative
-			} else if preferredCooling && candidate != preferred {
+			} else if (preferredCooling || preferredAuth) && candidate != preferred {
 				tentative.index = candidate
 			}
 			tentative.refs++
@@ -849,8 +919,12 @@ func (p *PooledService) acquireAvailable(req Request) (poolAcquisition, error) {
 		p.mu.Unlock()
 		p.observeAcquireSkips(req, cooldownSkips, saturated)
 		var unpin *pendingUnpin
-		if preferredCooling && candidate != preferred {
-			unpin = firstPendingUnpin(req, nil, preferred, unpinReasonCooldown)
+		if candidate != preferred && (preferredCooling || preferredAuth) {
+			reason := unpinReasonCooldown
+			if preferredAuth && !preferredCooling {
+				reason = unpinReasonAuth
+			}
+			unpin = firstPendingUnpin(req, nil, preferred, reason)
 		}
 		return poolAcquisition{
 			index:     candidate,
@@ -909,14 +983,198 @@ func (p *PooledService) observeAcquireSkips(req Request, cooldowns []acquireCool
 }
 
 func (p *PooledService) acquireAlternate(req Request, failed int) (int, int, func(), bool) {
-	for offset := 1; offset < len(p.clients); offset++ {
-		index := (failed + offset) % len(p.clients)
+	for _, index := range p.alternateOrder(failed) {
 		inflight, release, acquired, _, _ := p.tryAcquireClient(req, index, false)
 		if acquired {
 			return index, inflight, release, true
 		}
 	}
 	return 0, 0, nil, false
+}
+
+func (p *PooledService) alternateOrder(failed int) []int {
+	order := make([]int, 0, len(p.clients)-1)
+	for offset := 1; offset < len(p.clients); offset++ {
+		order = append(order, (failed+offset)%len(p.clients))
+	}
+	ranks := p.capacityRanks()
+	if ranks == nil {
+		return order
+	}
+	inflight := make([]int, len(p.clients))
+	p.mu.Lock()
+	for i, client := range p.clients {
+		inflight[i] = p.inflight[client.label]
+	}
+	p.mu.Unlock()
+	sort.SliceStable(order, func(i, j int) bool {
+		return betterCapacity(p.clients, ranks, order[i], inflight[order[i]], order[j], inflight[order[j]], -1)
+	})
+	open := order[:0]
+	for _, index := range order {
+		if rankFor(ranks, p.clients[index].label).class == capacityAuth {
+			continue
+		}
+		open = append(open, index)
+	}
+	return open
+}
+
+type accountRank struct {
+	class  int
+	used   float64
+	weight float64
+}
+
+type capacityPlacement struct {
+	index    int
+	inflight int
+}
+
+func (p *PooledService) capacityRanks() map[string]accountRank {
+	if p.capacity == nil {
+		return nil
+	}
+	now := p.now()
+	out := make(map[string]accountRank)
+	for _, item := range p.capacity() {
+		out[item.Label] = rankCapacity(item, now)
+	}
+	return out
+}
+
+func rankCapacity(item AccountCapacity, now time.Time) accountRank {
+	if !item.Fresh {
+		return accountRank{class: capacityUnknown, weight: unknownPaceWeight()}
+	}
+	if item.Status != "ok" && item.ErrorCode == "auth_error" {
+		return accountRank{class: capacityAuth}
+	}
+	if item.Status == "ok" && item.HasUsage && item.UsedPercent >= 100 {
+		return accountRank{class: capacityFull, used: item.UsedPercent}
+	}
+	if item.Status == "ok" && item.HasUsage {
+		return accountRank{class: capacityOpen, used: item.UsedPercent, weight: paceWeight(item, now)}
+	}
+	return accountRank{class: capacityUnknown, weight: unknownPaceWeight()}
+}
+
+// paceWeight is remaining weekly percent per hour until reset. A window that
+// still has room and resets sooner receives a larger share, so unused quota
+// is spent before it expires. Missing reset times fall back to remaining percent.
+func paceWeight(item AccountCapacity, now time.Time) float64 {
+	remaining := 100 - item.UsedPercent
+	if remaining <= 0 {
+		return 0
+	}
+	if item.ResetAt.IsZero() {
+		return remaining
+	}
+	hours := item.ResetAt.Sub(now).Hours()
+	if hours < 1 {
+		hours = 1
+	}
+	return remaining / hours
+}
+
+func unknownPaceWeight() float64 {
+	return 100.0 / (7 * 24)
+}
+
+func rankFor(ranks map[string]accountRank, label string) accountRank {
+	if ranks == nil {
+		return accountRank{class: capacityOpen}
+	}
+	rank, ok := ranks[label]
+	if !ok {
+		return accountRank{class: capacityUnknown}
+	}
+	return rank
+}
+
+func chooseCapacityPlacement(placements []capacityPlacement, ranks map[string]accountRank, clients []pooledClient, fraction float64) int {
+	bestClass := capacityAuth
+	for _, item := range placements {
+		class := rankFor(ranks, clients[item.index].label).class
+		if class < bestClass {
+			bestClass = class
+		}
+	}
+	group := make([]capacityPlacement, 0, len(placements))
+	lowestInflight := int(^uint(0) >> 1)
+	for _, item := range placements {
+		if rankFor(ranks, clients[item.index].label).class != bestClass {
+			continue
+		}
+		group = append(group, item)
+		if item.inflight < lowestInflight {
+			lowestInflight = item.inflight
+		}
+	}
+	sort.SliceStable(group, func(i, j int) bool { return group[i].index < group[j].index })
+	picked := weightedPlacement(group, ranks, clients, fraction)
+	for _, item := range group {
+		if item.index == picked && item.inflight-lowestInflight >= initialLoadBalanceGap {
+			for _, quiet := range group {
+				if quiet.inflight == lowestInflight {
+					return quiet.index
+				}
+			}
+		}
+	}
+	return picked
+}
+
+func weightedPlacement(group []capacityPlacement, ranks map[string]accountRank, clients []pooledClient, fraction float64) int {
+	if len(group) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, item := range group {
+		total += rankFor(ranks, clients[item.index].label).weight
+	}
+	if total <= 0 {
+		return group[0].index
+	}
+	if fraction < 0 {
+		fraction = 0
+	}
+	if fraction >= 1 {
+		fraction = 0.999999
+	}
+	point := fraction * total
+	acc := 0.0
+	for _, item := range group {
+		acc += rankFor(ranks, clients[item.index].label).weight
+		if point < acc {
+			return item.index
+		}
+	}
+	return group[len(group)-1].index
+}
+
+func affinityFraction(req Request) float64 {
+	sum := sha256.Sum256([]byte(affinityKey(req)))
+	value := binary.BigEndian.Uint64(sum[:8])
+	return float64(value) / 18446744073709551616.0
+}
+
+func betterCapacity(clients []pooledClient, ranks map[string]accountRank, a, inflightA, b, inflightB, preferred int) bool {
+	left := rankFor(ranks, clients[a].label)
+	right := rankFor(ranks, clients[b].label)
+	if left.class != right.class {
+		return left.class < right.class
+	}
+	if left.weight != right.weight {
+		return left.weight > right.weight
+	}
+	if inflightA != inflightB {
+		return inflightA < inflightB
+	}
+	if a == preferred {
+		return true
+	}
+	return false
 }
 
 // tryAcquireClient checks cooldown eligibility and increments the inflight
@@ -1132,6 +1390,19 @@ func affinityKey(req Request) string {
 	return "global"
 }
 
+func (p *PooledService) LoadSnapshot() LoadHistorySnapshot {
+	p.mu.Lock()
+	inflight := make(map[string]int, len(p.clients))
+	for _, client := range p.clients {
+		inflight[client.label] = p.inflight[client.label]
+	}
+	p.mu.Unlock()
+	if p.loadHistory != nil {
+		return p.loadHistory.Snapshot(inflight)
+	}
+	return LoadHistorySnapshot{ObservedAt: p.now().UTC(), Window: "7d", Accounts: make([]AccountLoad, 0, len(p.clients)), Models: []ModelTokenLoad{}}
+}
+
 func hasExplicitAffinity(req Request) bool {
 	return req.AffinityKey != "" || req.AffinityKeyHash != ""
 }
@@ -1146,6 +1417,11 @@ func (p *PooledService) logSelection(req Request, index int, fallback bool, rota
 		result = "pinned"
 	}
 	p.metrics.ObservePoolSelection(p.clients[index].label, result)
+	if p.loadHistory != nil {
+		if err := p.loadHistory.Record(LoadEvent{At: p.now().UTC(), Account: p.clients[index].label, Model: req.Model, Requests: 1}); err != nil {
+			p.logf("codex_load_history_error operation=selection err=%q\n", err.Error())
+		}
+	}
 	keyMode := req.AffinityKeyMode
 	if keyMode == "" {
 		keyMode = "none"
@@ -1156,14 +1432,7 @@ func (p *PooledService) logSelection(req Request, index int, fallback bool, rota
 	}
 	p.logf(
 		"codex_client_select request_id=%s key_mode=%s key_hash=%s shard=%d client_label=%s inflight=%d fallback=%t rotated=%t\n",
-		requestID(req),
-		keyMode,
-		keyHash,
-		index,
-		p.clients[index].label,
-		inflight,
-		fallback,
-		rotated,
+		requestID(req), keyMode, keyHash, index, p.clients[index].label, inflight, fallback, rotated,
 	)
 }
 

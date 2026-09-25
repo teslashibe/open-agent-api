@@ -41,7 +41,8 @@ type AccountUsage struct {
 }
 
 type UsageResponse struct {
-	Accounts []AccountUsage `json:"accounts"`
+	Accounts    []AccountUsage      `json:"accounts"`
+	LoadHistory LoadHistorySnapshot `json:"load_history,omitempty"`
 }
 
 type credentialSource interface {
@@ -200,10 +201,31 @@ func (m *UsageMonitor) invalidate() {
 	m.mu.Unlock()
 }
 
+// Snapshot returns the latest cached usage without contacting ChatGPT.
+// Fresh is false before the first poll and after the cache TTL. Callers must
+// not treat a stale snapshot as proof that an account is exhausted.
+func (m *UsageMonitor) Snapshot() (UsageResponse, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	fresh := !m.expires.IsZero() && m.now().Before(m.expires)
+	return m.cached, fresh
+}
+
 func (m *UsageMonitor) Usage(ctx context.Context) UsageResponse {
+	return m.load(ctx, false)
+}
+
+// Refresh polls ChatGPT even when the cache is still inside its TTL. The
+// previous snapshot stays fresh until the new poll is stored, so routing does
+// not treat the pool as unknown during the request.
+func (m *UsageMonitor) Refresh(ctx context.Context) UsageResponse {
+	return m.load(ctx, true)
+}
+
+func (m *UsageMonitor) load(ctx context.Context, force bool) UsageResponse {
 	now := m.now()
 	m.mu.Lock()
-	if now.Before(m.expires) {
+	if !force && now.Before(m.expires) {
 		response := m.cached
 		m.mu.Unlock()
 		return response

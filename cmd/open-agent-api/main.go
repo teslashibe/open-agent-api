@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/teslashibe/open-agent-api/internal/auth"
 	"github.com/teslashibe/open-agent-api/internal/claude"
@@ -36,7 +37,8 @@ func run(args []string) error {
 	}
 	defer logOutput.Close()
 	metrics := metricspkg.New(cfg.MetricsEnabled)
-	codexService, err := buildCodexService(cfg, metrics, logOutput)
+	usageMonitor := newUsageMonitor(cfg, metrics, logOutput)
+	codexService, err := buildCodexService(cfg, metrics, logOutput, usageMonitor)
 	if err != nil {
 		return err
 	}
@@ -58,20 +60,11 @@ func run(args []string) error {
 		}
 	}
 	service := codex.Router{Codex: codexService, Gemini: geminiService, Claude: claudeService}
-	usageAccounts := make([]codex.UsageAccount, 0, len(cfg.CodexClients))
-	for _, client := range cfg.CodexClients {
-		fmt.Fprintf(logOutput, "codex_client_roster label=%s account_name=%q\n", client.Label, client.AccountName)
-		usageAccounts = append(usageAccounts, codex.UsageAccount{
-			Label:       client.Label,
-			AccountName: client.AccountName,
-			Source:      auth.NewSource(client.AuthPath),
-		})
-	}
-	usageMonitor := codex.NewUsageMonitor(usageAccounts, metrics)
 
-	app := server.New(cfg, server.WithCodexService(service), server.WithMetrics(metrics), server.WithLogOutput(logOutput), server.WithUsageMonitor(usageMonitor))
+	app := server.New(cfg, server.WithCodexService(service), server.WithMetrics(metrics), server.WithLogOutput(logOutput), server.WithUsageMonitor(usageMonitor), server.WithLoadHistory(codexService))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go refreshUsage(ctx, usageMonitor)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -93,7 +86,72 @@ func run(args []string) error {
 	}
 }
 
-func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics, logOutput io.Writer) (codex.Service, error) {
+func newUsageMonitor(cfg config.Config, metrics *metricspkg.Metrics, logOutput io.Writer) *codex.UsageMonitor {
+	usageAccounts := make([]codex.UsageAccount, 0, len(cfg.CodexClients))
+	for _, client := range cfg.CodexClients {
+		fmt.Fprintf(logOutput, "codex_client_roster label=%s account_name=%q\n", client.Label, client.AccountName)
+		usageAccounts = append(usageAccounts, codex.UsageAccount{
+			Label:       client.Label,
+			AccountName: client.AccountName,
+			Source:      auth.NewSource(client.AuthPath),
+		})
+	}
+	return codex.NewUsageMonitor(usageAccounts, metrics)
+}
+
+func refreshUsage(ctx context.Context, monitor *codex.UsageMonitor) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	monitor.Refresh(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			monitor.Refresh(ctx)
+		}
+	}
+}
+
+func primaryUsageWindow(windows []codex.UsageWindow) (codex.UsageWindow, bool) {
+	var fallback codex.UsageWindow
+	found := false
+	for _, window := range windows {
+		if !found {
+			fallback = window
+			found = true
+		}
+		if window.Type == "primary" {
+			return window, true
+		}
+	}
+	return fallback, found
+}
+
+func accountCapacity(monitor *codex.UsageMonitor) codex.CapacityFunc {
+	return func() []codex.AccountCapacity {
+		cached, fresh := monitor.Snapshot()
+		out := make([]codex.AccountCapacity, 0, len(cached.Accounts))
+		for _, account := range cached.Accounts {
+			item := codex.AccountCapacity{
+				Label:     account.Label,
+				Fresh:     fresh,
+				Status:    account.Status,
+				ErrorCode: account.ErrorCode,
+			}
+			window, ok := primaryUsageWindow(account.Windows)
+			if ok {
+				item.UsedPercent = window.UsedPercent
+				item.HasUsage = true
+				item.ResetAt = window.ResetAt
+			}
+			out = append(out, item)
+		}
+		return out
+	}
+}
+
+func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics, logOutput io.Writer, monitor *codex.UsageMonitor) (codex.Service, error) {
 	clients := make([]codex.PooledClientConfig, 0, len(cfg.CodexClients))
 	for _, clientCfg := range cfg.CodexClients {
 		client, err := codex.NewClient(codex.ClientConfig{
@@ -117,6 +175,10 @@ func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics, logOutput
 			Service: client,
 		})
 	}
+	loadHistory, err := codex.OpenLoadHistory(cfg.UsageHistoryPath, clientLabels(cfg), nil)
+	if err != nil {
+		return nil, fmt.Errorf("open Codex usage history: %w", err)
+	}
 	return codex.NewPooledService(codex.PooledServiceConfig{
 		Clients:           clients,
 		MaxInflight:       cfg.CodexClientMaxInflight,
@@ -125,7 +187,17 @@ func buildCodexService(cfg config.Config, metrics *metricspkg.Metrics, logOutput
 		CooldownDefault:   cfg.CodexClientCooldownDefault,
 		CooldownMax:       cfg.CodexClientCooldownMax,
 		Metrics:           metrics,
+		LoadHistory:       loadHistory,
+		Capacity:          accountCapacity(monitor),
 	})
+}
+
+func clientLabels(cfg config.Config) []string {
+	labels := make([]string, 0, len(cfg.CodexClients))
+	for _, client := range cfg.CodexClients {
+		labels = append(labels, client.Label)
+	}
+	return labels
 }
 
 func buildGeminiService(cfg config.Config) (codex.Service, error) {

@@ -329,3 +329,32 @@ func TestUsageMonitorTimesOutAccountWithoutFailingOthers(t *testing.T) {
 		t.Fatalf("accounts = %#v", got.Accounts)
 	}
 }
+
+func TestUsageRefreshUpdatesCacheBeforeTTL(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		fmt.Fprintf(w, `{"rate_limit":{"primary_window":{"used_percent":%d,"limit_window_seconds":604800,"reset_at":1780000000}}}`, n)
+	}))
+	defer upstream.Close()
+
+	monitor := NewUsageMonitor([]UsageAccount{{
+		Label: "good",
+		Source: usageSourceFunc(func(context.Context) (auth.Credentials, error) {
+			return auth.Credentials{AccessToken: "access-secret", AccountID: "account-secret"}, nil
+		}),
+	}}, nil)
+	monitor.url = upstream.URL
+	monitor.ttl = time.Hour
+	monitor.now = time.Now
+
+	first := monitor.Usage(context.Background())
+	if _, fresh := monitor.Snapshot(); !fresh || first.Accounts[0].Windows[0].UsedPercent != 1 {
+		t.Fatalf("first snapshot = %#v fresh check failed", first.Accounts[0])
+	}
+	second := monitor.Refresh(context.Background())
+	cached, fresh := monitor.Snapshot()
+	if calls.Load() != 2 || !fresh || second.Accounts[0].Windows[0].UsedPercent != 2 || cached.Accounts[0].Windows[0].UsedPercent != 2 {
+		t.Fatalf("refresh calls=%d fresh=%t usage=%#v", calls.Load(), fresh, cached.Accounts[0])
+	}
+}
