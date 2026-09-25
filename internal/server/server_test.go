@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -334,6 +335,53 @@ func TestAccountUsagePageDoesNotExposeCredentials(t *testing.T) {
 	}
 	if resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Content-Security-Policy") == "" {
 		t.Fatalf("missing browser safety headers: %v", resp.Header)
+	}
+	for _, content := range []string{"duration_seconds", "Pacing ahead of the weekly limit", "last 7d", "input_tokens_7d", "Model usage"} {
+		if !strings.Contains(string(body), content) {
+			t.Fatalf("usage page missing %q", content)
+		}
+	}
+}
+
+func TestAccountUsageIncludesPersistedPoolHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	history, err := codex.OpenLoadHistory(path, []string{"primary"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := history.Record(codex.LoadEvent{Account: "primary", Model: "gpt-6-sol", Requests: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := history.Record(codex.LoadEvent{Account: "primary", Model: "gpt-6-sol", InputTokens: 42, OutputTokens: 11, InputTokenSource: "upstream"}); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := codex.NewPooledService(codex.PooledServiceConfig{
+		Clients:     []codex.PooledClientConfig{{Label: "primary", Service: fakeCodexService{}}},
+		LoadHistory: history,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor := &serverUsageMonitor{usage: codex.UsageResponse{Accounts: []codex.AccountUsage{{Label: "primary", Status: "ok"}}}}
+	cfg := config.Defaults()
+	cfg.GatewayBearerSecret = "gateway-secret"
+	app := New(cfg, WithUsageMonitor(monitor), WithLoadHistory(pool), WithLogOutput(io.Discard))
+	if status := getStatus(t, app, "/v1/accounts/usage"); status != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", status)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "/v1/accounts/usage", nil)
+	req.Header.Set("Authorization", "Bearer gateway-secret")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var result codex.UsageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.LoadHistory.Accounts) != 1 || result.LoadHistory.Accounts[0].Requests7d != 2 || result.LoadHistory.Accounts[0].InputTokens7d != 42 || len(result.LoadHistory.Models) != 1 || result.LoadHistory.Models[0].OutputTokens != 11 {
+		t.Fatalf("load history = %#v", result.LoadHistory)
 	}
 }
 

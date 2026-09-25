@@ -39,6 +39,20 @@ type usageMonitor interface {
 	Redeem(context.Context, string, string) (codex.RedemptionOutcome, error)
 }
 
+type loadHistoryMonitor interface {
+	LoadSnapshot() codex.LoadHistorySnapshot
+}
+
+// WithLoadHistory attaches only persisted pool telemetry; the usage monitor
+// still owns the account usage poll and redemption endpoint.
+func WithLoadHistory(service codex.Service) Option {
+	return func(opts *options) {
+		if load, ok := service.(loadHistoryMonitor); ok {
+			opts.codexObserver = load
+		}
+	}
+}
+
 type options struct {
 	codexService       codex.Service
 	requestContext     func(*fiber.Ctx) context.Context
@@ -55,6 +69,7 @@ type options struct {
 	isLocal            func(*fiber.Ctx) bool
 	metrics            *metricspkg.Metrics
 	usageMonitor       usageMonitor
+	codexObserver      loadHistoryMonitor
 	// Structured inference shares the Codex admission queue with interactive
 	// traffic. Interactive requests receive a higher queue priority while
 	// queued batch extraction uses every otherwise-idle slot.
@@ -300,7 +315,11 @@ func codexAccounts(cfg config.Config) fiber.Handler {
 
 func accountUsage(opts options) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		return c.JSON(opts.usageMonitor.Usage(opts.requestContext(c)))
+		usage := opts.usageMonitor.Usage(opts.requestContext(c))
+		if opts.codexObserver != nil {
+			usage.LoadHistory = opts.codexObserver.LoadSnapshot()
+		}
+		return c.JSON(usage)
 	}
 }
 

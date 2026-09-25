@@ -8,12 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	metricspkg "github.com/teslashibe/open-agent-api/internal/metrics"
+	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
 func TestPooledServiceSameQueueKeyMapsToSameClient(t *testing.T) {
@@ -1159,7 +1161,7 @@ func TestPooledServiceDoesNotRotateAfterContentOrToolDelta(t *testing.T) {
 	}
 }
 
-func TestPooledServiceBoundsRotationToOneAlternate(t *testing.T) {
+func TestPooledServiceRotatesQuotaFailureThroughRemainingAccounts(t *testing.T) {
 	var calls [3]int
 	clients := make([]PooledClientConfig, 3)
 	for i := range clients {
@@ -1174,12 +1176,12 @@ func TestPooledServiceBoundsRotationToOneAlternate(t *testing.T) {
 	}
 	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil, clients...)
 
-	_, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
-	if !errors.Is(err, ErrUsageLimitReached) {
-		t.Fatalf("Complete() error = %v", err)
+	completion, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
+	if err != nil || completion.Text != "third" {
+		t.Fatalf("Complete() = %#v, %v", completion, err)
 	}
-	if calls != [3]int{1, 1, 0} {
-		t.Fatalf("calls = %v, want one alternate only", calls)
+	if calls != [3]int{1, 1, 1} {
+		t.Fatalf("calls = %v, want every non-cooling account", calls)
 	}
 }
 
@@ -1589,6 +1591,51 @@ func TestPooledServiceReleasesLeaseOnContextCancellation(t *testing.T) {
 	waitPoolInflight(t, pool, "client-a", 0)
 }
 
+func TestPooledServicePersistsSelectedAccountAndUpstreamTokens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	history, err := OpenLoadHistory(path, []string{"client-a", "client-b"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := NewPooledService(PooledServiceConfig{
+		Clients: []PooledClientConfig{
+			{Label: "client-a", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				return poolEvents(StreamEvent{Err: poolQuotaError()}), nil
+			}}},
+			{Label: "client-b", Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+				return poolEvents(StreamEvent{Delta: "ok"}, StreamEvent{Done: true, Model: "gpt-6-sol", Usage: openai.Usage{PromptTokens: 120, CompletionTokens: 32, TotalTokens: 152}}), nil
+			}}},
+		},
+		UnavailablePolicy: ClientPoolUnavailableFail,
+		LoadHistory:       history,
+		LogOutput:         io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := requestForPoolIndex(pool, 0)
+	req.Model = "gpt-6-sol"
+	result, err := pool.Complete(context.Background(), req)
+	if err != nil || result.Text != "ok" {
+		t.Fatalf("Complete() = %#v, %v", result, err)
+	}
+	loaded, err := OpenLoadHistory(path, []string{"client-a", "client-b"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := loaded.Snapshot(nil)
+	if len(snapshot.Accounts) != 2 || len(snapshot.Models) != 2 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if snapshot.Accounts[0].Requests7d != 1 || snapshot.Accounts[0].InputTokens7d != 0 || snapshot.Accounts[1].Requests7d != 1 || snapshot.Accounts[1].InputTokens7d != 120 || snapshot.Accounts[1].OutputTokens7d != 32 {
+		t.Fatalf("accounts = %#v", snapshot.Accounts)
+	}
+	model := snapshot.Models[1]
+	if model.Account != "client-b" || model.Model != "gpt-6-sol" || model.InputTokens != 120 || model.OutputTokens != 32 {
+		t.Fatalf("model = %#v", model)
+	}
+}
+
 func newTestPooledService(t *testing.T, policy string, logs *bytes.Buffer, now func() time.Time, clients ...PooledClientConfig) *PooledService {
 	t.Helper()
 	pool, err := NewPooledService(PooledServiceConfig{
@@ -1629,6 +1676,18 @@ func requestForPoolIndex(pool *PooledService, want int) Request {
 		req.AffinityKey += "-next"
 	}
 	return req
+}
+
+func requestForFraction(min, max float64) Request {
+	req := Request{AffinityKey: "pace-share", AffinityKeyHash: "hash", AffinityKeyMode: "body:session_id"}
+	for i := 0; i < 100000; i++ {
+		fraction := affinityFraction(req)
+		if fraction >= min && fraction < max {
+			return req
+		}
+		req.AffinityKey = fmt.Sprintf("pace-share-%d", i)
+	}
+	panic(fmt.Sprintf("no affinity fraction in [%v, %v)", min, max))
 }
 
 func poolQuotaError() error {
@@ -1741,4 +1800,165 @@ func (f poolFakeService) Complete(ctx context.Context, req Request) (Completion,
 
 func (f poolFakeService) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	return f.stream(ctx, req)
+}
+
+func TestCapacitySharesNewConversationsByWeeklyRoom(t *testing.T) {
+	pool, calls := testPool(t, ClientPoolUnavailableFail, 3, nil)
+	reset := time.Now().Add(10 * 24 * time.Hour)
+	pool.capacity = func() []AccountCapacity {
+		return []AccountCapacity{
+			{Label: "client-0", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 9, ResetAt: reset},
+			{Label: "client-1", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 100, ResetAt: reset},
+			{Label: "client-2", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 0, ResetAt: reset},
+		}
+	}
+	// Same reset: shares follow remaining percent, 91 then 100. The full account is left out.
+	first, err := pool.Complete(context.Background(), requestForFraction(0, 0.2))
+	if err != nil || first.Text != "client-0" {
+		t.Fatalf("lower share Complete() = %#v, %v", first, err)
+	}
+	second, err := pool.Complete(context.Background(), requestForFraction(0.8, 1))
+	if err != nil || second.Text != "client-2" {
+		t.Fatalf("higher share Complete() = %#v, %v", second, err)
+	}
+	if calls["client-1"] != 0 {
+		t.Fatalf("full account received a new conversation: %#v", calls)
+	}
+}
+
+func TestCapacityPrefersWeeklyQuotaThatExpiresSooner(t *testing.T) {
+	now := time.Now()
+	clients := []pooledClient{{label: "client-0"}, {label: "client-1"}}
+	ranks := map[string]accountRank{
+		"client-0": rankCapacity(AccountCapacity{Label: "client-0", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 0, ResetAt: now.Add(10 * time.Hour)}, now),
+		"client-1": rankCapacity(AccountCapacity{Label: "client-1", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 0, ResetAt: now.Add(7 * 24 * time.Hour)}, now),
+	}
+	placements := []capacityPlacement{{index: 0, inflight: 0}, {index: 1, inflight: 0}}
+	if got := chooseCapacityPlacement(placements, ranks, clients, 0.2); got != 0 {
+		t.Fatalf("early window placement = %d", got)
+	}
+	if got := chooseCapacityPlacement(placements, ranks, clients, 0.99); got != 1 {
+		t.Fatalf("late window placement = %d", got)
+	}
+}
+
+func TestCapacityKeepsStickyConversationOnFullAccount(t *testing.T) {
+	pool, calls := testPool(t, ClientPoolUnavailableFail, 3, nil)
+	req := requestForPoolIndex(pool, 0)
+	first, err := pool.Complete(context.Background(), req)
+	if err != nil || first.Text != "client-0" {
+		t.Fatalf("first Complete() = %#v, %v", first, err)
+	}
+	readings := []AccountCapacity{
+		{Label: "client-0", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 100},
+		{Label: "client-1", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 0},
+		{Label: "client-2", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 4},
+	}
+	pool.capacity = func() []AccountCapacity { return readings }
+	second, err := pool.Complete(context.Background(), req)
+	if err != nil || second.Text != "client-0" {
+		t.Fatalf("second Complete() = %#v, %v", second, err)
+	}
+	if calls["client-0"] != 2 || calls["client-1"] != 0 {
+		t.Fatalf("calls = %#v", calls)
+	}
+}
+
+func TestCapacityMovesPinnedConversationOffAuthError(t *testing.T) {
+	pool, calls := testPool(t, ClientPoolUnavailableFail, 3, nil)
+	req := requestForPoolIndex(pool, 0)
+	if _, err := pool.Complete(context.Background(), req); err != nil {
+		t.Fatalf("pin Complete() error = %v", err)
+	}
+	soon := time.Now().Add(time.Hour)
+	later := time.Now().Add(7 * 24 * time.Hour)
+	pool.capacity = func() []AccountCapacity {
+		return []AccountCapacity{
+			{Label: "client-0", Fresh: true, Status: "error", ErrorCode: "auth_error"},
+			{Label: "client-1", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 99, ResetAt: later},
+			{Label: "client-2", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 0, ResetAt: soon},
+		}
+	}
+	completion, err := pool.Complete(context.Background(), req)
+	if err != nil || completion.Text != "client-2" {
+		t.Fatalf("Complete() = %#v, %v", completion, err)
+	}
+	if calls["client-2"] != 1 {
+		t.Fatalf("calls = %#v", calls)
+	}
+}
+
+func TestStaleCapacityDoesNotDeprioritizeFullAccount(t *testing.T) {
+	pool, calls := testPool(t, ClientPoolUnavailableFail, 3, nil)
+	pool.capacity = func() []AccountCapacity {
+		return []AccountCapacity{
+			{Label: "client-0", Fresh: false, Status: "ok", HasUsage: true, UsedPercent: 100},
+			{Label: "client-1", Fresh: false, Status: "ok", HasUsage: true, UsedPercent: 0},
+			{Label: "client-2", Fresh: false, Status: "error", ErrorCode: "auth_error"},
+		}
+	}
+
+	completion, err := pool.Complete(context.Background(), requestForFraction(0, 1.0/3.0))
+	if err != nil || completion.Text != "client-0" {
+		t.Fatalf("Complete() = %#v, %v", completion, err)
+	}
+	if calls["client-0"] != 1 {
+		t.Fatalf("calls = %#v", calls)
+	}
+}
+
+func TestCapacityUsesFullAccountWhenItIsTheOnlyOption(t *testing.T) {
+	pool, _ := testPool(t, ClientPoolUnavailableFail, 3, nil)
+	pool.capacity = func() []AccountCapacity {
+		return []AccountCapacity{
+			{Label: "client-0", Fresh: true, Status: "error", ErrorCode: "auth_error"},
+			{Label: "client-1", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 100},
+			{Label: "client-2", Fresh: true, Status: "error", ErrorCode: "auth_error"},
+		}
+	}
+
+	completion, err := pool.Complete(context.Background(), requestForPoolIndex(pool, 0))
+	if err != nil || completion.Text != "client-1" {
+		t.Fatalf("Complete() = %#v, %v", completion, err)
+	}
+}
+
+func TestQuotaRotationPrefersAccountWithRoom(t *testing.T) {
+	var mu sync.Mutex
+	calls := map[string]int{}
+	clients := make([]PooledClientConfig, 3)
+	for i := range clients {
+		label := fmt.Sprintf("client-%d", i)
+		clients[i] = PooledClientConfig{Label: label, Service: poolFakeService{stream: func(context.Context, Request) (<-chan StreamEvent, error) {
+			mu.Lock()
+			calls[label]++
+			attempt := calls[label]
+			mu.Unlock()
+			if label == "client-0" && attempt > 1 {
+				return poolEvents(StreamEvent{Err: poolQuotaError()}), nil
+			}
+			return poolEvents(StreamEvent{Delta: label}, StreamEvent{Done: true}), nil
+		}}}
+	}
+	pool := newTestPooledService(t, ClientPoolUnavailableFail, &bytes.Buffer{}, nil, clients...)
+	req := requestForPoolIndex(pool, 0)
+	if _, err := pool.Complete(context.Background(), req); err != nil {
+		t.Fatalf("pin Complete() error = %v", err)
+	}
+	pool.capacity = func() []AccountCapacity {
+		return []AccountCapacity{
+			{Label: "client-0", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 100},
+			{Label: "client-1", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 100},
+			{Label: "client-2", Fresh: true, Status: "ok", HasUsage: true, UsedPercent: 5},
+		}
+	}
+	completion, err := pool.Complete(context.Background(), req)
+	if err != nil || completion.Text != "client-2" {
+		t.Fatalf("Complete() = %#v, %v", completion, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls["client-0"] != 2 || calls["client-1"] != 0 || calls["client-2"] != 1 {
+		t.Fatalf("calls = %#v", calls)
+	}
 }

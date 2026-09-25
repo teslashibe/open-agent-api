@@ -122,6 +122,7 @@ type Config struct {
 	// cool a Codex account. Zero is replaced with the default; negative
 	// disables the cap.
 	CodexClientCooldownMax time.Duration
+	UsageHistoryPath       string
 	MetricsEnabled         bool
 	GatewayBearerSecret    string
 	GatewayProviders       []string
@@ -436,6 +437,9 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.CodexClientCooldownMax = cooldown
 	}
+	if value := os.Getenv("CODEX_USAGE_HISTORY_PATH"); value != "" {
+		cfg.UsageHistoryPath = value
+	}
 	if value := os.Getenv("CODEX_METRICS_ENABLED"); value != "" {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -624,6 +628,7 @@ func Defaults() Config {
 		CodexClientPoolUnavailable:         DefaultCodexClientPoolUnavailable,
 		CodexClientCooldownDefault:         DefaultCodexClientCooldownDefault,
 		CodexClientCooldownMax:             DefaultCodexClientCooldownMax,
+		UsageHistoryPath:                   "/var/lib/open-agent-api/telemetry/usage-history.json",
 		MetricsEnabled:                     DefaultMetricsEnabled,
 		TelemetryMaxBytes:                  DefaultTelemetryMaxBytes,
 		TelemetryBackups:                   DefaultTelemetryBackups,
