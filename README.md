@@ -11,7 +11,7 @@ A Go proxy that looks like OpenAI Chat Completions. Point Cursor BYOK (or any Op
 | --- | --- | --- |
 | **Codex / ChatGPT** | `codex login` → `~/.codex/auth.json` | GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
 | **Gemini / Antigravity** | `scripts/sync-antigravity-auth.sh` | Gemini 2.5/3.x + Antigravity gateway IDs |
-| **Claude Code** | `claude` CLI login / OAuth env | Haiku / Sonnet / Opus / Fable |
+| **Claude Code** | `claude` CLI login / OAuth env | Opus 5.5, Fable 5.1, Sonnet 5, Haiku 4.5 (Cursor: use `api/claude-*` IDs) |
 
 GPT-6 Astra exposes `low` through `max`. Ultra is intentionally unsupported
 because official Codex Ultra adds proactive multi-agent delegation, while this

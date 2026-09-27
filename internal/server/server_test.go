@@ -231,7 +231,7 @@ func TestModels(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Object != "list" || len(body.Data) != 128 {
+	if body.Object != "list" || len(body.Data) != 161 {
 		t.Fatalf("unexpected model list: %#v", body)
 	}
 	wantIDs := []string{
@@ -256,10 +256,13 @@ func TestModels(t *testing.T) {
 		"gemini-3.5-flash-low", "gemini-3.5-flash-medium", "gemini-3.5-flash-high",
 		"gemini-3.1-flash-lite", "gemini-3-flash",
 		"claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
-		"claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5",
 		"opus", "sonnet", "haiku", "fable",
-		"api/claude-opus-4-8", "api/claude-sonnet-5", "api/claude-haiku-4-5-20251001", "api/claude-fable-5",
-		"api/claude-fable-5-low", "api/claude-fable-5-medium", "api/claude-fable-5-high",
+		"claude-opus-5-5", "api/claude-opus-5-5", "anthropic/claude-opus-5-5", "api/claude-opus-5-5-low", "api/claude-opus-5-5-medium", "api/claude-opus-5-5-high", "api/claude-opus-5-5-xhigh", "api/claude-opus-5-5-max",
+		"claude-fable-5-1", "api/claude-fable-5-1", "anthropic/claude-fable-5-1", "api/claude-fable-5-1-low", "api/claude-fable-5-1-medium", "api/claude-fable-5-1-high", "api/claude-fable-5-1-xhigh", "api/claude-fable-5-1-max",
+		"claude-sonnet-5", "api/claude-sonnet-5", "anthropic/claude-sonnet-5", "api/claude-sonnet-5-low", "api/claude-sonnet-5-medium", "api/claude-sonnet-5-high", "api/claude-sonnet-5-xhigh", "api/claude-sonnet-5-max",
+		"claude-opus-4-8", "api/claude-opus-4-8", "anthropic/claude-opus-4-8", "api/claude-opus-4-8-low", "api/claude-opus-4-8-medium", "api/claude-opus-4-8-high", "api/claude-opus-4-8-xhigh", "api/claude-opus-4-8-max",
+		"claude-fable-5", "api/claude-fable-5", "anthropic/claude-fable-5", "api/claude-fable-5-low", "api/claude-fable-5-medium", "api/claude-fable-5-high", "api/claude-fable-5-xhigh", "api/claude-fable-5-max",
+		"claude-haiku-4-5-20251001", "api/claude-haiku-4-5-20251001", "api/claude-haiku-4-5", "anthropic/claude-haiku-4-5",
 		"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-fast-low", "gpt-5.5-fast-medium", "gpt-5.5-fast-high", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose",
 		"gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview",
 	}

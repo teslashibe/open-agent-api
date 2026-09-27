@@ -9,7 +9,8 @@
 
 services:
   ngrok:
-    image: ngrok/ngrok:latest
+    # Pinned (tag + multi-arch digest); bump deliberately.
+    image: ngrok/ngrok:3.39.11-alpine@sha256:187e588f6c4efe3b29cd3eea9fcd768a1afa7342319e3cee9aeb5af6a9cf64fd
     command:
       - http
       - api:8088

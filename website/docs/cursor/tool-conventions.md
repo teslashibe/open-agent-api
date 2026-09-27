@@ -183,15 +183,11 @@ Tools become Gemini `functionDeclarations`. Rejected JSON Schema keywords are st
 
 ### Claude Code
 
-Claude Code doesn’t speak Chat Completions tools natively. We inject a small **Cursor tool protocol** into the prompt and parse fenced blocks back into OpenAI tool calls:
+Cursor's tools are handed to the pinned `claude` CLI as real tools through a stdio MCP bridge (`open-agent-api claude-mcp`), so the model emits native `tool_use` blocks, including parallel calls. The CLI runs with `--permission-mode dontAsk --max-turns 1`: it never executes a tool, and the gateway stops it at the end of the model turn. Each `tool_use` becomes one complete `delta.tool_calls` frame with the upstream `toolu_…` ID and the `mcp__c__` prefix stripped.
 
-````text
-```cursor_tool_call
-{"name":"tool_name","arguments":{}}
-```
-````
+History is replayed natively. Earlier turns are written as a short-lived CLI transcript and loaded with `--resume`, and the final assistant `tool_use` turn plus its `tool_result` turn go over `--input-format stream-json`, so the model sees real call/result pairs and Cursor's call IDs. Orphaned calls or results and repeated IDs are repaired first. Set `CLAUDE_HISTORY_MODE=text` to flatten history instead if a CLI upgrade changes the transcript format.
 
-The bridge scans content and reasoning so those fences never leak as chat text. Disabled entirely when `GATEWAY_PROVIDERS` omits `claude`.
+Each request runs in an isolated, empty working directory with Cursor's system prompt replacing Claude Code's (`--system-prompt-file`), no built-in tools, and `--setting-sources=` / `--strict-mcp-config`, so host hooks, plugins, MCP servers and `CLAUDE.md` do not apply. `tool_choice: "none"` drops the tools; a forced function becomes a system instruction; `parallel_tool_calls: false` asks for one call per turn. In Cursor use `api/claude-*` model IDs (bare `claude-*` names go to Cursor's Anthropic key). Design notes: [`docs/specs/claude-code-native-tools.md`](https://github.com/teslashibe/open-agent-api/blob/main/docs/specs/claude-code-native-tools.md).
 
 ## Config that affects Agent tools
 
@@ -220,7 +216,7 @@ The bridge scans content and reasoning so those fences never leak as chat text. 
 | OpenAI types | `internal/openai/openai.go` |
 | Codex normalize + call IDs | `internal/codex/builder.go`, `events.go` |
 | Gemini tools | `internal/gemini/builder.go`, `events.go` |
-| Claude fence bridge | `internal/claude/tools.go`, `tool_bridge.go` |
+| Claude native tools | `internal/claude/` (`conversation.go`, `transcript.go`, `events.go`, `mcpbridge/`) |
 | Contract tests | `internal/server/server_test.go` |
 
 ## Changing this safely

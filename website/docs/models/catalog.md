@@ -165,25 +165,26 @@ These look like Claude/GPT names but **do not** use the Claude Code CLI — they
 
 ## Surface: Claude Code CLI
 
-Routed for Claude Code short names, dated IDs, and `api/claude-*` prefixes. Auth: local `claude` executable + Claude Code login. Disabled when `GATEWAY_PROVIDERS` omits `claude`.
+Routed for Claude Code short names, `claude-*` IDs, and `api/` or `anthropic/` prefixed IDs. Auth: the pinned `claude` executable plus a Claude Code login (`CLAUDE_CODE_OAUTH_TOKEN` in Docker). Disabled when `GATEWAY_PROVIDERS` omits `claude`.
+
+:::warning Cursor: use `api/claude-*` IDs
+Cursor sends any model whose name starts with `claude-` to its **Anthropic** key slot, not to the OpenAI base URL override, so bare `claude-*` IDs never reach this gateway from Cursor. Add the `api/claude-*` (or `anthropic/claude-*`) IDs instead. The request's `reasoning_effort` overrides the alias effort.
+:::
 
 | Public ID | Upstream | Effort | Verbosity |
 | --- | --- | --- | --- |
-| `opus` | `opus` | `medium` | `medium` |
-| `sonnet` | `sonnet` | `medium` | `medium` |
-| `haiku` | `haiku` | `medium` | `medium` |
-| `fable` | `fable` | `medium` | `medium` |
-| `claude-opus-4-8` | `claude-opus-4-8` | `medium` | `medium` |
-| `claude-sonnet-5` | `claude-sonnet-5` | `medium` | `medium` |
-| `claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` | `medium` | `medium` |
-| `claude-fable-5` | `claude-fable-5` | `medium` | `medium` |
-| `api/claude-opus-4-8` | `claude-opus-4-8` | `medium` | `medium` |
-| `api/claude-sonnet-5` | `claude-sonnet-5` | `medium` | `medium` |
-| `api/claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` | `medium` | `medium` |
-| `api/claude-fable-5` | `claude-fable-5` | `medium` | `medium` |
-| `api/claude-fable-5-low` | `claude-fable-5` | `low` | `medium` |
-| `api/claude-fable-5-medium` | `claude-fable-5` | `medium` | `medium` |
-| `api/claude-fable-5-high` | `claude-fable-5` | `high` | `medium` |
+| `opus` / `sonnet` / `haiku` / `fable` | same (CLI picks the latest) | `medium` | `medium` |
+| `claude-opus-5-5`, `api/claude-opus-5-5`, `anthropic/claude-opus-5-5` | `claude-opus-5-5` | `medium` | `medium` |
+| `api/claude-opus-5-5-low` … `api/claude-opus-5-5-max` | `claude-opus-5-5` | `low`/`medium`/`high`/`xhigh`/`max` | `medium` |
+| `claude-fable-5-1`, `api/claude-fable-5-1`, `anthropic/claude-fable-5-1` | `claude-fable-5-1` | `medium` | `medium` |
+| `api/claude-fable-5-1-low` … `api/claude-fable-5-1-max` | `claude-fable-5-1` | `low`/`medium`/`high`/`xhigh`/`max` | `medium` |
+| `claude-sonnet-5`, `api/claude-sonnet-5`, `anthropic/claude-sonnet-5` | `claude-sonnet-5` | `medium` | `medium` |
+| `api/claude-sonnet-5-low` … `api/claude-sonnet-5-max` | `claude-sonnet-5` | `low`/`medium`/`high`/`xhigh`/`max` | `medium` |
+| `claude-opus-4-8`, `api/claude-opus-4-8`, `anthropic/claude-opus-4-8` | `claude-opus-4-8` | `medium` | `medium` |
+| `api/claude-opus-4-8-low` … `api/claude-opus-4-8-max` | `claude-opus-4-8` | `low`/`medium`/`high`/`xhigh`/`max` | `medium` |
+| `claude-fable-5`, `api/claude-fable-5`, `anthropic/claude-fable-5` | `claude-fable-5` | `medium` | `medium` |
+| `api/claude-fable-5-low` … `api/claude-fable-5-max` | `claude-fable-5` | `low`/`medium`/`high`/`xhigh`/`max` | `medium` |
+| `claude-haiku-4-5-20251001`, `api/claude-haiku-4-5-20251001`, `api/claude-haiku-4-5`, `anthropic/claude-haiku-4-5` | `claude-haiku-4-5-20251001` | `medium` | `medium` |
 
 ---
 
@@ -198,6 +199,8 @@ Routed for Claude Code short names, dated IDs, and `api/claude-*` prefixes. Auth
 | Fast lightweight Agent | `gpt-5.6-luna-fast` |
 | Fastest cheap turn | `gemini-3.1-flash-lite` |
 | Gemini Pro (Antigravity) | `gemini-3.1-pro-high` |
-| Antigravity Claude | `claude-sonnet-4-6` |
-| Claude Code Haiku | `haiku` |
+| Claude Code Opus 5.5 | `api/claude-opus-5-5-high` |
+| Claude Code Fable 5.1 | `api/claude-fable-5-1` |
+| Claude Code Sonnet 5 | `api/claude-sonnet-5` |
+| Claude Code Haiku | `api/claude-haiku-4-5` |
 | Overflow / tiny context | `gpt-5.3-codex-spark` |

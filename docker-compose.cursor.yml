@@ -23,3 +23,9 @@ services:
       STRUCTURED_QUEUE_TIMEOUT: "${STRUCTURED_QUEUE_TIMEOUT:-60m}"
       STRUCTURED_MAX_DEADLINE: "${STRUCTURED_MAX_DEADLINE:-60m}"
       STRUCTURED_MODELS: "${STRUCTURED_MODELS:-gpt-5.6-sol,gpt-5.6-sol-fast,gpt-5.6-terra,gpt-5.6-terra-fast,gpt-5.6-luna,gpt-5.6-luna-fast,gpt-5.5}"
+      # Claude Code: same admission and timeout profile as Codex so long
+      # Opus/Fable agent turns are not cut off at the 10m default.
+      CLAUDE_AGENT_MAX_ACTIVE: "${CLAUDE_AGENT_MAX_ACTIVE:-20}"
+      CLAUDE_AGENT_MAX_ACTIVE_PER_KEY: "${CLAUDE_AGENT_MAX_ACTIVE_PER_KEY:-20}"
+      CLAUDE_AGENT_QUEUE_LIMIT: "${CLAUDE_AGENT_QUEUE_LIMIT:-192}"
+      CLAUDE_TIMEOUT: "${CLAUDE_TIMEOUT:-45m}"

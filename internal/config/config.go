@@ -84,6 +84,9 @@ type Config struct {
 	ClaudeExecutable                   string
 	ClaudeDefaultModel                 string
 	ClaudeTimeout                      time.Duration
+	ClaudeBridgeExecutable             string
+	ClaudeRunDir                       string
+	ClaudeHistoryMode                  string
 	StreamIdleTimeout                  time.Duration
 	CustomToolWire                     string
 	QuotaFallbackModel                 string
@@ -242,6 +245,15 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CLAUDE_TIMEOUT: %w", err)
 		}
 		cfg.ClaudeTimeout = timeout
+	}
+	if value := os.Getenv("CLAUDE_BRIDGE_EXECUTABLE"); value != "" {
+		cfg.ClaudeBridgeExecutable = value
+	}
+	if value := os.Getenv("CLAUDE_RUN_DIR"); value != "" {
+		cfg.ClaudeRunDir = value
+	}
+	if value := os.Getenv("CLAUDE_HISTORY_MODE"); value != "" {
+		cfg.ClaudeHistoryMode = value
 	}
 	if value := os.Getenv("CODEX_CUSTOM_TOOL_WIRE"); value != "" {
 		cfg.CustomToolWire = value
@@ -518,6 +530,9 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.ClaudeExecutable, "claude-executable", cfg.ClaudeExecutable, "Claude Code executable path")
 	fs.StringVar(&cfg.ClaudeDefaultModel, "claude-default-model", cfg.ClaudeDefaultModel, "Claude Code default model")
 	fs.DurationVar(&cfg.ClaudeTimeout, "claude-timeout", cfg.ClaudeTimeout, "Claude Code request timeout")
+	fs.StringVar(&cfg.ClaudeBridgeExecutable, "claude-bridge-executable", cfg.ClaudeBridgeExecutable, "gateway binary serving the claude-mcp tool bridge (default: this binary)")
+	fs.StringVar(&cfg.ClaudeRunDir, "claude-run-dir", cfg.ClaudeRunDir, "directory for per-request Claude Code working files (default: $TMPDIR/open-agent-api-claude)")
+	fs.StringVar(&cfg.ClaudeHistoryMode, "claude-history-mode", cfg.ClaudeHistoryMode, "Claude Code history replay: native (tool_use/tool_result transcript) or text")
 	fs.DurationVar(&cfg.StreamIdleTimeout, "stream-idle-timeout", cfg.StreamIdleTimeout, "maximum silence between upstream stream events before the request is failed (0 disables)")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
@@ -609,6 +624,7 @@ func Defaults() Config {
 		ClaudeExecutable:                   DefaultClaudeExecutable,
 		ClaudeDefaultModel:                 DefaultClaudeModel,
 		ClaudeTimeout:                      DefaultClaudeTimeout,
+		ClaudeHistoryMode:                  "native",
 		AgentQueueEnabled:                  DefaultAgentQueueEnabled,
 		AgentMaxActive:                     DefaultAgentMaxActive,
 		AgentMaxActivePerKey:               DefaultAgentMaxActivePerKey,
@@ -735,6 +751,9 @@ func (c Config) Validate() error {
 	}
 	if c.ClaudeTimeout <= 0 {
 		return errors.New("claude timeout must be positive")
+	}
+	if c.ClaudeHistoryMode != "native" && c.ClaudeHistoryMode != "text" {
+		return fmt.Errorf("unsupported claude history mode %q (expected native or text)", c.ClaudeHistoryMode)
 	}
 	if c.StreamIdleTimeout < 0 {
 		return errors.New("stream idle timeout must be non-negative")
