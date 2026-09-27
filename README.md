@@ -132,6 +132,10 @@ go run ./cmd/open-agent-api --host 127.0.0.1 --port 8088
 curl -s http://127.0.0.1:8088/v1/models | jq '.data[].id'
 ```
 
+## Embedding Codex
+
+`github.com/teslashibe/open-agent-api/pkg/codex` runs the gateway's pooled Codex client in-process for Go programs that would otherwise call this gateway over HTTP. `codex.New` takes one or more `codex login` accounts plus paths to the root `codex_profile.json` and `codex_scaffold.json`; `Complete(ctx, model, prompt)` resolves the same model aliases (effort, fast tier) and returns text, the upstream model and reported usage. `IsCapacity` identifies usage-limit and no-account errors. The standalone gateway is unchanged.
+
 ## License
 
 [MIT](LICENSE) — and mind the upstream provider terms noted above.
