@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/teslashibe/open-agent-api/internal/claude/mcpbridge"
@@ -139,7 +140,16 @@ func (c *Client) Stream(ctx context.Context, req codex.Request) (<-chan codex.St
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"DISABLE_AUTOUPDATER=1",
 		"MCP_TIMEOUT=15000",
+		// Cursor's Shell/Task/TodoWrite descriptions exceed the CLI's
+		// default 2048-character MCP description cap.
+		"CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=1000000",
+		// Never defer bridged tools behind tool search: the model must see
+		// every client tool directly.
+		"ENABLE_TOOL_SEARCH=false",
 	)
+	// Stop the CLI with SIGTERM so it shuts down its MCP bridge child; the
+	// WaitDelay then escalates to SIGKILL.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 5 * time.Second
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -211,10 +221,12 @@ func (c *Client) prepare(req codex.Request) (run, error) {
 		return run{}, err
 	}
 
-	model, nameEffort := c.modelAndEffort(req)
-	effort := claudeEffort(req.ReasoningEffort)
+	// An effort suffix on an unaliased model name ("claude-opus-5.5-high")
+	// wins; otherwise the request/alias effort, and none means the CLI's
+	// per-model default.
+	model, effort := c.modelAndEffort(req)
 	if effort == "" {
-		effort = nameEffort
+		effort = claudeEffort(req.ReasoningEffort)
 	}
 
 	systemPath := filepath.Join(dir, "system.md")
@@ -291,6 +303,8 @@ type toolChoice struct {
 	none     bool
 	required bool
 	name     string
+	// serial is Anthropic disable_parallel_tool_use.
+	serial bool
 }
 
 func parseToolChoice(raw json.RawMessage) toolChoice {
@@ -303,21 +317,36 @@ func parseToolChoice(raw json.RawMessage) toolChoice {
 	case `"required"`, `"any"`:
 		return toolChoice{required: true}
 	}
+	// OpenAI {type:function,function:{name}} or Anthropic {type:auto|any|
+	// tool|none, name?, disable_parallel_tool_use?}.
 	var object struct {
-		Type     string `json:"type"`
-		Name     string `json:"name"`
-		Function struct {
+		Type                   string `json:"type"`
+		Name                   string `json:"name"`
+		DisableParallelToolUse bool   `json:"disable_parallel_tool_use"`
+		Function               struct {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return toolChoice{}
 	}
-	name := object.Function.Name
-	if name == "" {
-		name = object.Name
+	choice := toolChoice{serial: object.DisableParallelToolUse}
+	switch object.Type {
+	case "none":
+		choice.none = true
+		return choice
+	case "any":
+		choice.required = true
+		return choice
+	case "auto":
+		return choice
 	}
-	return toolChoice{name: name, required: name != ""}
+	choice.name = object.Function.Name
+	if choice.name == "" {
+		choice.name = object.Name
+	}
+	choice.required = choice.name != ""
+	return choice
 }
 
 // systemPrompt builds the replacement system prompt. tool_choice "required"
@@ -337,7 +366,7 @@ func systemPrompt(client string, tools *toolSet, choice toolChoice, parallel *bo
 		if choice.name != "" {
 			parts = append(parts, "In this turn you must call the tool "+tools.modelName(choice.name)+".")
 		}
-		if parallel != nil && !*parallel {
+		if (parallel != nil && !*parallel) || choice.serial {
 			parts = append(parts, "Call at most one tool per turn.")
 		}
 	}

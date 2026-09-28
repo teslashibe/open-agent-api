@@ -450,6 +450,10 @@ func chatCompletions(opts options) fiber.Handler {
 		if err := c.BodyParser(&req); err != nil {
 			return writeError(c, fiber.StatusBadRequest, "invalid_request_error", "invalid JSON request body")
 		}
+		// Cursor sends Claude-named models the Anthropic dialect, whose system
+		// prompt is a top-level field rather than a system message.
+		req.Messages = req.WithSystemMessage()
+		req.System = nil
 		if err := validateChatRequest(req); err != nil {
 			return writeError(c, fiber.StatusBadRequest, "invalid_request_error", err.Error())
 		}

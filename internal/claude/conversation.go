@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/teslashibe/open-agent-api/internal/claude/mcpbridge"
 	"github.com/teslashibe/open-agent-api/internal/openai"
 )
 
@@ -311,7 +312,7 @@ func contentBlocks(raw json.RawMessage, role string, tools *toolSet) []block {
 			if input == nil {
 				input = map[string]any{}
 			}
-			if !strings.HasPrefix(name, "mcp__") {
+			if !strings.HasPrefix(name, mcpbridge.ToolPrefix) {
 				name = tools.modelName(name)
 			}
 			out = append(out, block{"type": "tool_use", "id": normalizeToolUseID(id), "name": name, "input": input})
@@ -320,9 +321,8 @@ func contentBlocks(raw json.RawMessage, role string, tools *toolSet) []block {
 				continue
 			}
 			id, _ := part["tool_use_id"].(string)
-			content, _ := json.Marshal(part["content"])
 			isError, _ := part["is_error"].(bool)
-			out = append(out, toolResultBlock(id, openai.MessageText(content), isError))
+			out = append(out, anthropicToolResult(id, part["content"], isError))
 		default:
 			encoded, _ := json.Marshal(part)
 			if t := strings.TrimSpace(openai.MessageText(encoded)); t != "" {
@@ -331,6 +331,45 @@ func contentBlocks(raw json.RawMessage, role string, tools *toolSet) []block {
 		}
 	}
 	return out
+}
+
+// anthropicToolResult keeps array tool_result content (text and image
+// blocks, e.g. Cursor reading a PNG) instead of flattening it to text.
+func anthropicToolResult(id string, content any, isError bool) block {
+	items, ok := content.([]any)
+	if !ok {
+		text, _ := content.(string)
+		if text == "" && content != nil {
+			encoded, _ := json.Marshal(content)
+			text = openai.MessageText(encoded)
+		}
+		return toolResultBlock(id, text, isError)
+	}
+	var blocks []any
+	for _, item := range items {
+		part, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch part["type"] {
+		case "text":
+			if text, _ := part["text"].(string); strings.TrimSpace(text) != "" {
+				blocks = append(blocks, textBlock(text))
+			}
+		case "image":
+			if source, ok := part["source"].(map[string]any); ok {
+				blocks = append(blocks, block{"type": "image", "source": source})
+			}
+		}
+	}
+	if len(blocks) == 0 {
+		return toolResultBlock(id, "", isError)
+	}
+	b := block{"type": "tool_result", "tool_use_id": normalizeToolUseID(id), "content": blocks}
+	if isError {
+		b["is_error"] = true
+	}
+	return b
 }
 
 func imageBlock(part map[string]any) block {

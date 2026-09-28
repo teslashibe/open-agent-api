@@ -481,3 +481,24 @@ func TestMessageTextStructuredContent(t *testing.T) {
 		})
 	}
 }
+
+func TestWithSystemMessageFoldsAnthropicSystem(t *testing.T) {
+	for _, raw := range []string{
+		`"You are Cursor's agent."`,
+		`[{"type":"text","text":"You are Cursor's agent.","cache_control":{"type":"ephemeral"}}]`,
+	} {
+		req := ChatCompletionRequest{System: json.RawMessage(raw), Messages: []ChatMessage{{Role: "user", Content: TextContent("hi")}}}
+		got := req.WithSystemMessage()
+		if len(got) != 2 || got[0].Role != "system" || MessageText(got[0].Content) != "You are Cursor's agent." {
+			t.Fatalf("%s -> %#v", raw, got)
+		}
+	}
+	two := SystemText(json.RawMessage(`[{"type":"text","text":"a"},{"type":"text","text":"b"}]`))
+	if two != "a\n\nb" {
+		t.Fatalf("SystemText = %q", two)
+	}
+	plain := ChatCompletionRequest{Messages: []ChatMessage{{Role: "user"}}}
+	if len(plain.WithSystemMessage()) != 1 {
+		t.Fatal("no system must leave messages unchanged")
+	}
+}

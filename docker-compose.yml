@@ -10,6 +10,10 @@ services:
         BUILD_DATE: "${BUILD_DATE:-}"
         CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-2.1.283}"
     image: teslashibe/open-agent-api:local
+    # tini as PID 1: the Claude provider spawns a CLI (and its MCP bridge)
+    # per request; without an init process, orphaned children are never
+    # reaped and accumulate as zombies.
+    init: true
     command: ["--host", "0.0.0.0", "--port", "8088"]
     environment:
       CODEX_HOME: /home/codex/.codex

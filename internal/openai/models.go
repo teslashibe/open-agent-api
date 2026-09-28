@@ -79,12 +79,13 @@ func astraEffortLadders() []ModelAlias {
 
 // claudeEffortLadder returns the Claude Code aliases for one pinned model: the
 // bare ID (non-Cursor clients), api/ and anthropic/ IDs (Cursor BYOK), and
-// api/ effort variants. Claude Code accepts low|medium|high|xhigh|max.
+// api/ effort variants. Claude Code accepts low|medium|high|xhigh|max; the
+// unsuffixed IDs carry no effort so the CLI applies the model's default.
 func claudeEffortLadder(model string) []ModelAlias {
 	out := []ModelAlias{
-		alias(model, model, DefaultReasoningEffort, DefaultVerbosity),
-		alias("api/"+model, model, DefaultReasoningEffort, DefaultVerbosity),
-		alias("anthropic/"+model, model, DefaultReasoningEffort, DefaultVerbosity),
+		alias(model, model, "", DefaultVerbosity),
+		alias("api/"+model, model, "", DefaultVerbosity),
+		alias("anthropic/"+model, model, "", DefaultVerbosity),
 	}
 	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
 		out = append(out, alias("api/"+model+"-"+effort, model, effort, DefaultVerbosity))
@@ -155,11 +156,12 @@ func buildModelAliases() []ModelAlias {
 		alias("claude-sonnet-4-6", "claude-sonnet-4-6", DefaultReasoningEffort, DefaultVerbosity),
 		alias("claude-opus-4-6-thinking", "claude-opus-4-6-thinking", DefaultReasoningEffort, DefaultVerbosity),
 		alias("gpt-oss-120b-medium", "gpt-oss-120b-medium", DefaultReasoningEffort, DefaultVerbosity),
-		// Claude Code CLI short names float to the CLI's latest model.
-		alias("opus", "opus", DefaultReasoningEffort, DefaultVerbosity),
-		alias("sonnet", "sonnet", DefaultReasoningEffort, DefaultVerbosity),
-		alias("haiku", "haiku", DefaultReasoningEffort, DefaultVerbosity),
-		alias("fable", "fable", DefaultReasoningEffort, DefaultVerbosity),
+		// Claude Code CLI short names float to the CLI's latest model. No
+		// effort: the CLI applies each model's own default.
+		alias("opus", "opus", "", DefaultVerbosity),
+		alias("sonnet", "sonnet", "", DefaultVerbosity),
+		alias("haiku", "haiku", "", DefaultVerbosity),
+		alias("fable", "fable", "", DefaultVerbosity),
 	)
 	// Claude Code CLI pinned models. Cursor sends any model whose name starts
 	// with "claude-" to its Anthropic key slot instead of the OpenAI base URL
@@ -170,10 +172,10 @@ func buildModelAliases() []ModelAlias {
 	out = append(out, claudeEffortLadder("claude-opus-4-8")...)
 	out = append(out, claudeEffortLadder("claude-fable-5")...)
 	out = append(out,
-		alias("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", DefaultReasoningEffort, DefaultVerbosity),
-		alias("api/claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", DefaultReasoningEffort, DefaultVerbosity),
-		alias("api/claude-haiku-4-5", "claude-haiku-4-5-20251001", DefaultReasoningEffort, DefaultVerbosity),
-		alias("anthropic/claude-haiku-4-5", "claude-haiku-4-5-20251001", DefaultReasoningEffort, DefaultVerbosity),
+		alias("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", "", DefaultVerbosity),
+		alias("api/claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", "", DefaultVerbosity),
+		alias("api/claude-haiku-4-5", "claude-haiku-4-5-20251001", "", DefaultVerbosity),
+		alias("anthropic/claude-haiku-4-5", "claude-haiku-4-5-20251001", "", DefaultVerbosity),
 	)
 
 	// Legacy GPT-5.5 — upstream pinned so DefaultModel cutover does not remap them.

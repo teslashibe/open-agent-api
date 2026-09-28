@@ -50,3 +50,23 @@ func TestModelAndEffortNormalizesCursorNames(t *testing.T) {
 		}
 	}
 }
+
+func TestParseToolChoiceAnthropicShapes(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want toolChoice
+	}{
+		{`{"type":"auto"}`, toolChoice{}},
+		{`{"type":"auto","disable_parallel_tool_use":true}`, toolChoice{serial: true}},
+		{`{"type":"any"}`, toolChoice{required: true}},
+		{`{"type":"none"}`, toolChoice{none: true}},
+		{`{"type":"tool","name":"Read"}`, toolChoice{required: true, name: "Read"}},
+		{`{"type":"function","function":{"name":"Read"}}`, toolChoice{required: true, name: "Read"}},
+		{`"none"`, toolChoice{none: true}},
+	}
+	for _, tc := range cases {
+		if got := parseToolChoice([]byte(tc.raw)); got != tc.want {
+			t.Fatalf("%s -> %#v, want %#v", tc.raw, got, tc.want)
+		}
+	}
+}

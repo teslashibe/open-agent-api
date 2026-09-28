@@ -28,8 +28,9 @@ type jsonlEvent struct {
 }
 
 type rateLimitInfo struct {
-	Status   string `json:"status"`
-	ResetsAt int64  `json:"resetsAt"`
+	Status         string `json:"status"`
+	ResetsAt       int64  `json:"resetsAt"`
+	IsUsingOverage bool   `json:"isUsingOverage"`
 }
 
 type anthropicEvent struct {
@@ -132,7 +133,7 @@ func (p *streamParser) consume(data []byte) (events []codex.StreamEvent, done bo
 		}
 		return events, false, nil
 	case "rate_limit_event":
-		if event.RateLimitInfo != nil && event.RateLimitInfo.Status == "rejected" {
+		if event.RateLimitInfo != nil && event.RateLimitInfo.Status == "rejected" && !event.RateLimitInfo.IsUsingOverage {
 			return nil, true, rateLimitError(event.RateLimitInfo)
 		}
 	case "result":

@@ -172,3 +172,26 @@ func TestToolSetNamesAndSchemas(t *testing.T) {
 }
 
 func mcpPrefixed(name string) string { return "mcp__c__" + name }
+
+func TestAnthropicToolResultKeepsImages(t *testing.T) {
+	conv := buildConversation([]openai.ChatMessage{
+		{Role: "user", Content: openai.TextContent("look at the logo")},
+		{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"path":"logo.png"}}]`)},
+		{Role: "user", Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"logo.png"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"},"cache_control":{"type":"ephemeral"}}]}]`)},
+	}, readTool())
+	result := conv.Tail[1].Content[0]
+	encoded := mustJSON(t, result)
+	if !strings.Contains(encoded, `"type":"image"`) || !strings.Contains(encoded, `"data":"AAAA"`) || strings.Contains(encoded, "cache_control") {
+		t.Fatalf("tool_result = %s", encoded)
+	}
+}
+
+func TestStdinEscapesSlashCommands(t *testing.T) {
+	data, err := stdinLines([]turn{{Role: "user", Content: []block{textBlock("/compact please"), textBlock("  /cost")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"text":" /compact please"`) || !strings.Contains(string(data), `"text":" /cost"`) {
+		t.Fatalf("stdin = %s", data)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -67,6 +68,9 @@ func stdinLines(turns []turn) ([]byte, error) {
 	encoder := json.NewEncoder(&buf)
 	encoder.SetEscapeHTML(false)
 	for _, t := range turns {
+		if t.Role == "user" {
+			t = escapeSlashCommands(t)
+		}
 		line := map[string]any{
 			"type":               t.Role,
 			"message":            map[string]any{"role": t.Role, "content": t.Content},
@@ -78,6 +82,25 @@ func stdinLines(turns []turn) ([]byte, error) {
 		}
 	}
 	return buf.Bytes(), nil
+}
+
+// escapeSlashCommands keeps user text that starts with "/" from being run as
+// a Claude Code slash command (e.g. "/compact"), which would replace the
+// model turn. A leading space is enough for the CLI to treat it as a prompt.
+func escapeSlashCommands(t turn) turn {
+	content := make([]block, len(t.Content))
+	for i, b := range t.Content {
+		if text, ok := b["text"].(string); ok && b["type"] == "text" && strings.HasPrefix(strings.TrimLeft(text, " \t\r\n"), "/") {
+			copied := block{}
+			for k, v := range b {
+				copied[k] = v
+			}
+			copied["text"] = " " + strings.TrimLeft(text, " \t\r\n")
+			b = copied
+		}
+		content[i] = b
+	}
+	return turn{Role: t.Role, Content: content}
 }
 
 func newUUID() string {
