@@ -50,6 +50,9 @@ type streamProcessor struct {
 	upstreamStart       time.Time
 	firstDeltaLatency   *time.Duration
 	responseShape       streamResponseShape
+	// lastUsage is the most recent non-zero usage report; providers send
+	// cumulative usage, so the last one is the most complete.
+	lastUsage openai.Usage
 }
 
 type streamedToolCall struct {
@@ -428,6 +431,9 @@ func (p *streamProcessor) writeTextDelta(text string, mode deltaTextMode) bool {
 
 func (p *streamProcessor) handleEvent(event codex.StreamEvent, write bool, textMode deltaTextMode) (stop bool) {
 	*p.upstreamEvents++
+	if event.Usage != (openai.Usage{}) {
+		p.lastUsage = event.Usage
+	}
 	if !p.usageRecorded && event.Usage != (openai.Usage{}) {
 		p.opts.metrics.ObserveChatUsage(p.provider, event.Usage.PromptTokens, event.Usage.CompletionTokens, event.Usage.TotalTokens)
 		p.usageRecorded = true
@@ -496,6 +502,20 @@ func (p *streamProcessor) writeFinish() bool {
 	return true
 }
 
+// writeUsage emits the stream_options.include_usage chunk: empty choices and
+// the final usage, after the finish chunk and before [DONE].
+func (p *streamProcessor) writeUsage() bool {
+	usage := p.lastUsage
+	return writeSSE(p.ctx, p.cancel, p.w, openai.ChatCompletionChunk{
+		ID:      p.id,
+		Object:  "chat.completion.chunk",
+		Created: p.created,
+		Model:   *p.model,
+		Choices: []openai.ChatCompletionChunkChoice{},
+		Usage:   &usage,
+	})
+}
+
 func (p *streamProcessor) resetAttemptStats() {
 	*p.deltas = 0
 	*p.toolDeltas = 0
@@ -526,7 +546,7 @@ func (p *streamProcessor) replay(events []codex.StreamEvent, textMode deltaTextM
 
 func (p *streamProcessor) streamEvents(events <-chan codex.StreamEvent, textMode deltaTextMode) bool {
 	for {
-		event, ok := recvStreamEvent(p.ctx, p.cancel, events)
+		event, ok := p.recv(events)
 		if !ok {
 			if p.ctx.Err() != nil {
 				*p.outcome = "client_disconnect"
@@ -543,16 +563,74 @@ func (p *streamProcessor) streamEvents(events <-chan codex.StreamEvent, textMode
 	}
 }
 
-func recvStreamEvent(ctx context.Context, cancel context.CancelFunc, events <-chan codex.StreamEvent) (codex.StreamEvent, bool) {
-	select {
-	case <-ctx.Done():
-		cancel()
-		return codex.StreamEvent{}, false
-	case event, ok := <-events:
-		if !ok {
+// recv waits for the next upstream event, writing SSE keepalive comments
+// while the upstream is silent.
+func (p *streamProcessor) recv(events <-chan codex.StreamEvent) (codex.StreamEvent, bool) {
+	return recvStreamEvent(p.ctx, p.cancel, events, p.w, p.opts.contextConfig.StreamKeepaliveInterval, p.keepalivePayload())
+}
+
+// keepalivePayload is the bytes written during upstream silence: an SSE
+// comment, or (mode "chunk") an empty-delta chunk for clients whose idle
+// timers only count parsed events.
+func (p *streamProcessor) keepalivePayload() []byte {
+	return keepalivePayload(p.opts.contextConfig.StreamKeepaliveMode, p.id, p.created, *p.model)
+}
+
+func keepalivePayload(mode, id string, created int64, model string) []byte {
+	if mode != "chunk" {
+		return sseKeepalive
+	}
+	data, err := sse.Data(openai.ChatCompletionChunk{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   model,
+		Choices: []openai.ChatCompletionChunkChoice{{Index: 0, Delta: openai.ChatDelta{}}},
+	})
+	if err != nil {
+		return sseKeepalive
+	}
+	return data
+}
+
+// sseKeepalive is an SSE comment line; SSE clients (including Cursor's
+// parser) ignore it, but it keeps proxies from timing out idle streams.
+var sseKeepalive = []byte(": keepalive\n\n")
+
+// recvStreamEvent waits for the next event. When keepalive > 0 it writes an
+// SSE comment after each keepalive interval of upstream silence; a failed
+// write means the client is gone, so the request is cancelled (fasthttp does
+// not otherwise signal client disconnects to a streaming handler).
+func recvStreamEvent(ctx context.Context, cancel context.CancelFunc, events <-chan codex.StreamEvent, w *bufio.Writer, keepalive time.Duration, payload []byte) (codex.StreamEvent, bool) {
+	if len(payload) == 0 {
+		payload = sseKeepalive
+	}
+	var tick <-chan time.Time
+	if keepalive > 0 && w != nil {
+		ticker := time.NewTicker(keepalive)
+		defer ticker.Stop()
+		tick = ticker.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
 			return codex.StreamEvent{}, false
+		case event, ok := <-events:
+			if !ok {
+				return codex.StreamEvent{}, false
+			}
+			return event, true
+		case <-tick:
+			if _, err := w.Write(payload); err != nil {
+				cancel()
+				return codex.StreamEvent{}, false
+			}
+			if err := w.Flush(); err != nil {
+				cancel()
+				return codex.StreamEvent{}, false
+			}
 		}
-		return event, true
 	}
 }
 
@@ -580,7 +658,7 @@ func deliverToolStream(
 		upstreamStart, &firstDeltaLatency,
 	)
 	start = opts.now()
-	events, req = applyQuotaFallback(ctx, opts, service, req, events, streamID)
+	events, req = applyQuotaFallbackWithKeepalive(ctx, cancel, w, proc.keepalivePayload(), opts, service, req, events, streamID)
 	toolsPresent := rawJSONPresent(req.Tools)
 	agentTurn := agentTurnExpectsToolCalls(req.Messages, toolsPresent)
 	retryEnabled := opts.contextConfig.DegenerateTurnRetryEnabled && toolsPresent
@@ -593,6 +671,9 @@ func deliverToolStream(
 			if !proc.writeFinish() {
 				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
 			}
+			if req.IncludeUsage && outcome == "completed" && !proc.writeUsage() {
+				return outcome, deltas, toolDeltas, upstreamEvents, textBytes, toolArgChars, *proc.nextToolCallIndex, assistant.String(), start, firstDeltaLatency
+			}
 		}
 		if outcome != "client_disconnect" {
 			_, _ = w.Write(sse.Done())
@@ -602,7 +683,10 @@ func deliverToolStream(
 	}
 
 	// Tool-result continuations and plain chat stream through immediately.
-	if !agentTurn {
+	// Claude has no separate reasoning channel and Cursor does not read
+	// reasoning_content, so Claude text always streams live as content
+	// (narration before tool calls included, as with native Claude).
+	if !agentTurn || provider == codex.ProviderClaude {
 		proc.streamEvents(events, deltaTextContent)
 		return finishStream()
 	}
@@ -630,7 +714,7 @@ func deliverToolStream(
 	}
 
 	for {
-		event, ok := recvStreamEvent(ctx, cancel, events)
+		event, ok := proc.recv(events)
 		if !ok {
 			if ctx.Err() != nil {
 				outcome = "client_disconnect"

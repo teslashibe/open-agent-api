@@ -71,7 +71,7 @@ func buildConversation(messages []openai.ChatMessage, tools *toolSet) conversati
 			}
 			add("assistant", blocks)
 		case "tool":
-			add("user", []block{toolResultBlock(msg.ToolCallID, openai.MessageText(msg.Content), false)})
+			add("user", []block{toolMessageResult(msg, tools)})
 		default:
 			add("user", contentBlocks(msg.Content, "user", tools))
 		}
@@ -196,6 +196,22 @@ func repairToolPairs(turns []turn) []turn {
 		closePending(nil)
 	}
 	return out
+}
+
+// toolMessageResult converts an OpenAI tool message, keeping image parts
+// (the server normalizes Anthropic image tool results into parts arrays).
+func toolMessageResult(msg openai.ChatMessage, tools *toolSet) block {
+	if len(msg.Content) > 0 && msg.Content[0] == '[' {
+		parts := contentBlocks(msg.Content, "user", tools)
+		if hasBlockType(turn{Content: parts}, "image") {
+			content := make([]any, 0, len(parts))
+			for _, p := range parts {
+				content = append(content, p)
+			}
+			return block{"type": "tool_result", "tool_use_id": normalizeToolUseID(msg.ToolCallID), "content": content}
+		}
+	}
+	return toolResultBlock(msg.ToolCallID, openai.MessageText(msg.Content), false)
 }
 
 func orphanResultText(b block) block {

@@ -25,6 +25,13 @@ type ChatCompletionRequest struct {
 	System   json.RawMessage `json:"system,omitempty"`
 	Faithful *bool           `json:"faithful,omitempty"`
 	Prewarm  *bool           `json:"prewarm,omitempty"`
+	// StreamOptions.IncludeUsage asks for a final usage chunk (choices: [])
+	// before [DONE]; Cursor sends it and uses usage for context tracking.
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+}
+
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type ChatMessage struct {
@@ -107,6 +114,7 @@ type ChatCompletionChunk struct {
 	Created int64                       `json:"created"`
 	Model   string                      `json:"model"`
 	Choices []ChatCompletionChunkChoice `json:"choices"`
+	Usage   *Usage                      `json:"usage,omitempty"`
 }
 
 type ChatCompletionChunkChoice struct {

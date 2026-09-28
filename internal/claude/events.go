@@ -233,8 +233,13 @@ func (p *streamParser) toolEvent(id, modelName, input string) codex.StreamEvent 
 // tools return their raw input string, non-object schemas their inner value.
 func toolArguments(spec toolSpec, input string) string {
 	input = strings.TrimSpace(input)
-	if input == "" || !json.Valid([]byte(input)) {
+	if input == "" {
 		input = "{}"
+	}
+	if !json.Valid([]byte(input)) {
+		// Truncated (e.g. max_tokens) or malformed input: pass it through so
+		// the server rejects the call instead of running it with no args.
+		return input
 	}
 	wrapped := spec.Type == "custom"
 	if !wrapped && len(spec.Parameters) > 0 {
@@ -286,6 +291,13 @@ func resultError(event jsonlEvent, code string) error {
 	if code != "" && code != message {
 		message = code + ": " + message
 	}
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "prompt is too long") || strings.Contains(lower, "context_length_exceeded") || strings.Contains(lower, "context window"):
+		return codex.NewError(codex.ErrorKindClient, 400, "conversation exceeds the model's context window", fmt.Errorf("%w: claude: %s", codex.ErrContextWindowExceeded, message))
+	case status == 429:
+		return codex.NewError(codex.ErrorKindUpstream, 429, "claude code usage limit reached", fmt.Errorf("%w: claude: %s", codex.ErrUsageLimitReached, message))
+	}
 	return codex.NewError(kind, status, "claude code error", fmt.Errorf("%s", message))
 }
 
@@ -294,7 +306,7 @@ func rateLimitError(info *rateLimitInfo) error {
 		Kind:    codex.ErrorKindUpstream,
 		Status:  429,
 		Message: "claude code usage limit reached",
-		Err:     fmt.Errorf("claude subscription rate limit rejected"),
+		Err:     fmt.Errorf("%w: claude subscription rate limit rejected", codex.ErrUsageLimitReached),
 	}
 	if info.ResetsAt > 0 {
 		err.ResetAt = time.Unix(info.ResetsAt, 0)

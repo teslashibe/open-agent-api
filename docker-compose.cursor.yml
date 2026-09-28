@@ -29,3 +29,11 @@ services:
       CLAUDE_AGENT_MAX_ACTIVE_PER_KEY: "${CLAUDE_AGENT_MAX_ACTIVE_PER_KEY:-20}"
       CLAUDE_AGENT_QUEUE_LIMIT: "${CLAUDE_AGENT_QUEUE_LIMIT:-192}"
       CLAUDE_TIMEOUT: "${CLAUDE_TIMEOUT:-45m}"
+      # Hold stream headers up to 8s for the first content or error so early
+      # failures reach Cursor as HTTP 429/5xx (retried) or context-overflow
+      # 400s (Cursor summarizes) instead of "[error: …]" assistant text.
+      STREAM_ERROR_GATE: "${STREAM_ERROR_GATE:-8s}"
+      # Opus/Fable can think silently for 60-110s before a tool call; empty
+      # delta chunks keep Cursor's stream alive (and detect dropped clients).
+      STREAM_KEEPALIVE_INTERVAL: "${STREAM_KEEPALIVE_INTERVAL:-10s}"
+      STREAM_KEEPALIVE_MODE: "${STREAM_KEEPALIVE_MODE:-chunk}"
