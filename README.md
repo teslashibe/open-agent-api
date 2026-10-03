@@ -9,14 +9,21 @@ A Go proxy that looks like OpenAI Chat Completions. Point Cursor BYOK (or any Op
 
 | Surface | Auth | Serves |
 | --- | --- | --- |
-| **Codex / ChatGPT** | `codex login` → `~/.codex/auth.json` | GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
+| **Codex / ChatGPT** | `codex login` → `~/.codex/auth.json` | GPT-6.1 Sol, GPT-6 Astra/Sol/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
 | **Gemini / Antigravity** | `scripts/sync-antigravity-auth.sh` | Gemini 2.5/3.x + Antigravity gateway IDs |
-| **Claude Code** | `claude` CLI login / OAuth env | Haiku / Sonnet / Opus / Fable |
+| **Claude Code** | `claude` CLI login / OAuth env | Opus 5.5, Fable 5.1, Sonnet 5.5, Haiku 4.5 and reviewed legacy models (Cursor: use `api/claude-*` IDs) |
 
 GPT-6 Astra exposes `low` through `max`. Ultra is intentionally unsupported
 because official Codex Ultra adds proactive multi-agent delegation, while this
 gateway makes one upstream API request and cannot provide that orchestration
 honestly.
+
+The catalog covers the eight current Codex CLI models and 13 reviewed Claude
+Code models. Send `reasoning_effort` and `speed: "normal"` or `"fast"`, or use
+model aliases such as `gpt-6.1-sol-fast-max` and `api/claude-opus-5-5-fast-xhigh`.
+Controls are validated per model before execution. Claude fast mode is available
+only for Opus 5.5, Opus 5 and Opus 4.8; a fast request may fall back to standard
+upstream. See the [capability matrix](website/docs/models/catalog.md).
 
 > The Codex path is reverse-engineered from `codex_cli_rs`. Stay within each provider’s terms. Licensed under [MIT](LICENSE).
 
@@ -76,7 +83,7 @@ persist; they remain outside the repository.
 | --- | --- |
 | OpenAI API Key | `local-open-agent-api` (any non-empty string) |
 | Override OpenAI Base URL | `https://${NGROK_DOMAIN}/v1` (**not** `http://127.0.0.1…`) |
-| Model | e.g. `gpt-6-astra` or `gpt-5.6-terra` — see [model catalog](https://teslashibe.github.io/open-agent-api/docs/models/catalog); `gpt-5.6-sol` remains the default |
+| Model | e.g. `gpt-6.1-sol` or `gpt-5.6-terra` — see [model catalog](https://teslashibe.github.io/open-agent-api/docs/models/catalog); `gpt-5.6-sol` remains the default |
 
 `docker-compose.cursor.yml` uses the high-throughput baseline proven by the
 shared Cursor/Report Studio gateway: 20 active requests globally and per key,

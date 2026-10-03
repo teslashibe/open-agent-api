@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 
@@ -58,17 +59,28 @@ func applyQuotaFallback(
 	events <-chan codex.StreamEvent,
 	streamID string,
 ) (<-chan codex.StreamEvent, codex.Request) {
+	return applyQuotaFallbackWithKeepalive(ctx, func() {}, nil, nil, opts, service, req, events, streamID)
+}
+
+// applyQuotaFallbackWithKeepalive is applyQuotaFallback for a live stream:
+// while waiting for the first upstream event (often the longest silence,
+// e.g. Claude CLI startup plus planning) it writes SSE keepalives to w.
+func applyQuotaFallbackWithKeepalive(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	w *bufio.Writer,
+	keepalive []byte,
+	opts options,
+	service codex.Service,
+	req codex.Request,
+	events <-chan codex.StreamEvent,
+	streamID string,
+) (<-chan codex.StreamEvent, codex.Request) {
 	if opts.contextConfig.QuotaFallbackModel == "" {
 		return events, req
 	}
-	var first codex.StreamEvent
-	select {
-	case event, ok := <-events:
-		if !ok {
-			return closedEventChannel(), req
-		}
-		first = event
-	case <-ctx.Done():
+	first, ok := recvStreamEvent(ctx, cancel, events, w, opts.contextConfig.StreamKeepaliveInterval, keepalive)
+	if !ok {
 		return closedEventChannel(), req
 	}
 	if first.Err == nil || !errors.Is(first.Err, codex.ErrUsageLimitReached) {

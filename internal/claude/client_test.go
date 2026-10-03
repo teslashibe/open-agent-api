@@ -1,84 +1,61 @@
 package claude
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/teslashibe/open-agent-api/internal/codex"
-	"github.com/teslashibe/open-agent-api/internal/openai"
 )
-
-func TestPromptFromMessages(t *testing.T) {
-	prompt := promptFromMessages([]openai.ChatMessage{
-		{Role: "system", Content: openai.TextContent("be brief")},
-		{Role: "user", Content: openai.TextContent("say hi")},
-	}, nil)
-	if !strings.Contains(prompt, "System: be brief") || !strings.Contains(prompt, "User: say hi") {
-		t.Fatalf("prompt = %q", prompt)
-	}
-}
 
 func TestNewClientDefaults(t *testing.T) {
 	client, err := NewClient(Config{})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if client.executable != DefaultExecutable || client.defaultModel != DefaultModel || client.timeout != DefaultTimeout {
+	if client.executable != DefaultExecutable || client.defaultModel != DefaultModel || client.timeout != DefaultTimeout || client.historyMode != HistoryModeNative {
 		t.Fatalf("client = %#v", client)
 	}
-}
-
-func TestCommandIncludesModelAndEffort(t *testing.T) {
-	client, err := NewClient(Config{Executable: "claude"})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	cmd := client.command(t.Context(), codex.Request{
-		Model:           "fable",
-		ReasoningEffort: "high",
-		Messages:        []openai.ChatMessage{{Role: "user", Content: openai.TextContent("hi")}},
-	}, nil)
-	args := strings.Join(cmd.Args, " ")
-	if !strings.Contains(args, "--model fable") || !strings.Contains(args, "--effort high") {
-		t.Fatalf("args = %v", cmd.Args)
+	if _, err := NewClient(Config{HistoryMode: "bogus"}); err == nil {
+		t.Fatal("expected error for unknown history mode")
 	}
 }
 
-func TestClaudeEffortFiltersUnsupportedValues(t *testing.T) {
-	if claudeEffort("low") != "low" || claudeEffort("medium") != "medium" || claudeEffort("high") != "high" {
-		t.Fatal("expected low/medium/high to pass through")
-	}
-	if claudeEffort("none") != "" || claudeEffort("") != "" {
-		t.Fatal("expected unsupported efforts to be omitted")
-	}
-}
-
-func TestModelStripsAPIPrefix(t *testing.T) {
+func TestModelAndEffortNormalizesCursorNames(t *testing.T) {
 	client, err := NewClient(Config{})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if got := client.model(codex.Request{Model: "api/claude-fable-5"}); got != "claude-fable-5" {
-		t.Fatalf("model = %q", got)
+	cases := []struct{ in, model, effort string }{
+		{"", DefaultModel, ""},
+		{"api/claude-fable-5", "claude-fable-5", ""},
+		{"anthropic/claude-opus-5.5", "claude-opus-5-5", ""},
+		{"claude-opus-5.5-high", "claude-opus-5-5", "high"},
+		{"anthropic/claude-fable-5-1-xhigh", "claude-fable-5-1", "xhigh"},
+		{"opus", "opus", ""},
+	}
+	for _, tc := range cases {
+		model, effort := client.modelAndEffort(codex.Request{Model: tc.in})
+		if model != tc.model || effort != tc.effort {
+			t.Fatalf("%q -> (%q,%q), want (%q,%q)", tc.in, model, effort, tc.model, tc.effort)
+		}
 	}
 }
 
-func TestPromptFromMessagesIncludesToolProtocol(t *testing.T) {
-	prompt := promptFromMessages([]openai.ChatMessage{{Role: "user", Content: openai.TextContent("read file")}}, []toolSpec{{Name: "read_file", Type: "function"}})
-	if !strings.Contains(prompt, "cursor_tool_call") || !strings.Contains(prompt, "read_file") || !strings.Contains(prompt, "User: read file") {
-		t.Fatalf("prompt = %q", prompt)
+func TestParseToolChoiceAnthropicShapes(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want toolChoice
+	}{
+		{`{"type":"auto"}`, toolChoice{}},
+		{`{"type":"auto","disable_parallel_tool_use":true}`, toolChoice{serial: true}},
+		{`{"type":"any"}`, toolChoice{required: true}},
+		{`{"type":"none"}`, toolChoice{none: true}},
+		{`{"type":"tool","name":"Read"}`, toolChoice{required: true, name: "Read"}},
+		{`{"type":"function","function":{"name":"Read"}}`, toolChoice{required: true, name: "Read"}},
+		{`"none"`, toolChoice{none: true}},
 	}
-}
-
-func TestPromptFromMessagesPreservesToolResultContinuation(t *testing.T) {
-	prompt := promptFromMessages([]openai.ChatMessage{
-		{Role: "user", Content: openai.TextContent("read go.mod")},
-		{Role: "assistant", ToolCalls: []openai.ToolCall{{ID: "call_123", Type: "function", Function: openai.ToolCallFunction{Name: "read_file", Arguments: `{"path":"go.mod"}`}}}},
-		{Role: "tool", ToolCallID: "call_123", Content: openai.TextContent("module github.com/teslashibe/open-agent-api")},
-	}, []toolSpec{{Name: "read_file", Type: "function"}})
-	for _, want := range []string{"Cursor tool protocol", "Cursor tool call read_file (call_123)", `{"path":"go.mod"}`, "Tool result for call_123", "module github.com/teslashibe/open-agent-api"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("prompt = %q, want %q", prompt, want)
+	for _, tc := range cases {
+		if got := parseToolChoice([]byte(tc.raw)); got != tc.want {
+			t.Fatalf("%s -> %#v, want %#v", tc.raw, got, tc.want)
 		}
 	}
 }

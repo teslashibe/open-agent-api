@@ -16,16 +16,25 @@ import (
 )
 
 const (
-	DefaultHost                               = "127.0.0.1"
-	DefaultPort                               = 8088
-	DefaultCodexWebsocketURL                  = "wss://chatgpt.com/backend-api/codex/responses"
-	DefaultCodexTimeout                       = 10 * time.Minute
-	DefaultGeminiEndpoint                     = "https://daily-cloudcode-pa.googleapis.com/v1internal"
-	DefaultGeminiTimeout                      = 10 * time.Minute
-	DefaultClaudeExecutable                   = "claude"
-	DefaultClaudeModel                        = "sonnet"
-	DefaultClaudeTimeout                      = 10 * time.Minute
-	DefaultStreamIdleTimeout                  = 90 * time.Second
+	DefaultHost              = "127.0.0.1"
+	DefaultPort              = 8088
+	DefaultCodexWebsocketURL = "wss://chatgpt.com/backend-api/codex/responses"
+	DefaultCodexTimeout      = 10 * time.Minute
+	DefaultGeminiEndpoint    = "https://daily-cloudcode-pa.googleapis.com/v1internal"
+	DefaultGeminiTimeout     = 10 * time.Minute
+	DefaultClaudeExecutable  = "claude"
+	DefaultClaudeModel       = "sonnet"
+	DefaultClaudeTimeout     = 10 * time.Minute
+	DefaultStreamIdleTimeout = 90 * time.Second
+	// DefaultStreamKeepaliveInterval sends an SSE comment during upstream
+	// silence (CLI startup, long planning turns, buffered text) so proxies
+	// keep the connection and a dropped client is detected by the write.
+	DefaultStreamKeepaliveInterval = 15 * time.Second
+	// DefaultStreamErrorGate is how long a stream waits for its first
+	// content or error before committing HTTP 200 headers, so early failures
+	// become real HTTP errors that clients can retry or act on. Off by
+	// default (errors stay in-stream); the Cursor compose profile enables it.
+	DefaultStreamErrorGate                    = time.Duration(0)
 	DefaultCustomToolWire                     = "function"
 	DefaultQuotaFallbackModel                 = "gpt-5.3-codex-spark"
 	DefaultAgentQueueEnabled                  = true
@@ -69,22 +78,31 @@ func DefaultGatewayProviders() []string {
 }
 
 type Config struct {
-	Host                               string
-	Port                               int
-	CodexHome                          string
-	AuthPath                           string
-	CodexProfilePath                   string
-	CodexScaffoldPath                  string
-	CodexWebsocketURL                  string
-	CodexTimeout                       time.Duration
-	GeminiAuthPath                     string
-	GeminiEndpoint                     string
-	GeminiProject                      string
-	GeminiTimeout                      time.Duration
-	ClaudeExecutable                   string
-	ClaudeDefaultModel                 string
-	ClaudeTimeout                      time.Duration
-	StreamIdleTimeout                  time.Duration
+	Host                    string
+	Port                    int
+	CodexHome               string
+	AuthPath                string
+	CodexProfilePath        string
+	CodexScaffoldPath       string
+	CodexWebsocketURL       string
+	CodexTimeout            time.Duration
+	GeminiAuthPath          string
+	GeminiEndpoint          string
+	GeminiProject           string
+	GeminiTimeout           time.Duration
+	ClaudeExecutable        string
+	ClaudeDefaultModel      string
+	ClaudeTimeout           time.Duration
+	ClaudeBridgeExecutable  string
+	ClaudeRunDir            string
+	ClaudeHistoryMode       string
+	StreamIdleTimeout       time.Duration
+	StreamKeepaliveInterval time.Duration
+	// StreamKeepaliveMode is "comment" (SSE comment line) or "chunk" (an
+	// empty-delta chat.completion.chunk, which also counts as activity for
+	// clients whose idle timers only see parsed events).
+	StreamKeepaliveMode                string
+	StreamErrorGate                    time.Duration
 	CustomToolWire                     string
 	QuotaFallbackModel                 string
 	LogBodyShape                       bool
@@ -243,6 +261,15 @@ func Load(args []string) (Config, error) {
 		}
 		cfg.ClaudeTimeout = timeout
 	}
+	if value := os.Getenv("CLAUDE_BRIDGE_EXECUTABLE"); value != "" {
+		cfg.ClaudeBridgeExecutable = value
+	}
+	if value := os.Getenv("CLAUDE_RUN_DIR"); value != "" {
+		cfg.ClaudeRunDir = value
+	}
+	if value := os.Getenv("CLAUDE_HISTORY_MODE"); value != "" {
+		cfg.ClaudeHistoryMode = value
+	}
 	if value := os.Getenv("CODEX_CUSTOM_TOOL_WIRE"); value != "" {
 		cfg.CustomToolWire = value
 	}
@@ -255,6 +282,24 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("CODEX_STREAM_IDLE_TIMEOUT: %w", err)
 		}
 		cfg.StreamIdleTimeout = timeout
+	}
+	for _, setting := range []struct {
+		env    string
+		target *time.Duration
+	}{
+		{"STREAM_KEEPALIVE_INTERVAL", &cfg.StreamKeepaliveInterval},
+		{"STREAM_ERROR_GATE", &cfg.StreamErrorGate},
+	} {
+		if value := os.Getenv(setting.env); value != "" {
+			duration, err := time.ParseDuration(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("%s: %w", setting.env, err)
+			}
+			*setting.target = duration
+		}
+	}
+	if value := os.Getenv("STREAM_KEEPALIVE_MODE"); value != "" {
+		cfg.StreamKeepaliveMode = value
 	}
 	if value := os.Getenv("CODEX_LOG_BODY_SHAPE"); value != "" {
 		logBodyShape, err := strconv.ParseBool(value)
@@ -518,7 +563,13 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.ClaudeExecutable, "claude-executable", cfg.ClaudeExecutable, "Claude Code executable path")
 	fs.StringVar(&cfg.ClaudeDefaultModel, "claude-default-model", cfg.ClaudeDefaultModel, "Claude Code default model")
 	fs.DurationVar(&cfg.ClaudeTimeout, "claude-timeout", cfg.ClaudeTimeout, "Claude Code request timeout")
+	fs.StringVar(&cfg.ClaudeBridgeExecutable, "claude-bridge-executable", cfg.ClaudeBridgeExecutable, "gateway binary serving the claude-mcp tool bridge (default: this binary)")
+	fs.StringVar(&cfg.ClaudeRunDir, "claude-run-dir", cfg.ClaudeRunDir, "directory for per-request Claude Code working files (default: $TMPDIR/open-agent-api-claude)")
+	fs.StringVar(&cfg.ClaudeHistoryMode, "claude-history-mode", cfg.ClaudeHistoryMode, "Claude Code history replay: native (tool_use/tool_result transcript) or text")
 	fs.DurationVar(&cfg.StreamIdleTimeout, "stream-idle-timeout", cfg.StreamIdleTimeout, "maximum silence between upstream stream events before the request is failed (0 disables)")
+	fs.DurationVar(&cfg.StreamKeepaliveInterval, "stream-keepalive-interval", cfg.StreamKeepaliveInterval, "SSE keepalive comment interval during upstream silence (0 disables)")
+	fs.StringVar(&cfg.StreamKeepaliveMode, "stream-keepalive-mode", cfg.StreamKeepaliveMode, "stream keepalive form: comment or chunk (empty-delta chunk)")
+	fs.DurationVar(&cfg.StreamErrorGate, "stream-error-gate", cfg.StreamErrorGate, "how long a stream waits for first content or error before sending HTTP 200 headers (0 disables)")
 	fs.BoolVar(&cfg.LogBodyShape, "log-body-shape", cfg.LogBodyShape, "log redacted JSON request body shape")
 	fs.BoolVar(&cfg.LogRequestIdentity, "log-request-identity", cfg.LogRequestIdentity, "log redacted request identity diagnostics")
 	fs.BoolVar(&cfg.LogCodexToolEvents, "log-codex-tool-events", cfg.LogCodexToolEvents, "log redacted upstream Codex tool-event diagnostics")
@@ -609,6 +660,7 @@ func Defaults() Config {
 		ClaudeExecutable:                   DefaultClaudeExecutable,
 		ClaudeDefaultModel:                 DefaultClaudeModel,
 		ClaudeTimeout:                      DefaultClaudeTimeout,
+		ClaudeHistoryMode:                  "native",
 		AgentQueueEnabled:                  DefaultAgentQueueEnabled,
 		AgentMaxActive:                     DefaultAgentMaxActive,
 		AgentMaxActivePerKey:               DefaultAgentMaxActivePerKey,
@@ -633,6 +685,9 @@ func Defaults() Config {
 		TelemetryMaxBytes:                  DefaultTelemetryMaxBytes,
 		TelemetryBackups:                   DefaultTelemetryBackups,
 		StreamIdleTimeout:                  DefaultStreamIdleTimeout,
+		StreamKeepaliveInterval:            DefaultStreamKeepaliveInterval,
+		StreamKeepaliveMode:                "comment",
+		StreamErrorGate:                    DefaultStreamErrorGate,
 		CustomToolWire:                     DefaultCustomToolWire,
 		QuotaFallbackModel:                 DefaultQuotaFallbackModel,
 		GatewayProviders:                   DefaultGatewayProviders(),
@@ -735,6 +790,15 @@ func (c Config) Validate() error {
 	}
 	if c.ClaudeTimeout <= 0 {
 		return errors.New("claude timeout must be positive")
+	}
+	if c.ClaudeHistoryMode != "native" && c.ClaudeHistoryMode != "text" {
+		return fmt.Errorf("unsupported claude history mode %q (expected native or text)", c.ClaudeHistoryMode)
+	}
+	if c.StreamKeepaliveMode != "comment" && c.StreamKeepaliveMode != "chunk" {
+		return fmt.Errorf("unsupported stream keepalive mode %q (expected comment or chunk)", c.StreamKeepaliveMode)
+	}
+	if c.StreamKeepaliveInterval < 0 || c.StreamErrorGate < 0 {
+		return errors.New("stream keepalive interval and error gate must not be negative")
 	}
 	if c.StreamIdleTimeout < 0 {
 		return errors.New("stream idle timeout must be non-negative")

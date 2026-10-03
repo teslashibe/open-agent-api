@@ -289,14 +289,14 @@ func TestHeadersUseCodex01560Identity(t *testing.T) {
 		faithful  bool
 		userAgent string
 	}{
-		{name: "minimal", userAgent: "codex_cli_rs/0.156.0 (api wrapper) dumb"},
-		{name: "faithful", faithful: true, userAgent: "codex_cli_rs/0.156.0 (Mac OS 26.2.0; arm64) dumb"},
+		{name: "minimal", userAgent: "codex_cli_rs/0.159.2 (api wrapper) dumb"},
+		{name: "faithful", faithful: true, userAgent: "codex_cli_rs/0.159.2 (api wrapper) dumb"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			headers := client.headers(creds, tt.faithful, "sid", requestKindTurn)
-			if got := headers.Get("Version"); got != "0.156.0" {
-				t.Fatalf("version header = %q, want %q", got, "0.156.0")
+			if got := headers.Get("Version"); got != "0.159.2" {
+				t.Fatalf("version header = %q, want %q", got, "0.159.2")
 			}
 			if got := headers.Get("User-Agent"); got != tt.userAgent {
 				t.Fatalf("user-agent header = %q, want %q", got, tt.userAgent)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/teslashibe/open-agent-api/internal/auth"
 	"github.com/teslashibe/open-agent-api/internal/claude"
+	"github.com/teslashibe/open-agent-api/internal/claude/mcpbridge"
 	"github.com/teslashibe/open-agent-api/internal/codex"
 	"github.com/teslashibe/open-agent-api/internal/config"
 	"github.com/teslashibe/open-agent-api/internal/gemini"
@@ -20,6 +21,15 @@ import (
 )
 
 func main() {
+	// The Claude Code provider launches this binary as its stdio MCP tool
+	// bridge; that mode must not load gateway config or open listeners.
+	if len(os.Args) > 1 && os.Args[1] == "claude-mcp" {
+		if err := mcpbridge.Main(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "open-agent-api claude-mcp: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "open-agent-api: %v\n", err)
 		os.Exit(1)
@@ -54,7 +64,7 @@ func run(args []string) error {
 	}
 	var claudeService codex.Service
 	if cfg.ProviderEnabled(codex.ProviderClaude) {
-		claudeService, err = buildClaudeService(cfg)
+		claudeService, err = buildClaudeService(cfg, logOutput)
 		if err != nil {
 			return err
 		}
@@ -214,14 +224,22 @@ func buildGeminiService(cfg config.Config) (codex.Service, error) {
 	return client, nil
 }
 
-func buildClaudeService(cfg config.Config) (codex.Service, error) {
+func buildClaudeService(cfg config.Config, logOutput io.Writer) (codex.Service, error) {
 	client, err := claude.NewClient(claude.Config{
-		Executable:   cfg.ClaudeExecutable,
-		DefaultModel: cfg.ClaudeDefaultModel,
-		Timeout:      cfg.ClaudeTimeout,
+		Executable:       cfg.ClaudeExecutable,
+		DefaultModel:     cfg.ClaudeDefaultModel,
+		Timeout:          cfg.ClaudeTimeout,
+		BridgeExecutable: cfg.ClaudeBridgeExecutable,
+		RunDir:           cfg.ClaudeRunDir,
+		HistoryMode:      cfg.ClaudeHistoryMode,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create claude client: %w", err)
 	}
+	version := client.Version()
+	if version == "" {
+		version = "unknown"
+	}
+	fmt.Fprintf(logOutput, "claude_code executable=%s version=%s history_mode=%s\n", cfg.ClaudeExecutable, version, cfg.ClaudeHistoryMode)
 	return client, nil
 }

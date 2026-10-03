@@ -16,16 +16,40 @@ func shouldRetryDegenerateTurn(enabled bool, toolsPresent bool, messages []opena
 		return false
 	}
 	switch messages[len(messages)-1].Role {
-	case "user":
-		// User agent turns should already use tool_choice=required upstream.
-		// Retry only when the model still stalls with planning prose.
-		return detectLoopPhrase(assistantText) != ""
-	case "tool":
-		// Tool continuations may legitimately finish with a long prose summary.
-		return detectLoopPhrase(assistantText) != ""
+	case "user", "tool":
+		// A stall is a short reply that announces work ("I'll read the
+		// file now.") without calling a tool. Final answers that merely
+		// contain such a phrase ("Done. Let me know if…") must not retry:
+		// by the time this runs the text has already been sent.
+		return isStallAnnouncement(assistantText)
 	default:
 		return false
 	}
+}
+
+// stallMaxBytes bounds how long a stall announcement can be; longer text
+// is a real answer even if it contains a planning phrase.
+const stallMaxBytes = 600
+
+// stallPhraseWindow caps the first sentence examined for a planning phrase.
+const stallPhraseWindow = 120
+
+// isStallAnnouncement reports whether a reply is a short announcement of
+// work that opens with a planning phrase ("I'll inspect…", "Let me look…").
+func isStallAnnouncement(text string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	if trimmed == "" || len(trimmed) > stallMaxBytes {
+		return false
+	}
+	first := trimmed
+	if end := strings.IndexAny(first, ".!?\n"); end >= 0 {
+		first = first[:end]
+	}
+	if len(first) > stallPhraseWindow {
+		first = first[:stallPhraseWindow]
+	}
+	first = strings.ReplaceAll(first, "let me know", "")
+	return detectLoopPhrase(first+" ") != ""
 }
 
 func degenerateAgentTurn(toolsPresent bool, finishReason string, textBytes int, toolCallCount int) bool {

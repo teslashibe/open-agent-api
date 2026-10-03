@@ -23,12 +23,16 @@ type Request struct {
 	ReasoningEffort   string
 	Verbosity         string
 	ServiceTier       string
+	Speed             string
 	Faithful          bool
 	Prewarm           bool
 	RequestID         string
 	AffinityKey       string
 	AffinityKeyHash   string
 	AffinityKeyMode   string
+	// IncludeUsage mirrors stream_options.include_usage: the server writes a
+	// final usage chunk before [DONE]. Providers ignore it.
+	IncludeUsage bool
 	// AllowCooling is set only by the server's model-level quota fallback.
 	// It lets that fallback make one attempt when every pooled account is
 	// cooling; ordinary requests always exclude cooling accounts.

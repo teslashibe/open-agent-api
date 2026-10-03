@@ -18,9 +18,21 @@ type ChatCompletionRequest struct {
 	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 	ReasoningEffort   string          `json:"reasoning_effort,omitempty"`
+	Speed             string          `json:"speed,omitempty"`
 	Verbosity         string          `json:"verbosity,omitempty"`
-	Faithful          *bool           `json:"faithful,omitempty"`
-	Prewarm           *bool           `json:"prewarm,omitempty"`
+	// System is the Anthropic Messages top-level system prompt (a string or
+	// an array of text blocks). Cursor sends that dialect for models whose
+	// name contains "claude"; the server folds it into Messages.
+	System   json.RawMessage `json:"system,omitempty"`
+	Faithful *bool           `json:"faithful,omitempty"`
+	Prewarm  *bool           `json:"prewarm,omitempty"`
+	// StreamOptions.IncludeUsage asks for a final usage chunk (choices: [])
+	// before [DONE]; Cursor sends it and uses usage for context tracking.
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+}
+
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type ChatMessage struct {
@@ -103,6 +115,7 @@ type ChatCompletionChunk struct {
 	Created int64                       `json:"created"`
 	Model   string                      `json:"model"`
 	Choices []ChatCompletionChunkChoice `json:"choices"`
+	Usage   *Usage                      `json:"usage,omitempty"`
 }
 
 type ChatCompletionChunkChoice struct {
@@ -133,9 +146,10 @@ type ToolCallFunctionDelta struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	Speed            string `json:"speed,omitempty"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	TotalTokens      int    `json:"total_tokens"`
 }
 
 type ErrorResponse struct {
@@ -158,6 +172,45 @@ type Model struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+}
+
+// SystemText flattens an Anthropic top-level system value (a string or an
+// array of {type:"text",text} blocks, possibly with cache_control) into one
+// prompt, keeping block boundaries as blank lines.
+func SystemText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return strings.TrimSpace(MessageText(raw))
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if t := strings.TrimSpace(block.Text); t != "" && (block.Type == "" || block.Type == "text") {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// WithSystemMessage returns messages with the top-level system prompt (if
+// any) prepended as a system message, so every provider sees it.
+func (r ChatCompletionRequest) WithSystemMessage() []ChatMessage {
+	system := SystemText(r.System)
+	if system == "" {
+		return r.Messages
+	}
+	out := make([]ChatMessage, 0, len(r.Messages)+1)
+	out = append(out, ChatMessage{Role: "system", Content: TextContent(system)})
+	return append(out, r.Messages...)
 }
 
 func TextContent(text string) json.RawMessage {

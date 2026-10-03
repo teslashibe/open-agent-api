@@ -10,7 +10,7 @@ These are the OpenAI-compatible **public IDs** clients should send. The server r
 
 **Source of truth:** [`internal/openai/models.go`](https://github.com/teslashibe/open-agent-api/blob/main/internal/openai/models.go)
 
-`GATEWAY_PROVIDERS` (default `codex,gemini,claude`) decides which providers show up in `GET /v1/models` and can actually complete. Disabled providers return `404 model not found`. Unknown IDs pass through with default effort/verbosity.
+`GATEWAY_PROVIDERS` (default `codex,gemini,claude`) decides which providers show up in `GET /v1/models` and can actually complete. Disabled providers return `404 model not found`. Unknown raw IDs retain passthrough compatibility. Unknown Claude IDs do not get a guessed effort; explicit unreviewed effort/fast controls are rejected.
 
 To see what’s live:
 
@@ -31,88 +31,47 @@ API request and cannot provide that orchestration honestly. Raw Astra
 
 Routed when the upstream model is not Gemini/Claude/Antigravity-gateway. Auth: `CODEX_HOME` / `CODEX_AUTH_PATH` (`~/.codex/auth.json`).
 
-### GPT-6 Astra (default and Fast tiers)
+### Current CLI models and controls
 
-| Public ID pattern | Upstream | Effort | Verbosity | Service tier |
-| --- | --- | --- | --- | --- |
-| `gpt-6-astra` | `gpt-6-astra` | `low` | `medium` | default |
-| `gpt-6-astra-{low,medium,high,xhigh,max}` | `gpt-6-astra` | suffix value | `medium` | default |
-| `gpt-6-astra-fast` | `gpt-6-astra` | `low` | `medium` | priority |
-| `gpt-6-astra-fast-{low,medium,high,xhigh,max}` | `gpt-6-astra` | suffix value | `medium` | priority |
+Reviewed on October 2, 2026 against Codex desktop CLI 0.159.2 `model/list`.
+The older Homebrew CLI 0.154.0 returns a smaller catalog. Model availability
+still depends on the signed-in account. The wrapper sends compatibility version
+0.159.2 with an explicit API-wrapper user agent.
 
-`fast` is the repository's public/legacy alias for upstream
-`service_tier: priority`.
+| Canonical model | Supported effort | Normal and Fast |
+| --- | --- | --- |
+| `gpt-6.1-sol` | `low`, `medium`, `high`, `xhigh`, `max` | Both |
+| `gpt-6-astra` | `low`, `medium`, `high`, `xhigh`, `max` | Both |
+| `gpt-6-sol` | `low`, `medium`, `high`, `xhigh`, `max` | Both |
+| `gpt-6-luna` | `low`, `medium`, `high`, `xhigh`, `max` | Both |
+| `gpt-5.6-sol` | `low`, `medium`, `high`, `xhigh`, `max` | Both |
+| `gpt-5.6-terra` | `low`, `medium`, `high`, `xhigh`, `max` | Both |
+| `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` | Both |
+| `gpt-5.5` | `low`, `medium`, `high`, `xhigh` | Both |
 
-### GPT-5.6 Sol (default and Fast tiers)
+Every row exposes the base ID and `-effort`, `-normal`, `-normal-effort`,
+`-fast`, and `-fast-effort` aliases. For example:
+`gpt-6.1-sol-normal-max` and `gpt-6.1-sol-fast-max`. Fast requests upstream
+`service_tier: priority`; normal uses the default tier. Existing bare Sol and
+Astra aliases retain `low`; the other current bare IDs retain `medium`.
+Fast aliases retain their existing `low` default. GPT-6.1 Sol uses low verbosity,
+as do the GPT-6 Sol/Luna and GPT-5.6 families; Astra and GPT-5.5 retain medium.
 
-| Public ID | Upstream | Effort | Verbosity | Service tier |
-| --- | --- | --- | --- | --- |
-| `gpt-5.6-sol` | `gpt-5.6-sol` | `low` | `low` | default |
-| `gpt-5.6` | `gpt-5.6-sol` | `medium` | `low` | default |
-| `gpt-5.6-sol-low` | `gpt-5.6-sol` | `low` | `low` | default |
-| `gpt-5.6-sol-medium` | `gpt-5.6-sol` | `medium` | `low` | default |
-| `gpt-5.6-sol-high` | `gpt-5.6-sol` | `high` | `low` | default |
-| `gpt-5.6-sol-xhigh` | `gpt-5.6-sol` | `xhigh` | `low` | default |
-| `gpt-5.6-sol-max` | `gpt-5.6-sol` | `max` | `low` | default |
-| `gpt-5.6-sol-fast` | `gpt-5.6-sol` | `low` | `low` | `priority` (Fast, 1.5x speed) |
-| `gpt-5.6-sol-fast-low` | `gpt-5.6-sol` | `low` | `low` | `priority` |
-| `gpt-5.6-sol-fast-medium` | `gpt-5.6-sol` | `medium` | `low` | `priority` |
-| `gpt-5.6-sol-fast-high` | `gpt-5.6-sol` | `high` | `low` | `priority` |
-| `gpt-5.6-sol-fast-xhigh` | `gpt-5.6-sol` | `xhigh` | `low` | `priority` |
-| `gpt-5.6-sol-fast-max` | `gpt-5.6-sol` | `max` | `low` | `priority` |
-| `codex-sol` | `gpt-5.6-sol` | `low` | `low` | default |
+Alternatively send the canonical model with `reasoning_effort` and
+`speed: "normal"` or `speed: "fast"`. Explicit fields override alias controls.
+An unsupported effort, speed or recognized model variant returns HTTP 400 before
+provider work. CLI metadata does not advertise the API-only `none` effort.
+Ultra requires multi-agent orchestration and returns an explicit unsupported-mode
+error; it is never mapped to `max`.
 
-### GPT-5.6 Terra (default and Fast tiers)
+The default stays `gpt-5.6-sol`. Existing `gpt-5.6`, `codex-sol`, `codex-terra`,
+`codex-luna` and GPT-5.5 mini/lite/deep/verbose aliases retain their mappings.
+Historical `gpt-5.4` aliases retain low through xhigh and normal/priority behavior;
+they are compatibility aliases, not part of the current eight-model CLI inventory.
+GPT-5.5 ChatGPT sign-in access is scheduled to retire October 14, 2026; retained
+aliases do not guarantee upstream availability after retirement.
 
-| Public ID pattern | Upstream | Effort | Verbosity | Service tier |
-| --- | --- | --- | --- | --- |
-| `gpt-5.6-terra` | `gpt-5.6-terra` | `medium` | `low` | default |
-| `gpt-5.6-terra-{low,medium,high,xhigh,max}` | `gpt-5.6-terra` | suffix value | `low` | default |
-| `gpt-5.6-terra-fast` | `gpt-5.6-terra` | `low` | `low` | priority |
-| `gpt-5.6-terra-fast-{low,medium,high,xhigh,max}` | `gpt-5.6-terra` | suffix value | `low` | priority |
-| `codex-terra` | `gpt-5.6-terra` | `medium` | `low` | default |
-
-### GPT-5.6 Luna (default and Fast tiers)
-
-| Public ID pattern | Upstream | Effort | Verbosity | Service tier |
-| --- | --- | --- | --- | --- |
-| `gpt-5.6-luna` | `gpt-5.6-luna` | `medium` | `low` | default |
-| `gpt-5.6-luna-{low,medium,high,xhigh,max}` | `gpt-5.6-luna` | suffix value | `low` | default |
-| `gpt-5.6-luna-fast` | `gpt-5.6-luna` | `low` | `low` | priority |
-| `gpt-5.6-luna-fast-{low,medium,high,xhigh,max}` | `gpt-5.6-luna` | suffix value | `low` | priority |
-| `codex-luna` | `gpt-5.6-luna` | `medium` | `low` | default |
-
-### GPT-5.5 (legacy, default and Fast tiers)
-
-| Public ID | Upstream | Effort | Verbosity |
-| --- | --- | --- | --- |
-| `gpt-5.5` | `gpt-5.5` | `medium` | `medium` |
-| `gpt-5.5-low` | `gpt-5.5` | `low` | `medium` |
-| `gpt-5.5-high` | `gpt-5.5` | `high` | `medium` |
-| `gpt-5.5-fast` | `gpt-5.5` | `low` | `low` |
-| `gpt-5.5-fast-low` | `gpt-5.5` | `low` | `medium` |
-| `gpt-5.5-fast-medium` | `gpt-5.5` | `medium` | `medium` |
-| `gpt-5.5-fast-high` | `gpt-5.5` | `high` | `medium` |
-| `gpt-5.5-mini` | `gpt-5.5` | `low` | `low` |
-| `gpt-5.5-lite` | `gpt-5.5` | `low` | `medium` |
-| `gpt-5.5-deep` | `gpt-5.5` | `high` | `medium` |
-| `gpt-5.5-verbose` | `gpt-5.5` | `medium` | `high` |
-| `gpt-5.5-fast-verbose` | `gpt-5.5` | `low` | `high` |
-
-Every `gpt-5.5-fast*` alias above requests the `priority` service tier.
-
-### GPT-5.4 (legacy, default and Fast tiers)
-
-| Public ID pattern | Upstream | Effort | Verbosity | Service tier |
-| --- | --- | --- | --- | --- |
-| `gpt-5.4` | `gpt-5.4` | `medium` | `medium` | default |
-| `gpt-5.4-{low,medium,high,xhigh}` | `gpt-5.4` | suffix value | `medium` | default |
-| `gpt-5.4-fast` | `gpt-5.4` | `low` | `medium` | priority |
-| `gpt-5.4-fast-{low,medium,high,xhigh}` | `gpt-5.4` | suffix value | `medium` | priority |
-
-GPT-5.4 remains visible in the Codex CLI catalog and advertises the priority
-tier. It does not advertise `max`, so the gateway intentionally stops at
-`xhigh`.
+Public model details: [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
 
 ### Spark (overflow / small context)
 
@@ -165,25 +124,64 @@ These look like Claude/GPT names but **do not** use the Claude Code CLI — they
 
 ## Surface: Claude Code CLI
 
-Routed for Claude Code short names, dated IDs, and `api/claude-*` prefixes. Auth: local `claude` executable + Claude Code login. Disabled when `GATEWAY_PROVIDERS` omits `claude`.
+Routed for Claude Code short names, `claude-*` IDs, and `api/` or `anthropic/` prefixed IDs. Auth: the pinned `claude` executable plus a Claude Code login (`CLAUDE_CODE_OAUTH_TOKEN` in Docker). Disabled when `GATEWAY_PROVIDERS` omits `claude`.
 
-| Public ID | Upstream | Effort | Verbosity |
-| --- | --- | --- | --- |
-| `opus` | `opus` | `medium` | `medium` |
-| `sonnet` | `sonnet` | `medium` | `medium` |
-| `haiku` | `haiku` | `medium` | `medium` |
-| `fable` | `fable` | `medium` | `medium` |
-| `claude-opus-4-8` | `claude-opus-4-8` | `medium` | `medium` |
-| `claude-sonnet-5` | `claude-sonnet-5` | `medium` | `medium` |
-| `claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` | `medium` | `medium` |
-| `claude-fable-5` | `claude-fable-5` | `medium` | `medium` |
-| `api/claude-opus-4-8` | `claude-opus-4-8` | `medium` | `medium` |
-| `api/claude-sonnet-5` | `claude-sonnet-5` | `medium` | `medium` |
-| `api/claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` | `medium` | `medium` |
-| `api/claude-fable-5` | `claude-fable-5` | `medium` | `medium` |
-| `api/claude-fable-5-low` | `claude-fable-5` | `low` | `medium` |
-| `api/claude-fable-5-medium` | `claude-fable-5` | `medium` | `medium` |
-| `api/claude-fable-5-high` | `claude-fable-5` | `high` | `medium` |
+:::warning Cursor: use `api/claude-*` IDs
+Cursor sends any model whose name starts with `claude-` to its **Anthropic** key slot, not to the OpenAI base URL override, so bare `claude-*` IDs never reach this gateway from Cursor. Add the `api/claude-*` (or `anthropic/claude-*`) IDs instead. The request's `reasoning_effort` overrides the alias effort.
+:::
+
+The Docker image pins Claude Code 2.1.286. Reviewed against that CLI's runtime metadata and the official
+[model configuration](https://code.claude.com/docs/en/model-config) and
+[fast mode](https://code.claude.com/docs/en/fast-mode) documentation.
+
+| Canonical model | Supported effort | Fast |
+| --- | --- | --- |
+| `claude-fable-5-1` | `low`, `medium`, `high`, `xhigh`, `max` | No |
+| `claude-opus-5-5` | `low`, `medium`, `high`, `xhigh`, `max` | Yes |
+| `claude-sonnet-5-5` | `low`, `medium`, `high`, `xhigh`, `max` | No |
+| `claude-haiku-4-5-20251001` | No effort control | No |
+| `claude-fable-5` | `low`, `medium`, `high`, `xhigh`, `max` | No |
+| `claude-opus-5` | `low`, `medium`, `high`, `xhigh`, `max` | Yes |
+| `claude-opus-4-8` | `low`, `medium`, `high`, `xhigh`, `max` | Yes |
+| `claude-opus-4-7` | `low`, `medium`, `high`, `xhigh`, `max` | No |
+| `claude-opus-4-6` | `low`, `medium`, `high`, `max` | No |
+| `claude-opus-4-5-20251101` | `low`, `medium`, `high` | No |
+| `claude-sonnet-5` | `low`, `medium`, `high`, `xhigh`, `max` | No |
+| `claude-sonnet-4-6` | `low`, `medium`, `high`, `max` | No |
+| `claude-sonnet-4-5-20250929` | No effort control, deprecated | No |
+
+Each model exposes bare, `api/` and `anthropic/` aliases, plus supported
+`-effort`, `-normal` and `-normal-effort` variants. Fast-capable rows also expose
+`-fast` and `-fast-effort`. The bare `claude-sonnet-4-6` ID preserves its existing
+Antigravity route; use `api/claude-sonnet-4-6` for Claude Code.
+The dated Haiku 4.5, Opus 4.5 and Sonnet 4.5 IDs also have undated aliases.
+Sonnet 4.5 is scheduled to retire November 30, 2026.
+
+The unsuffixed `opus`, `sonnet`, `fable` and `haiku` aliases let the CLI choose
+its latest model. Their effort/speed variants pin the reviewed current model.
+When no effort is supplied, the gateway omits `--effort`, allowing each CLI
+model's default. Currently Opus 5.5 and Sonnet 5.5 default to medium, Opus 4.7 to
+xhigh, and the other effort-capable models to high. Haiku and Sonnet 4.5 have no
+effort control. Opus 4.5 supports only low/medium/high. Unsupported efforts are
+rejected rather than silently downgraded.
+
+Claude normal requests set `fastMode: false`; fast requests set `fastMode: true`
+through the CLI's `--settings` option and require Claude Code 2.1.205 or newer.
+Only Opus 5.5, Opus 5 and Opus 4.8 accept fast requests. Other combinations return
+HTTP 400, preventing the CLI from switching to an Opus model implicitly.
+Account permissions and usage credits still apply. Claude may fall back to
+standard execution during rate limits, exhausted credits or unavailable fast
+access. Request `speed` describes the requested mode. Response `usage.speed`
+is included only if the provider reports `fast` or `standard`; it is never
+inferred from the request, and the gateway does not calculate a fast surcharge.
+Restricted Mythos models are not advertised as Claude Code models: the reviewed
+CLI inventory does not establish their execution controls or account access.
+
+Example:
+
+```json
+{"model":"api/claude-opus-5-5","reasoning_effort":"max","speed":"fast","messages":[{"role":"user","content":"Hello"}]}
+```
 
 ---
 
@@ -198,6 +196,8 @@ Routed for Claude Code short names, dated IDs, and `api/claude-*` prefixes. Auth
 | Fast lightweight Agent | `gpt-5.6-luna-fast` |
 | Fastest cheap turn | `gemini-3.1-flash-lite` |
 | Gemini Pro (Antigravity) | `gemini-3.1-pro-high` |
-| Antigravity Claude | `claude-sonnet-4-6` |
-| Claude Code Haiku | `haiku` |
+| Claude Code Opus 5.5 | `api/claude-opus-5-5-high` |
+| Claude Code Fable 5.1 | `api/claude-fable-5-1` |
+| Claude Code Sonnet 5.5 | `api/claude-sonnet-5-5` |
+| Claude Code Haiku | `api/claude-haiku-4-5` |
 | Overflow / tiny context | `gpt-5.3-codex-spark` |

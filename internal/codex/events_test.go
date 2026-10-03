@@ -266,3 +266,10 @@ func TestParseStreamEventUsageLimitCarriesResetHint(t *testing.T) {
 		t.Fatalf("error hint = %#v", codexErr)
 	}
 }
+
+func TestParseStreamEventIncompleteIsTerminal(t *testing.T) {
+	event, terminal, err := parseStreamEvent([]byte(`{"type":"response.incomplete","response":{"id":"resp_1","model":"gpt-5.6-sol","incomplete_details":{"reason":"max_output_tokens"}}}`))
+	if err != nil || !terminal || !event.Done || event.ID != "resp_1" {
+		t.Fatalf("event=%#v terminal=%t err=%v", event, terminal, err)
+	}
+}

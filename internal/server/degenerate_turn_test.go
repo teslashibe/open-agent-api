@@ -95,3 +95,21 @@ func TestDetectLoopPhrase(t *testing.T) {
 		t.Fatalf("detectLoopPhrase() = %q, want empty", got)
 	}
 }
+
+func TestShouldRetryDegenerateTurnIgnoresFinalAnswers(t *testing.T) {
+	for _, role := range []string{"user", "tool"} {
+		msgs := []openai.ChatMessage{{Role: role, Content: openai.TextContent("go")}}
+		for _, text := range []string{
+			"Updated the config and ran the tests. Let me know if you need anything else.",
+			"The bug was an off-by-one in the loop bound, which I fixed in parser.go. I'll note that the tests still pass.",
+			"Summary:\n" + strings.Repeat("- changed a file\n", 60) + "I'll keep an eye on it.",
+		} {
+			if shouldRetryDegenerateTurn(true, true, msgs, 0, text, len(text)) {
+				t.Fatalf("role %s: final answer must not retry: %q", role, text)
+			}
+		}
+		if !shouldRetryDegenerateTurn(true, true, msgs, 0, "Let me look at the failing test first.", 38) {
+			t.Fatalf("role %s: short announcement should retry", role)
+		}
+	}
+}

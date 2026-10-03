@@ -112,7 +112,10 @@ func parseStreamEvent(raw []byte) (StreamEvent, bool, error) {
 			return StreamEvent{ToolCalls: []ToolCall{toolCall}}, false, nil
 		}
 		return StreamEvent{}, false, nil
-	case "response.completed":
+	case "response.completed", "response.incomplete":
+		// response.incomplete (max_output_tokens, content filter) is terminal
+		// too; without it the websocket stays open and the turn hangs until
+		// the client timeout.
 		done := StreamEvent{Done: true}
 		if event.Response != nil {
 			done.ID = event.Response.ID

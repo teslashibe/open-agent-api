@@ -450,6 +450,13 @@ func chatCompletions(opts options) fiber.Handler {
 		if err := c.BodyParser(&req); err != nil {
 			return writeError(c, fiber.StatusBadRequest, "invalid_request_error", "invalid JSON request body")
 		}
+		// Cursor sends Claude-named models the Anthropic dialect, whose system
+		// prompt is a top-level field rather than a system message.
+		req.Messages = req.WithSystemMessage()
+		req.System = nil
+		if openai.NormalizeAnthropicDialect(&req) && opts.logBodyShape {
+			logLine(opts, "anthropic_dialect_normalized request_id=%s messages=%d\n", requestID, len(req.Messages))
+		}
 		if err := validateChatRequest(req); err != nil {
 			return writeError(c, fiber.StatusBadRequest, "invalid_request_error", err.Error())
 		}
@@ -458,7 +465,10 @@ func chatCompletions(opts options) fiber.Handler {
 		if model == "" {
 			model = openai.DefaultModel
 		}
-		modelAlias := openai.ResolveModelAlias(model)
+		modelAlias, selectionErr := openai.ResolveModelSelection(model, req.ReasoningEffort, req.Speed)
+		if selectionErr != nil {
+			return writeError(c, fiber.StatusBadRequest, "invalid_request_error", selectionErr.Error())
+		}
 		provider = codex.ProviderForModel(modelAlias.UpstreamModel)
 		serviceTier = modelAlias.ServiceTier
 		if !opts.contextConfig.ProviderEnabled(provider) {
@@ -527,12 +537,14 @@ func chatCompletions(opts options) fiber.Handler {
 			ReasoningEffort:   defaultString(req.ReasoningEffort, modelAlias.ReasoningEffort),
 			Verbosity:         defaultString(req.Verbosity, modelAlias.Verbosity),
 			ServiceTier:       modelAlias.ServiceTier,
+			Speed:             modelAlias.Speed,
 			Faithful:          faithful,
 			Prewarm:           prewarm,
 			RequestID:         requestID,
 			AffinityKey:       queueKey.Value,
 			AffinityKeyHash:   queueKey.Hash,
 			AffinityKeyMode:   queueKey.Mode,
+			IncludeUsage:      req.StreamOptions != nil && req.StreamOptions.IncludeUsage,
 		})
 
 		releaseQueue := func() {}
@@ -628,6 +640,25 @@ func streamChatCompletion(c *fiber.Ctx, opts options, ctx context.Context, cance
 		return mapServiceError(c, err)
 	}
 	events = withStreamIdleTimeout(ctx, events, opts.contextConfig.StreamIdleTimeout)
+	events, err = gateStreamStart(ctx, events, opts.contextConfig.StreamErrorGate, func(err error) bool {
+		// Usage-limit errors stay in-stream so applyQuotaFallback can
+		// restart the turn on the overflow model.
+		if !errors.Is(err, codex.ErrUsageLimitReached) {
+			return false
+		}
+		_, ok := buildQuotaFallbackRequest(req, opts.contextConfig)
+		return ok
+	})
+	if err != nil {
+		cancel()
+		releaseQueue()
+		logLine(opts, "stream_error id=%s model=%s err=%s failure_class=%s failure_phase=%s\n", requestID, req.Model, detailedError(err), codex.ClassifyFailure(err), codex.PhaseFirstEvent)
+		logRequestTiming(opts, requestID, contextDuration, queueWait, opts.now().Sub(upstreamStart), -1, opts.now().Sub(requestStart))
+		result := serviceErrorMetricResult(err)
+		opts.metrics.ObserveChatDuration(provider, result, opts.now().Sub(requestStart))
+		opts.metrics.ObserveFastTierRequest(provider, req.ServiceTier, result)
+		return mapServiceError(c, err)
+	}
 
 	id := requestID
 	created := opts.now().Unix()
@@ -907,7 +938,13 @@ func mapServiceError(c *fiber.Ctx, err error) error {
 		return writeError(c, 499, "request_canceled", "request canceled")
 	}
 	if errors.Is(err, codex.ErrContextWindowExceeded) {
-		return writeError(c, fiber.StatusBadRequest, "invalid_request_error", "conversation exceeds this model's context window - switch this chat to a larger model")
+		// "prompt is too long" and the context_length_exceeded code are what
+		// Cursor matches to summarize the conversation and retry.
+		return c.Status(fiber.StatusBadRequest).JSON(openai.ErrorResponse{Error: openai.ErrorBody{
+			Message: contextWindowMessage,
+			Type:    "invalid_request_error",
+			Code:    "context_length_exceeded",
+		}})
 	}
 	if errors.Is(err, codex.ErrUsageLimitReached) {
 		return writeError(c, fiber.StatusTooManyRequests, "rate_limit_error", publicErrorMessage(err))
@@ -947,6 +984,10 @@ func mapAgentQueueError(c *fiber.Ctx, err error) error {
 }
 
 const metricsFailureClassLocal = "codex_chat_api.metrics_failure_class"
+
+// contextWindowMessage keeps the original guidance but leads with the phrase
+// Cursor recognizes as a context overflow (it then summarizes and retries).
+const contextWindowMessage = "prompt is too long: conversation exceeds this model's context window (context_length_exceeded) - switch this chat to a larger model"
 
 func writeError(c *fiber.Ctx, status int, errorType string, message string) error {
 	return c.Status(status).JSON(openai.ErrorResponse{
@@ -1017,7 +1058,7 @@ func publicErrorMessage(err error) string {
 		return codex.ErrClientPoolSaturated.Error()
 	}
 	if errors.Is(err, codex.ErrContextWindowExceeded) {
-		return "conversation exceeds this model's context window - switch this chat to a larger model"
+		return contextWindowMessage
 	}
 	if errors.Is(err, codex.ErrUsageLimitReached) {
 		if serviceErr, ok := codex.ErrorAs(err); ok {
