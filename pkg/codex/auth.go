@@ -35,13 +35,17 @@ func NewAuthentication(authPath string) (*Authentication, error) {
 }
 
 // EnsureValidUntil returns nil only if a known JWT expiry, conservatively
-// capped by persisted expiry, is strictly beyond deadline. If renewal is needed,
-// its rotated credentials are persisted before success. An insufficient renewed
-// token still has its rotation persisted but returns an error, never admission.
+// capped by persisted whole-second expiry, is strictly beyond deadline. If
+// renewal is needed, its rotated credentials are durably published (file and
+// directory entry) before success. An insufficient renewed token still has its
+// rotation persisted but returns an error, never admission.
 // Callers supply a future deadline and a bounded context, schedule renewal only
 // between jobs, and recheck their selected profile before accepting work.
-// Cancellation is returned as a context error; other failures are deliberately
-// private. Success proves local lifetime, not entitlement or provider permission.
+// Cancellation stops renewal only before the OAuth exchange is sent. After that
+// the provider may already have consumed the refresh token, so the exchange
+// runs to persistence under a 30-second library bound and cancellation is then
+// returned as a context error. Other failures are deliberately private.
+// Success proves local lifetime, not entitlement or provider permission.
 func (a *Authentication) EnsureValidUntil(ctx context.Context, deadline time.Time) error {
 	if a == nil || a.source == nil || ctx == nil {
 		return ErrAuthenticationUnavailable

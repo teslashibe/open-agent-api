@@ -25,6 +25,10 @@ const (
 	// Refresh a little early so in-flight requests don't race expiry.
 	tokenExpirySlack      = 60 * time.Second
 	tokenResponseMaxBytes = 1 << 20
+
+	// Once sent, an OAuth exchange may consume the single-use refresh token, so
+	// it runs to persistence under this bound rather than caller cancellation.
+	refreshExchangeTimeout = 30 * time.Second
 )
 
 // Credentials are the fields required to dial the Codex websocket.
@@ -120,19 +124,23 @@ type Source struct {
 	tokenURL   string
 	clientID   string
 
-	mu          sync.Mutex
-	cache       Credentials // Last credentials returned, never used instead of reading disk.
-	replaceFile func(string, string) error
+	mu              sync.Mutex
+	cache           Credentials // Last credentials returned, never used instead of reading disk.
+	replaceFile     func(string, string) error
+	syncDir         func(string) error
+	exchangeTimeout time.Duration
 }
 
 func NewSource(path string) *Source {
 	return &Source{
-		path:        absoluteAuthPath(path),
-		httpClient:  http.DefaultClient,
-		now:         time.Now,
-		tokenURL:    chatgptOAuthTokenURL,
-		clientID:    chatgptOAuthClientID,
-		replaceFile: os.Rename,
+		path:            absoluteAuthPath(path),
+		httpClient:      http.DefaultClient,
+		now:             time.Now,
+		tokenURL:        chatgptOAuthTokenURL,
+		clientID:        chatgptOAuthClientID,
+		replaceFile:     renameAuthFile,
+		syncDir:         syncAuthDirectory,
+		exchangeTimeout: refreshExchangeTimeout,
 	}
 }
 
@@ -205,13 +213,18 @@ func (s *Source) get(ctx context.Context, deadline time.Time) (Credentials, erro
 		return Credentials{}, errors.New("codex access token expired and no refresh_token available")
 	}
 
-	refreshed, err := s.refresh(ctx, creds)
+	refreshed, err := s.exchange(ctx, creds)
 	if err != nil {
 		return Credentials{}, err
 	}
 	valid := true
 	if strict {
-		expiry, ok := knownTokenExpiry(refreshed.AccessToken, refreshed.Expiry)
+		// auth.json stores whole seconds. Decide on the expiry readers will see.
+		persisted := refreshed.Expiry
+		if !persisted.IsZero() {
+			persisted = time.Unix(persisted.Unix(), 0)
+		}
+		expiry, ok := knownTokenExpiry(refreshed.AccessToken, persisted)
 		valid = ok && expiry.After(deadline)
 		if ok {
 			refreshed.Expiry = expiry
@@ -263,7 +276,7 @@ func (s *Source) ForceRefresh(ctx context.Context) (Credentials, error) {
 	if creds.RefreshToken == "" {
 		return Credentials{}, errors.New("codex refresh_token missing; run codex login")
 	}
-	refreshed, err := s.refresh(ctx, creds)
+	refreshed, err := s.exchange(ctx, creds)
 	if err != nil {
 		s.cache = Credentials{}
 		return Credentials{}, err
@@ -273,6 +286,19 @@ func (s *Source) ForceRefresh(ctx context.Context) (Credentials, error) {
 	}
 	s.cache = refreshed
 	return refreshed, nil
+}
+
+// exchange starts an OAuth refresh only while ctx is live. Once the request is
+// sent, the provider may consume the refresh token, so caller cancellation no
+// longer aborts it and exchangeTimeout bounds it instead. Callers persist any
+// rotation before observing ctx again, so cancellation never loses it.
+func (s *Source) exchange(ctx context.Context, creds Credentials) (Credentials, error) {
+	if err := ctx.Err(); err != nil {
+		return Credentials{}, err
+	}
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.exchangeTimeout)
+	defer cancel()
+	return s.refresh(detached, creds)
 }
 
 func (s *Source) refresh(ctx context.Context, creds Credentials) (Credentials, error) {
@@ -403,5 +429,5 @@ func (s *Source) persistChecked(creds Credentials, original []byte, checkProfile
 	if err := json.Indent(&pretty, updated, "", "  "); err == nil {
 		updated = append(pretty.Bytes(), '\n')
 	}
-	return replaceAuthFileChecked(s.path, original, updated, s.replaceFile, checkProfile)
+	return replaceAuthFileChecked(s.path, original, updated, s.replaceFile, s.syncDir, checkProfile)
 }

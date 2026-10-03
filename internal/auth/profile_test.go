@@ -84,7 +84,7 @@ func TestAuthOnlyPersistenceRechecksIdentityAtPublicationBoundary(t *testing.T) 
 		t.Fatal(err)
 	}
 	checks := 0
-	err = replaceAuthFileChecked(path, original, []byte(`{"synthetic":"must-not-publish"}`), os.Rename, func() error {
+	err = replaceAuthFileChecked(path, original, []byte(`{"synthetic":"must-not-publish"}`), os.Rename, syncAuthDirectory, func() error {
 		checks++
 		if checks == 2 {
 			candidate := filepath.Join(filepath.Dir(path), "replacement.json")

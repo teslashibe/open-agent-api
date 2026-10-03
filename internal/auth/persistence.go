@@ -32,13 +32,16 @@ func lockAuthProfile(path string) func() {
 
 // replaceAuthFile uses the same private temporary-file and synced replacement
 // pattern as the Codex load-history checkpoint. A failed write leaves the old
-// file intact. The snapshot check rejects external changes already observed
+// file intact. On Windows the checkpoint keeps the replaced file's owner and
+// protected DACL. The snapshot check rejects external changes already observed
 // before replacement; it is not a cross-process compare-and-swap with the CLI.
 func replaceAuthFile(path string, original, updated []byte, replace func(string, string) error) error {
-	return replaceAuthFileChecked(path, original, updated, replace, nil)
+	return replaceAuthFileChecked(path, original, updated, replace, syncAuthDirectory, nil)
 }
 
-func replaceAuthFileChecked(path string, original, updated []byte, replace func(string, string) error, checkProfile func() error) error {
+// A checked (lifetime renewal) replacement fails unless its directory entry is
+// durable too. Ordinary refresh keeps working where directories cannot sync.
+func replaceAuthFileChecked(path string, original, updated []byte, replace func(string, string) error, syncDir func(string) error, checkProfile func() error) error {
 	if checkProfile != nil {
 		if err := checkProfile(); err != nil {
 			return err
@@ -56,7 +59,7 @@ func replaceAuthFileChecked(path string, original, updated []byte, replace func(
 	tempName := temp.Name()
 	defer os.Remove(tempName)
 	defer temp.Close()
-	if err := temp.Chmod(0o600); err != nil {
+	if err := secureCheckpoint(temp, target); err != nil {
 		return errors.New("persist codex auth: secure checkpoint failed")
 	}
 	if _, err := temp.Write(updated); err != nil {
@@ -83,6 +86,10 @@ func replaceAuthFileChecked(path string, original, updated []byte, replace func(
 	}
 	if err := replace(tempName, target); err != nil {
 		return errors.New("persist codex auth: replace checkpoint failed")
+	}
+	// Without this, power loss can restore a refresh token already consumed.
+	if err := syncDir(filepath.Dir(target)); err != nil && checkProfile != nil {
+		return errors.New("persist codex auth: sync profile directory failed")
 	}
 	return nil
 }

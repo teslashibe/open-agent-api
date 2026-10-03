@@ -278,7 +278,7 @@ func TestEnsureValidUntilCancelledAfterRotationKeepsDurableCredentials(t *testin
 	}
 }
 
-func TestEnsureValidUntilCancelsInFlightOAuthWithoutChangingProfile(t *testing.T) {
+func TestEnsureValidUntilBoundsUnansweredOAuthWithoutChangingProfile(t *testing.T) {
 	now := time.Unix(2000000000, 0)
 	path := lifetimeProfile(t, now.Add(90*time.Second), true)
 	before, err := os.ReadFile(path)
@@ -286,8 +286,9 @@ func TestEnsureValidUntilCancelsInFlightOAuthWithoutChangingProfile(t *testing.T
 		t.Fatal(err)
 	}
 	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(entered)
+		once.Do(func() { close(entered) })
 		select {
 		case <-r.Context().Done():
 		case <-release:
@@ -297,6 +298,7 @@ func TestEnsureValidUntilCancelsInFlightOAuthWithoutChangingProfile(t *testing.T
 	defer close(release)
 	s := syntheticSource(path, server)
 	s.now = func() time.Time { return now }
+	s.exchangeTimeout = 200 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -309,14 +311,208 @@ func TestEnsureValidUntilCancelsInFlightOAuthWithoutChangingProfile(t *testing.T
 	cancel()
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) || s.cache != (Credentials{}) {
-			t.Fatal("cancelled OAuth returned admission or retained cache")
+		// The library bound, not the owner's cancellation, ends a sent exchange.
+		if !errors.Is(err, context.DeadlineExceeded) || s.cache != (Credentials{}) {
+			t.Fatal("sent OAuth exchange followed owner cancellation or retained cache", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("OAuth request did not stop after owner cancellation")
+		t.Fatal("unanswered OAuth exchange was not bounded by the library")
 	}
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, after) {
-		t.Fatal("cancelled incomplete OAuth exchange changed the profile")
+		t.Fatal("unanswered OAuth exchange changed the profile")
+	}
+}
+
+// singleUseRefreshServer consumes the synthetic refresh token on receipt, like
+// the provider, then waits for release before answering with its rotation.
+func singleUseRefreshServer(t *testing.T, access string) (*httptest.Server, *atomic.Int32, <-chan struct{}, func()) {
+	t.Helper()
+	var calls atomic.Int32
+	var mu sync.Mutex
+	valid := map[string]bool{"synthetic-private-refresh": true}
+	rotated, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.ParseForm() != nil {
+			t.Error("unreadable synthetic refresh")
+		}
+		mu.Lock()
+		presented := r.Form.Get("refresh_token")
+		ok := valid[presented]
+		delete(valid, presented)
+		if ok {
+			valid["synthetic-rotated-refresh"] = true
+		}
+		mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"code":"refresh_token_reused"}}`)
+			return
+		}
+		close(rotated)
+		<-release
+		json.NewEncoder(w).Encode(map[string]any{"access_token": access, "refresh_token": "synthetic-rotated-refresh", "expires_in": 3600})
+	}))
+	t.Cleanup(server.Close)
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseOnce)
+	return server, &calls, rotated, releaseOnce
+}
+
+func TestRefreshCancelledAfterProviderRotationPersistsRotation(t *testing.T) {
+	for _, mode := range []string{"ensure", "get", "force"} {
+		t.Run(mode, func(t *testing.T) {
+			now := time.Unix(2000000000, 0)
+			deadline := now.Add(150 * time.Second)
+			path := lifetimeProfile(t, now.Add(30*time.Second), true)
+			server, calls, rotated, release := singleUseRefreshServer(t, lifetimeJWT(fmt.Sprintf(`{"exp":%d}`, now.Add(time.Hour).Unix())))
+			s := syntheticSource(path, server)
+			s.now = func() time.Time { return now }
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			type result struct {
+				creds Credentials
+				err   error
+			}
+			done := make(chan result, 1)
+			go func() {
+				var r result
+				switch mode {
+				case "ensure":
+					r.err = s.EnsureValidUntil(ctx, deadline)
+				case "get":
+					r.creds, r.err = s.Get(ctx)
+				case "force":
+					r.creds, r.err = s.ForceRefresh(ctx)
+				}
+				done <- r
+			}()
+			select {
+			case <-rotated:
+			case <-time.After(5 * time.Second):
+				t.Fatal("synthetic provider did not receive the exchange")
+			}
+			cancel()
+			release()
+			var r result
+			select {
+			case r = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("committed OAuth exchange did not finish")
+			}
+			if mode == "ensure" && (!errors.Is(r.err, context.Canceled) || s.cache != (Credentials{})) {
+				t.Fatal("cancelled renewal admitted credentials or lost its cancellation", r.err)
+			}
+			if mode != "ensure" && (r.err != nil || r.creds.RefreshToken != "synthetic-rotated-refresh") {
+				t.Fatal("completed rotation was not returned", r.err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || !bytes.Contains(data, []byte("synthetic-rotated-refresh")) {
+				t.Fatal("cancellation after the provider rotated lost the new refresh token")
+			}
+			if err := s.EnsureValidUntil(context.Background(), deadline); err != nil || calls.Load() != 1 {
+				t.Fatal("profile could not renew after a cancelled committed exchange", err)
+			}
+		})
+	}
+}
+
+func TestRefreshCancelledBeforeExchangeSendsNothing(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		t.Run(fmt.Sprint(force), func(t *testing.T) {
+			path := syntheticAuth(t, true)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server, calls := syntheticRefreshServer(t, nil)
+			s := syntheticSource(path, server)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if force {
+				_, err = s.ForceRefresh(ctx)
+			} else {
+				_, err = s.Get(ctx)
+			}
+			if !errors.Is(err, context.Canceled) || calls.Load() != 0 || s.cache != (Credentials{}) {
+				t.Fatal("cancelled caller started an OAuth exchange", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("cancelled caller changed the profile")
+			}
+		})
+	}
+}
+
+func TestEnsureValidUntilDecidesOnPersistedWholeSecondExpiry(t *testing.T) {
+	now := time.Unix(2000000000, int64(900*time.Millisecond))
+	for _, tc := range []struct {
+		name     string
+		deadline time.Time
+		want     bool
+	}{
+		{"deadline inside truncated second", time.Unix(2000000331, int64(500*time.Millisecond)), false},
+		{"deadline before persisted second", time.Unix(2000000330, int64(500*time.Millisecond)), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := lifetimeProfile(t, now.Add(90*time.Second), true)
+			// expires_in ends at 2000000331.9; auth.json can only say 2000000331.
+			server, calls := lifetimeServer(t, lifetimeJWT(fmt.Sprintf(`{"exp":%d}`, now.Add(time.Hour).Unix())), 331, nil)
+			s := syntheticSource(path, server)
+			s.now = func() time.Time { return now }
+			err := s.EnsureValidUntil(context.Background(), tc.deadline)
+			data, readErr := os.ReadFile(path)
+			expiry, ok := knownAuthExpiry(data)
+			if readErr != nil || !ok || calls.Load() != 1 || !bytes.Contains(data, []byte("synthetic-rotated-refresh")) {
+				t.Fatal("renewal was not persisted")
+			}
+			if (err == nil) != tc.want || expiry.After(tc.deadline) != tc.want {
+				t.Fatal("renewal result disagrees with the persisted expiry", err, expiry.Unix())
+			}
+		})
+	}
+}
+
+func TestRotationSyncsProfileDirectoryAfterReplacement(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprint(strict), func(t *testing.T) {
+			now := time.Unix(2000000000, 0)
+			path := lifetimeProfile(t, now.Add(30*time.Second), true)
+			dir, err := filepath.EvalSymlinks(filepath.Dir(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := syncAuthDirectory(dir); err != nil {
+				t.Fatal("profile directory cannot be synced", err)
+			}
+			server, _ := lifetimeServer(t, lifetimeJWT(fmt.Sprintf(`{"exp":%d}`, now.Add(time.Hour).Unix())), 3600, nil)
+			s := syntheticSource(path, server)
+			s.now = func() time.Time { return now }
+			var synced []string
+			s.syncDir = func(dir string) error {
+				data, err := os.ReadFile(path)
+				if err != nil || !bytes.Contains(data, []byte("synthetic-rotated-refresh")) {
+					t.Error("directory synced before the rotated profile was published")
+				}
+				synced = append(synced, dir)
+				return errors.New("synthetic directory sync failure")
+			}
+			if strict {
+				err = s.EnsureValidUntil(context.Background(), now.Add(150*time.Second))
+			} else {
+				_, err = s.Get(context.Background())
+			}
+			if len(synced) != 1 || synced[0] != dir {
+				t.Fatal("rotation did not sync its profile directory")
+			}
+			if strict && (err == nil || s.cache != (Credentials{})) {
+				t.Fatal("renewal succeeded without a durable directory entry")
+			}
+			if !strict && err != nil {
+				t.Fatal("ordinary refresh failed where the directory cannot sync", err)
+			}
+		})
 	}
 }
