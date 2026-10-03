@@ -66,10 +66,11 @@ type delta struct {
 }
 
 type usage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	Speed                    string `json:"speed,omitempty"`
+	InputTokens              int    `json:"input_tokens"`
+	OutputTokens             int    `json:"output_tokens"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens"`
 }
 
 type toolUseBlockState struct {
@@ -193,6 +194,9 @@ func (p *streamParser) streamEvent(event *anthropicEvent) ([]codex.StreamEvent, 
 // mergeUsage folds message_delta usage (cumulative output, often no input
 // counts) into the message_start usage so the reported total stays complete.
 func (p *streamParser) mergeUsage(u usage) {
+	if u.Speed == "fast" || u.Speed == "standard" {
+		p.usage.Speed = u.Speed
+	}
 	if u.InputTokens > 0 {
 		p.usage.InputTokens = u.InputTokens
 	}
@@ -316,9 +320,13 @@ func rateLimitError(info *rateLimitInfo) error {
 
 func usageToOpenAI(u usage) openai.Usage {
 	prompt := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
-	return openai.Usage{PromptTokens: prompt, CompletionTokens: u.OutputTokens, TotalTokens: prompt + u.OutputTokens}
+	speed := ""
+	if u.Speed == "fast" || u.Speed == "standard" {
+		speed = u.Speed
+	}
+	return openai.Usage{Speed: speed, PromptTokens: prompt, CompletionTokens: u.OutputTokens, TotalTokens: prompt + u.OutputTokens}
 }
 
 func hasUsage(u usage) bool {
-	return u.InputTokens != 0 || u.OutputTokens != 0 || u.CacheCreationInputTokens != 0 || u.CacheReadInputTokens != 0
+	return u.Speed != "" || u.InputTokens != 0 || u.OutputTokens != 0 || u.CacheCreationInputTokens != 0 || u.CacheReadInputTokens != 0
 }

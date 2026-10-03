@@ -4,7 +4,7 @@ OpenAI-compatible Go HTTP proxy for **Cursor BYOK** and any OpenAI SDK client. R
 
 | Surface | Auth | Models |
 | --- | --- | --- |
-| **Codex / ChatGPT** | `~/.codex/auth.json` (`codex login`) | GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
+| **Codex / ChatGPT** | `~/.codex/auth.json` (`codex login`) | GPT-6.1 Sol, GPT-6 Astra/Sol/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, Spark |
 | **Gemini / Antigravity** | `~/.gemini/antigravity_oauth_creds.json` (preferred) or CLI oauth | Gemini 2.5/3.x + Antigravity gateway IDs |
 | **Claude Code** | `claude` on PATH + CLI login | `haiku`, `sonnet`, `opus`, `fable`, `api/claude-opus-5-5[-effort]`, `api/claude-fable-5-1[-effort]`, `api/claude-sonnet-5[-effort]` |
 
@@ -66,7 +66,7 @@ Cursor settings: API key = any non-empty string (e.g. `local-open-agent-api`); b
 | Fast Codex | `gpt-5.6-luna-fast` |
 | Fast Gemini | `gemini-3.1-flash-lite` |
 | Claude Code (Cursor) | `api/claude-opus-5-5-high` — Cursor needs the `api/` prefix |
-| Claude Code fast | `api/claude-haiku-4-5` |
+| Claude Code fast | `api/claude-opus-5-5-fast` |
 
 Full tables: [`internal/openai/models.go`](internal/openai/models.go) and [website/docs/models/catalog.md](website/docs/models/catalog.md).
 

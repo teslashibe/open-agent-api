@@ -74,3 +74,14 @@ func TestNewRequiresAccount(t *testing.T) {
 		t.Fatal("accepted no accounts")
 	}
 }
+
+func TestCompleteRejectsUnsupportedVariantBeforeService(t *testing.T) {
+	fake := &fakeService{}
+	c := &Client{service: fake}
+	if _, err := c.Complete(context.Background(), "gpt-6.1-sol-ultra", "hello"); err == nil {
+		t.Fatal("unsupported orchestration accepted")
+	}
+	if fake.req.Model != "" {
+		t.Fatal("upstream called")
+	}
+}

@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	codexVersion      = "0.156.0"
-	codexUserAgent    = "codex_cli_rs/" + codexVersion + " (Mac OS 26.2.0; arm64) dumb"
+	codexVersion      = "0.159.2"
+	codexUserAgent    = "codex_cli_rs/" + codexVersion + " (api wrapper) dumb"
 	codexAPIAgent     = "codex_cli_rs/" + codexVersion + " (api wrapper) dumb"
 	codexBeta         = "responses_websockets=2026-02-06"
 	codexBetaFeatures = "remote_compaction_v2"

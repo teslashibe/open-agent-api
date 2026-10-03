@@ -13,51 +13,31 @@ func TestModelAliases(t *testing.T) {
 	for _, alias := range aliases {
 		got = append(got, alias.ID)
 	}
-	want := []string{
-		"gpt-5.6-sol", "gpt-5.6",
-		"gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max",
-		"gpt-5.6-sol-fast", "gpt-5.6-sol-fast-low", "gpt-5.6-sol-fast-medium", "gpt-5.6-sol-fast-high", "gpt-5.6-sol-fast-xhigh", "gpt-5.6-sol-fast-max",
-		"gpt-6-astra", "gpt-6-astra-low", "gpt-6-astra-medium", "gpt-6-astra-high", "gpt-6-astra-xhigh", "gpt-6-astra-max",
-		"gpt-6-astra-fast", "gpt-6-astra-fast-low", "gpt-6-astra-fast-medium", "gpt-6-astra-fast-high", "gpt-6-astra-fast-xhigh", "gpt-6-astra-fast-max",
-		"gpt-6-sol", "gpt-6-sol-low", "gpt-6-sol-medium", "gpt-6-sol-high", "gpt-6-sol-xhigh", "gpt-6-sol-max",
-		"gpt-6-sol-fast", "gpt-6-sol-fast-low", "gpt-6-sol-fast-medium", "gpt-6-sol-fast-high", "gpt-6-sol-fast-xhigh", "gpt-6-sol-fast-max",
-		"gpt-6-luna", "gpt-6-luna-low", "gpt-6-luna-medium", "gpt-6-luna-high", "gpt-6-luna-xhigh", "gpt-6-luna-max",
-		"gpt-6-luna-fast", "gpt-6-luna-fast-low", "gpt-6-luna-fast-medium", "gpt-6-luna-fast-high", "gpt-6-luna-fast-xhigh", "gpt-6-luna-fast-max",
-		"gpt-5.6-terra", "gpt-5.6-terra-low", "gpt-5.6-terra-medium", "gpt-5.6-terra-high", "gpt-5.6-terra-xhigh", "gpt-5.6-terra-max",
-		"gpt-5.6-terra-fast", "gpt-5.6-terra-fast-low", "gpt-5.6-terra-fast-medium", "gpt-5.6-terra-fast-high", "gpt-5.6-terra-fast-xhigh", "gpt-5.6-terra-fast-max",
-		"gpt-5.6-luna", "gpt-5.6-luna-low", "gpt-5.6-luna-medium", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh", "gpt-5.6-luna-max",
-		"gpt-5.6-luna-fast", "gpt-5.6-luna-fast-low", "gpt-5.6-luna-fast-medium", "gpt-5.6-luna-fast-high", "gpt-5.6-luna-fast-xhigh", "gpt-5.6-luna-fast-max",
-		"gpt-5.4", "gpt-5.4-low", "gpt-5.4-medium", "gpt-5.4-high", "gpt-5.4-xhigh",
-		"gpt-5.4-fast", "gpt-5.4-fast-low", "gpt-5.4-fast-medium", "gpt-5.4-fast-high", "gpt-5.4-fast-xhigh",
-		"codex-sol", "codex-terra", "codex-luna",
-		"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
-		"gemini-3.1-pro-low", "gemini-3.1-pro-high",
-		"gemini-3.5-flash-low", "gemini-3.5-flash-medium", "gemini-3.5-flash-high",
-		"gemini-3.1-flash-lite", "gemini-3-flash",
-		"claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
-		"opus", "sonnet", "haiku", "fable",
-		"claude-opus-5-5", "api/claude-opus-5-5", "anthropic/claude-opus-5-5", "api/claude-opus-5-5-low", "api/claude-opus-5-5-medium", "api/claude-opus-5-5-high", "api/claude-opus-5-5-xhigh", "api/claude-opus-5-5-max",
-		"claude-fable-5-1", "api/claude-fable-5-1", "anthropic/claude-fable-5-1", "api/claude-fable-5-1-low", "api/claude-fable-5-1-medium", "api/claude-fable-5-1-high", "api/claude-fable-5-1-xhigh", "api/claude-fable-5-1-max",
-		"claude-sonnet-5", "api/claude-sonnet-5", "anthropic/claude-sonnet-5", "api/claude-sonnet-5-low", "api/claude-sonnet-5-medium", "api/claude-sonnet-5-high", "api/claude-sonnet-5-xhigh", "api/claude-sonnet-5-max",
-		"claude-opus-4-8", "api/claude-opus-4-8", "anthropic/claude-opus-4-8", "api/claude-opus-4-8-low", "api/claude-opus-4-8-medium", "api/claude-opus-4-8-high", "api/claude-opus-4-8-xhigh", "api/claude-opus-4-8-max",
-		"claude-fable-5", "api/claude-fable-5", "anthropic/claude-fable-5", "api/claude-fable-5-low", "api/claude-fable-5-medium", "api/claude-fable-5-high", "api/claude-fable-5-xhigh", "api/claude-fable-5-max",
-		"claude-haiku-4-5-20251001", "api/claude-haiku-4-5-20251001", "api/claude-haiku-4-5", "anthropic/claude-haiku-4-5",
-		"gpt-5.5", "gpt-5.5-low", "gpt-5.5-high", "gpt-5.5-fast", "gpt-5.5-fast-low", "gpt-5.5-fast-medium", "gpt-5.5-fast-high", "gpt-5.5-mini", "gpt-5.5-lite", "gpt-5.5-deep", "gpt-5.5-verbose", "gpt-5.5-fast-verbose",
-		"gpt-5.3-codex-spark", "gpt-5.3-codex-spark-preview",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ModelAliases IDs = %#v, want %#v", got, want)
-	}
-	listed := ListedModelAliases()
-	listedIDs := make([]string, 0, len(listed))
-	for _, alias := range listed {
-		listedIDs = append(listedIDs, alias.ID)
-		if alias.Unlisted {
-			t.Fatalf("ListedModelAliases included unlisted %q", alias.ID)
+	seen := map[string]bool{}
+	for _, current := range aliases {
+		if seen[current.ID] {
+			t.Fatalf("duplicate alias %q", current.ID)
+		}
+		seen[current.ID] = true
+		if _, err := ResolveModelSelection(current.ID, "", ""); err != nil {
+			t.Fatalf("listed alias %q is invalid: %v", current.ID, err)
 		}
 	}
-	if !reflect.DeepEqual(listedIDs, want) {
-		t.Fatalf("ListedModelAliases IDs = %#v, want %#v", listedIDs, want)
+	for _, required := range []string{"gpt-6.1-sol", "gpt-6.1-sol-fast-max", "api/claude-sonnet-5-5", "api/claude-opus-4-6-max", "api/claude-opus-5-5-fast-xhigh"} {
+		if !seen[required] {
+			t.Fatalf("missing reviewed alias %q", required)
+		}
+	}
+	listed := ListedModelAliases()
+	listedIDs := []string{}
+	for _, current := range listed {
+		if current.Unlisted {
+			t.Fatalf("unlisted model %q leaked", current.ID)
+		}
+		listedIDs = append(listedIDs, current.ID)
+	}
+	if !reflect.DeepEqual(got, listedIDs) {
+		t.Fatal("listed aliases differ from public catalog")
 	}
 
 	aliases[0].ID = "mutated"

@@ -18,6 +18,7 @@ type ChatCompletionRequest struct {
 	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 	ReasoningEffort   string          `json:"reasoning_effort,omitempty"`
+	Speed             string          `json:"speed,omitempty"`
 	Verbosity         string          `json:"verbosity,omitempty"`
 	// System is the Anthropic Messages top-level system prompt (a string or
 	// an array of text blocks). Cursor sends that dialect for models whose
@@ -145,9 +146,10 @@ type ToolCallFunctionDelta struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	Speed            string `json:"speed,omitempty"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	TotalTokens      int    `json:"total_tokens"`
 }
 
 type ErrorResponse struct {

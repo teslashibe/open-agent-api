@@ -221,12 +221,18 @@ func (c *Client) prepare(req codex.Request) (run, error) {
 		return run{}, err
 	}
 
-	// An effort suffix on an unaliased model name ("claude-opus-5.5-high")
-	// wins; otherwise the request/alias effort, and none means the CLI's
-	// per-model default.
-	model, effort := c.modelAndEffort(req)
-	if effort == "" {
-		effort = claudeEffort(req.ReasoningEffort)
+	rawModel := req.Model
+	if rawModel == "" {
+		rawModel = c.defaultModel
+	}
+	selected, err := openai.ResolveModelSelection(rawModel, req.ReasoningEffort, req.Speed)
+	if err != nil {
+		return fail(codex.NewError(codex.ErrorKindClient, 400, err.Error(), err))
+	}
+	model, _ := c.modelAndEffort(codex.Request{Model: selected.UpstreamModel})
+	effort := selected.ReasoningEffort
+	if selected.Speed == "fast" && !supportsFastPrint(c.Version()) {
+		return fail(codex.NewError(codex.ErrorKindClient, 400, "Claude fast mode requires Claude Code 2.1.205 or newer", nil))
 	}
 
 	systemPath := filepath.Join(dir, "system.md")
@@ -251,6 +257,8 @@ func (c *Client) prepare(req codex.Request) (run, error) {
 	if effort != "" {
 		args = append(args, "--effort", effort)
 	}
+	settings, _ := json.Marshal(map[string]bool{"fastMode": selected.Speed == "fast"})
+	args = append(args, "--settings", string(settings))
 
 	if !tools.empty() {
 		toolsPath := filepath.Join(dir, "tools.json")
@@ -410,15 +418,6 @@ func toolCallFromDelta(delta codex.ToolCallDelta) codex.ToolCall {
 	}
 }
 
-func claudeEffort(effort string) string {
-	switch effort {
-	case "low", "medium", "high", "xhigh", "max":
-		return effort
-	default:
-		return ""
-	}
-}
-
 func (c *Client) readJSONL(ctx context.Context, cancel context.CancelFunc, cmd *exec.Cmd, stdout io.Reader, stderr *bytes.Buffer, out chan<- codex.StreamEvent, tools *toolSet, cleanup func()) {
 	defer cancel()
 	defer close(out)
@@ -505,4 +504,13 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// Print mode honors fastMode settings from Claude Code 2.1.205 onward.
+func supportsFastPrint(version string) bool {
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(version, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return false
+	}
+	return major > 2 || major == 2 && (minor > 1 || minor == 1 && patch >= 205)
 }

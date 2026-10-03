@@ -23,6 +23,7 @@ type Request struct {
 	ReasoningEffort   string
 	Verbosity         string
 	ServiceTier       string
+	Speed             string
 	Faithful          bool
 	Prewarm           bool
 	RequestID         string
