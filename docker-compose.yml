@@ -8,7 +8,7 @@ services:
         BUILD_VERSION: "${BUILD_VERSION:-}"
         BUILD_COMMIT: "${BUILD_COMMIT:-}"
         BUILD_DATE: "${BUILD_DATE:-}"
-        CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-2.1.283}"
+        CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-2.1.286}"
     image: teslashibe/open-agent-api:local
     # tini as PID 1: the Claude provider spawns a CLI (and its MCP bridge)
     # per request; without an init process, orphaned children are never
