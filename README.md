@@ -13,10 +13,10 @@ A Go proxy that looks like OpenAI Chat Completions. Point Cursor BYOK (or any Op
 | **Gemini / Antigravity** | `scripts/sync-antigravity-auth.sh` | Gemini 2.5/3.x + Antigravity gateway IDs |
 | **Claude Code** | `claude` CLI login / OAuth env | Opus 5.5, Fable 5.1, Sonnet 5.5, Haiku 4.5 and reviewed legacy models (Cursor: use `api/claude-*` IDs) |
 
-GPT-6 Astra exposes `low` through `max`. Ultra is intentionally unsupported
-because official Codex Ultra adds proactive multi-agent delegation, while this
-gateway makes one upstream API request and cannot provide that orchestration
-honestly.
+GPT-6 Astra exposes `low` through `max`. Ultra is deferred from launch and
+remains unsupported because official Codex Ultra adds proactive multi-agent
+delegation, while this gateway makes one upstream API request and cannot
+provide that orchestration honestly.
 
 The catalog covers the eight current Codex CLI models and 13 reviewed Claude
 Code models. Send `reasoning_effort` and `speed: "normal"` or `"fast"`, or use
@@ -124,9 +124,11 @@ Metrics are enabled by default. Key chat series are
 `CODEX_STREAM_IDLE_TIMEOUT=0s`: valid reasoning can be silent for minutes, so
 that profile relies on cancellation and the unchanged 45-minute overall timeout.
 Codex model IDs containing `-fast` request the upstream `priority` service tier,
-which is faster but consumes increased upstream usage. Gemini, Claude, Spark,
-and other models without advertised priority support do not receive synthetic
-Fast aliases.
+which is faster but consumes increased upstream usage. Claude Fast aliases
+request Claude Code’s `fastMode` setting for Opus 5.5, Opus 5 and Opus 4.8;
+they require Claude Code 2.1.205 or newer and may fall back to standard upstream
+execution. Gemini, Spark and models without advertised fast support do not
+receive synthetic Fast aliases.
 
 For bounded local throughput evidence, `go run ./cmd/bench -duration 5s
 -concurrency 2` targets `127.0.0.1:8088` and emits JSON throughput, errors, and
