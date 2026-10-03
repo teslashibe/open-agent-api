@@ -1,9 +1,11 @@
 package claude
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -165,36 +167,102 @@ func hashedToolName(name string) string {
 	return "t_" + hex.EncodeToString(sum[:6])
 }
 
-// inputSchema returns an MCP inputSchema the Anthropic API accepts: always a
-// top-level object without top-level combinators. Custom (freeform) tools get
-// the {input: string} wrapper that the rest of the gateway already uses.
+// schemaNeedsWrapper is shared by schema advertisement, output unwrapping
+// and history replay, so callers always see their original argument shape.
+func schemaNeedsWrapper(spec toolSpec) bool {
+	if spec.Type == "custom" {
+		return true
+	}
+	var schema map[string]any
+	if json.Unmarshal(spec.Parameters, &schema) != nil || schema == nil {
+		return false
+	}
+	if kind, present := schema["type"]; present && kind != "object" {
+		return true
+	}
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if _, present := schema[key]; present {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *toolSet) wrapsInput(clientName string) bool {
+	if s == nil {
+		return false
+	}
+	wire, ok := s.wireByName[clientName]
+	return ok && schemaNeedsWrapper(s.byWire[wire])
+}
+
+// References in a wrapped schema would resolve against the new wrapper root.
+// Reject them explicitly instead of changing their meaning or dropping them.
+// Ordinary object schemas retain their reference root and definitions.
+func hasSchemaReference(value any) bool {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			if key == "$ref" || key == "$dynamicRef" || key == "$recursiveRef" {
+				if _, isReference := child.(string); isReference {
+					return true
+				}
+			}
+			if hasSchemaReference(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if hasSchemaReference(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *toolSet) validateSchemas() error {
+	for _, spec := range s.specs {
+		if spec.Type == "custom" || len(spec.Parameters) == 0 {
+			continue
+		}
+		var schema map[string]any
+		if json.Unmarshal(spec.Parameters, &schema) != nil || schema == nil {
+			return fmt.Errorf("tool %q requires a JSON schema object", spec.Name)
+		}
+		if schemaNeedsWrapper(spec) && hasSchemaReference(schema) {
+			return fmt.Errorf("tool %q uses references in a schema that requires input wrapping; this combination is not supported", spec.Name)
+		}
+	}
+	return nil
+}
+
+// inputSchema preserves constraints under an input-object wrapper when the
+// original schema has a non-object type or top-level combinators. The caller
+// validates reference compatibility before creating any provider process.
 func inputSchema(spec toolSpec) json.RawMessage {
 	if spec.Type == "custom" {
 		return json.RawMessage(`{"type":"object","properties":{"input":{"type":"string","description":"Raw freeform tool input."}},"required":["input"]}`)
 	}
 	var schema map[string]any
-	if len(spec.Parameters) == 0 || json.Unmarshal(spec.Parameters, &schema) != nil || schema == nil {
+	decoder := json.NewDecoder(bytes.NewReader(spec.Parameters))
+	decoder.UseNumber()
+	if len(spec.Parameters) == 0 || decoder.Decode(&schema) != nil || schema == nil {
 		return json.RawMessage(`{"type":"object","properties":{}}`)
 	}
-	if kind, ok := schema["type"].(string); ok && kind != "object" {
+	delete(schema, "$schema")
+	if schemaNeedsWrapper(spec) {
 		wrapped, _ := json.Marshal(map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"input": schema},
-			"required":   []string{"input"},
+			"type": "object", "properties": map[string]any{"input": schema},
+			"required": []string{"input"}, "additionalProperties": false,
 		})
 		return wrapped
 	}
 	schema["type"] = "object"
-	delete(schema, "$schema")
-	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-		delete(schema, key)
-	}
 	if _, ok := schema["properties"]; !ok {
 		schema["properties"] = map[string]any{}
 	}
-	data, err := json.Marshal(schema)
-	if err != nil {
-		return json.RawMessage(`{"type":"object","properties":{}}`)
-	}
+	data, _ := json.Marshal(schema)
 	return data
 }

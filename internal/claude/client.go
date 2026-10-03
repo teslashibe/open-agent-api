@@ -204,6 +204,9 @@ func (c *Client) prepare(req codex.Request) (run, error) {
 	if choice.none {
 		tools = newToolSet(nil)
 	}
+	if err := tools.validateSchemas(); err != nil {
+		return run{}, codex.NewError(codex.ErrorKindClient, 400, err.Error(), err)
+	}
 	conv := buildConversation(req.Messages, tools)
 
 	if err := os.MkdirAll(c.runDir, 0o700); err != nil {

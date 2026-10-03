@@ -110,6 +110,7 @@ func buildConversation(messages []openai.ChatMessage, tools *toolSet) conversati
 //     together with their result).
 func repairToolPairs(turns []turn) []turn {
 	seen := map[string]int{}
+	used := map[string]bool{}
 	out := make([]turn, 0, len(turns)+1)
 	var pending []string
 	renames := map[string]string{}
@@ -182,12 +183,25 @@ func repairToolPairs(turns []turn) []turn {
 			}
 			original, _ := b["id"].(string)
 			id := original
-			if n := seen[original]; n > 0 {
-				id = fmt.Sprintf("%s_%d", original, n)
+			if used[id] {
+				for n := max(seen[original], 1); ; n++ {
+					suffix := fmt.Sprintf("_%d", n)
+					stem := original
+					if len(stem)+len(suffix) > 64 {
+						stem = stem[:64-len(suffix)]
+					}
+					candidate := stem + suffix
+					if !used[candidate] {
+						id = candidate
+						seen[original] = n
+						break
+					}
+				}
 				renames[original] = id
 				b["id"] = id
 			}
 			seen[original]++
+			used[id] = true
 			pending = append(pending, id)
 		}
 		out = append(out, t)
@@ -264,6 +278,12 @@ func toolUseBlock(call openai.ToolCall, tools *toolSet) block {
 	var input any = map[string]any{}
 	if custom || tools.isCustom(name) {
 		input = map[string]any{"input": args}
+	} else if tools.wrapsInput(name) {
+		if json.Valid([]byte(args)) {
+			input = map[string]any{"input": json.RawMessage(args)}
+		} else {
+			input = map[string]any{"arguments": args}
+		}
 	} else if strings.TrimSpace(args) != "" {
 		var object map[string]any
 		if err := json.Unmarshal([]byte(args), &object); err == nil && object != nil {
@@ -329,6 +349,9 @@ func contentBlocks(raw json.RawMessage, role string, tools *toolSet) []block {
 				input = map[string]any{}
 			}
 			if !strings.HasPrefix(name, mcpbridge.ToolPrefix) {
+				if tools.wrapsInput(name) && !tools.isCustom(name) {
+					input = map[string]any{"input": input}
+				}
 				name = tools.modelName(name)
 			}
 			out = append(out, block{"type": "tool_use", "id": normalizeToolUseID(id), "name": name, "input": input})

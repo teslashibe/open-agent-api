@@ -234,7 +234,7 @@ func (p *streamParser) toolEvent(id, modelName, input string) codex.StreamEvent 
 }
 
 // toolArguments undoes the schema wrapping applied by inputSchema: custom
-// tools return their raw input string, non-object schemas their inner value.
+// tools return their raw input string; wrapped schemas return the inner value.
 func toolArguments(spec toolSpec, input string) string {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -245,15 +245,7 @@ func toolArguments(spec toolSpec, input string) string {
 		// the server rejects the call instead of running it with no args.
 		return input
 	}
-	wrapped := spec.Type == "custom"
-	if !wrapped && len(spec.Parameters) > 0 {
-		var schema map[string]any
-		if json.Unmarshal(spec.Parameters, &schema) == nil {
-			if kind, ok := schema["type"].(string); ok && kind != "object" {
-				wrapped = true
-			}
-		}
-	}
+	wrapped := schemaNeedsWrapper(spec)
 	if !wrapped {
 		return input
 	}

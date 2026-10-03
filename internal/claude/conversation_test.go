@@ -155,7 +155,7 @@ func TestToolSetNamesAndSchemas(t *testing.T) {
 	if len(tools) != 4 {
 		t.Fatalf("tools = %d", len(tools))
 	}
-	if string(tools[0].InputSchema) != `{"properties":{"-A":{"type":"integer"}},"type":"object"}` {
+	if string(tools[0].InputSchema) != `{"additionalProperties":false,"properties":{"input":{"anyOf":[{}],"properties":{"-A":{"type":"integer"}},"type":"object"}},"required":["input"],"type":"object"}` {
 		t.Fatalf("Grep schema = %s", tools[0].InputSchema)
 	}
 	for _, tool := range tools {

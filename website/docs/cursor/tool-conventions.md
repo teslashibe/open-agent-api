@@ -222,3 +222,10 @@ Each request runs in an isolated, empty working directory with Cursor's system p
 ## Changing this safely
 
 Keep the Cursor SSE contract (one complete tool frame, no empty `delta.tool_calls`, `finish_reason: "tool_calls"` before `[DONE]`). Leave the custom→function default unless your client understands `type: "custom"`. Pair call IDs across turns. Don’t re-enable faithful Codex tools for Agent requests that already send `tools`. Update tests and this page when wire shapes change — and never log tool arguments or prompt text.
+
+Claude preserves top-level `anyOf`, `oneOf` and `allOf` constraints through an
+input wrapper, then returns the original argument shape to the client. Normal
+object schemas retain local `$defs` and `$ref`. Schemas that need wrapping and
+contain references return HTTP 400 before provider work, because wrapping would
+change the reference root. Boolean or non-object schema documents are rejected
+explicitly. Scalar and array **types within a schema object** remain supported.

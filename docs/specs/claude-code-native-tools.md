@@ -106,7 +106,8 @@ Cursor ──► POST /v1/chat/completions (model=api/claude-opus-5-5-high, tool
   - `parameters` missing or not an object becomes `{"type":"object","properties":{}}`.
   - A custom/freeform tool becomes `{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}` (the existing `input` convention).
   - Strip `$schema`.
-  - Anthropic allows `anyOf`/`oneOf` at nested levels only. If they appear at the top level, wrap them.
+  - Anthropic allows combinators at nested levels only. Top-level `anyOf`, `oneOf` and `allOf`, and non-object schemas, use an `{input: original-schema}` wrapper. Output arguments are unwrapped, and replayed history uses the same wrapper.
+  - Ordinary object schemas retain local `$defs` and `$ref` unchanged. Schemas requiring wrapping that contain `$ref`, `$dynamicRef` or `$recursiveRef` return HTTP 400 before provider work; moving the schema would change their resolution root. Boolean/non-object schema documents are rejected explicitly instead of replaced with an unconstrained object.
 - We use stdio rather than an in-gateway HTTP MCP endpoint because nothing gets exposed on the network and no per-request auth token is needed. It reuses the gateway binary that is already in the image.
 
 ### 2. Conversation builder (`internal/claude/conversation.go`)
