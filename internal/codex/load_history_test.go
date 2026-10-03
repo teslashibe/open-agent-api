@@ -81,6 +81,32 @@ func TestLoadHistoryConcurrentRecordsSurviveRestart(t *testing.T) {
 	}
 }
 
+func TestLoadHistoryReopenRetainsUsageAcrossRepeatedRestarts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile data", "usage.json")
+	now := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	for restart := 0; restart < 3; restart++ {
+		history, err := OpenLoadHistory(path, []string{"primary"}, func() time.Time { return now })
+		if err != nil {
+			t.Fatalf("restart %d: %v", restart, err)
+		}
+		before := history.Snapshot(nil)
+		if len(before.Accounts) != 1 || before.Accounts[0].Requests7d != int64(restart) || before.Accounts[0].InputTokens7d != int64(restart*24) {
+			t.Fatalf("restart %d lost previously recorded usage: %#v", restart, before)
+		}
+		if err := history.Record(LoadEvent{Account: "primary", Model: "gpt-6.1-sol", Requests: 1, InputTokens: 24, OutputTokens: 9, InputTokenSource: "upstream"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reloaded, err := OpenLoadHistory(path, []string{"primary"}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := reloaded.Snapshot(nil)
+	if len(snapshot.Models) != 1 || snapshot.Models[0].Requests != 3 || snapshot.Models[0].InputTokens != 72 || snapshot.Models[0].OutputTokens != 27 {
+		t.Fatalf("final persisted usage changed: %#v", snapshot)
+	}
+}
+
 func TestLoadHistoryPrunesOlderThanSevenDays(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.json")
 	now := time.Date(2026, 9, 23, 22, 0, 0, 0, time.UTC)
