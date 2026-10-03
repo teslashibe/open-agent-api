@@ -23,7 +23,8 @@ const (
 	chatgptOAuthTokenURL = "https://auth.openai.com/oauth/token"
 
 	// Refresh a little early so in-flight requests don't race expiry.
-	tokenExpirySlack = 60 * time.Second
+	tokenExpirySlack      = 60 * time.Second
+	tokenResponseMaxBytes = 1 << 20
 )
 
 // Credentials are the fields required to dial the Codex websocket.
@@ -215,9 +216,13 @@ func (s *Source) refresh(ctx context.Context, creds Credentials) (Credentials, e
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, tokenResponseMaxBytes+1))
 	if err != nil {
-		return Credentials{}, fmt.Errorf("read codex token refresh response: %w", err)
+		return Credentials{}, fmt.Errorf("codex token refresh failed: status %d reason unreadable_response", resp.StatusCode)
+	}
+
+	if len(bodyBytes) > tokenResponseMaxBytes {
+		return Credentials{}, fmt.Errorf("codex token refresh failed: status %d reason oversized_response", resp.StatusCode)
 	}
 
 	var body struct {

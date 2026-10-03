@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,15 @@ func TestRefreshResponseContract(t *testing.T) {
 		{"unknown string", 400, `{"error":"private-account-secret"}`, "unknown_error"},
 		{"malformed", 502, `private-account-secret`, "invalid_response"},
 		{"unexpected shape", 400, `{"error":["private-account-secret"]}`, "unknown_error"},
+		{"number error", 400, `{"error":123}`, "unknown_error"},
+		{"bool error", 400, `{"error":true}`, "unknown_error"},
+		{"malformed code type", 401, `{"error":{"code":["private-account-secret"],"type":"invalid_grant"}}`, "unknown_error"},
+		{"no provider error", 503, `{"error_description":"private-account-secret"}`, "unknown_error"},
+		{"nested unknown code", 401, `{"error":{"code":{"token":"private-account-secret"}}}`, "unknown_error"},
+		{"trailing response", 400, `{"error":"invalid_grant"} private-account-secret`, "invalid_response"},
+		{"escaped unknown code", 400, `{"error":"invalid_grant\nprivate-account-secret"}`, "unknown_error"},
+		{"oversized response", 400, `{"error":"invalid_grant","private":"` + strings.Repeat("x", tokenResponseMaxBytes) + `"}`, "oversized_response"},
+		{"valid prefix past bound", 200, `{"access_token":"private-account-secret"}` + strings.Repeat(" ", tokenResponseMaxBytes) + `x`, "oversized_response"},
 		{"missing access token", 200, `{}`, "missing_access_token"},
 		{"error despite token", 200, `{"access_token":"private-account-secret","error":"invalid_grant"}`, "invalid_grant"},
 		{"success", 200, `{"access_token":"new-token","refresh_token":"new-refresh","expires_in":3600}`, ""},
@@ -75,5 +85,26 @@ func TestRefreshResponseContract(t *testing.T) {
 				t.Fatal("refresh token rotation mismatch")
 			}
 		})
+	}
+}
+
+type refreshResponseTransport func(*http.Request) (*http.Response, error)
+
+func (f refreshResponseTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type refreshFailedBody struct{}
+
+func (refreshFailedBody) Read([]byte) (int, error) {
+	return 0, errors.New("private-body-token-account")
+}
+func (refreshFailedBody) Close() error { return nil }
+func TestRefreshUnreadableBodyDoesNotLeakErrorChain(t *testing.T) {
+	s := NewSource("")
+	s.httpClient = &http.Client{Transport: refreshResponseTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 502, Body: refreshFailedBody{}, Header: http.Header{}}, nil
+	})}
+	got, err := s.refresh(context.Background(), Credentials{RefreshToken: "synthetic-refresh"})
+	if got != (Credentials{}) || err == nil || err.Error() != "codex token refresh failed: status 502 reason unreadable_response" || errors.Unwrap(err) != nil {
+		t.Fatal("read failure leaked raw transport details")
 	}
 }
