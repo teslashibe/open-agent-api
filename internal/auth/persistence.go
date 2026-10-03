@@ -35,6 +35,15 @@ func lockAuthProfile(path string) func() {
 // file intact. The snapshot check rejects external changes already observed
 // before replacement; it is not a cross-process compare-and-swap with the CLI.
 func replaceAuthFile(path string, original, updated []byte, replace func(string, string) error) error {
+	return replaceAuthFileChecked(path, original, updated, replace, nil)
+}
+
+func replaceAuthFileChecked(path string, original, updated []byte, replace func(string, string) error, checkProfile func() error) error {
+	if checkProfile != nil {
+		if err := checkProfile(); err != nil {
+			return err
+		}
+	}
 	// Auth paths may be symlinks. Replace the target, preserving the link.
 	target, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -66,6 +75,11 @@ func replaceAuthFile(path string, original, updated []byte, replace func(string,
 	currentTarget, err := filepath.EvalSymlinks(path)
 	if err != nil || currentTarget != target {
 		return errors.New("persist codex auth: profile target changed during refresh")
+	}
+	if checkProfile != nil {
+		if err := checkProfile(); err != nil {
+			return err
+		}
 	}
 	if err := replace(tempName, target); err != nil {
 		return errors.New("persist codex auth: replace checkpoint failed")
