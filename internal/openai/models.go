@@ -1,5 +1,7 @@
 package openai
 
+import "strings"
+
 const (
 	DefaultReasoningEffort = "medium"
 	DefaultVerbosity       = "medium"
@@ -12,6 +14,7 @@ type ModelAlias struct {
 	ReasoningEffort string
 	Verbosity       string
 	ServiceTier     string
+	Speed           string
 	// ContextHardMaxBytes forces aggressive context reduction (including
 	// dropping oldest turns) for models with small context windows. 0 = off.
 	ContextHardMaxBytes int
@@ -23,6 +26,9 @@ type ModelAlias struct {
 func serviceTierAlias(id, upstream, effort, verbosity, serviceTier string) ModelAlias {
 	model := alias(id, upstream, effort, verbosity)
 	model.ServiceTier = serviceTier
+	if serviceTier == "priority" {
+		model.Speed = "fast"
+	}
 	return model
 }
 
@@ -36,36 +42,37 @@ func alias(id, upstream, effort, verbosity string) ModelAlias {
 }
 
 // codexEffortLadder returns bare + effort aliases for a Codex model.
-// Upstream accepts none|minimal|low|medium|high|xhigh|max — not "ultra"
+// Exposes the model-specific native CLI effort levels, excluding "ultra"
 // (ultra is a Codex product multi-agent mode, not a reasoning.effort value).
 func codexEffortLadder(upstream string) []ModelAlias {
-	return []ModelAlias{
-		alias(upstream, upstream, DefaultReasoningEffort, gpt56DefaultVerbosity),
-		alias(upstream+"-low", upstream, "low", gpt56DefaultVerbosity),
-		alias(upstream+"-medium", upstream, "medium", gpt56DefaultVerbosity),
-		alias(upstream+"-high", upstream, "high", gpt56DefaultVerbosity),
-		alias(upstream+"-xhigh", upstream, "xhigh", gpt56DefaultVerbosity),
-		alias(upstream+"-max", upstream, "max", gpt56DefaultVerbosity),
+	defaultEffort := DefaultReasoningEffort
+	if upstream == "gpt-6.1-sol" {
+		defaultEffort = "low"
 	}
+	known, _ := capability(upstream)
+	out := []ModelAlias{alias(upstream, upstream, defaultEffort, gpt56DefaultVerbosity)}
+	for _, effort := range known.Efforts {
+		out = append(out, alias(upstream+"-"+effort, upstream, effort, gpt56DefaultVerbosity))
+	}
+	return out
 }
 
 // codexFastEffortLadder returns priority-tier aliases for every exposed effort.
 func codexFastEffortLadder(upstream string) []ModelAlias {
-	return []ModelAlias{
-		serviceTierAlias(upstream+"-fast", upstream, "low", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias(upstream+"-fast-low", upstream, "low", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias(upstream+"-fast-medium", upstream, "medium", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias(upstream+"-fast-high", upstream, "high", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias(upstream+"-fast-xhigh", upstream, "xhigh", gpt56DefaultVerbosity, "priority"),
-		serviceTierAlias(upstream+"-fast-max", upstream, "max", gpt56DefaultVerbosity, "priority"),
+	known, _ := capability(upstream)
+	out := []ModelAlias{serviceTierAlias(upstream+"-fast", upstream, "low", gpt56DefaultVerbosity, "priority")}
+	for _, effort := range known.Efforts {
+		out = append(out, serviceTierAlias(upstream+"-fast-"+effort, upstream, effort, gpt56DefaultVerbosity, "priority"))
 	}
+	return out
 }
 
 // astraEffortLadders returns API-native normal and priority-tier aliases.
 // Codex Ultra also requires multi-agent orchestration this proxy cannot provide.
 func astraEffortLadders() []ModelAlias {
 	const upstream = "gpt-6-astra"
-	efforts := []string{"low", "medium", "high", "xhigh", "max"}
+	known, _ := capability(upstream)
+	efforts := known.Efforts
 	out := []ModelAlias{alias(upstream, upstream, "low", DefaultVerbosity)}
 	for _, effort := range efforts {
 		out = append(out, alias(upstream+"-"+effort, upstream, effort, DefaultVerbosity))
@@ -79,16 +86,34 @@ func astraEffortLadders() []ModelAlias {
 
 // claudeEffortLadder returns the Claude Code aliases for one pinned model: the
 // bare ID (non-Cursor clients), api/ and anthropic/ IDs (Cursor BYOK), and
-// api/ effort variants. Claude Code accepts low|medium|high|xhigh|max; the
+// model-specific effort variants from the reviewed CLI matrix; the
 // unsuffixed IDs carry no effort so the CLI applies the model's default.
 func claudeEffortLadder(model string) []ModelAlias {
-	out := []ModelAlias{
-		alias(model, model, "", DefaultVerbosity),
-		alias("api/"+model, model, "", DefaultVerbosity),
-		alias("anthropic/"+model, model, "", DefaultVerbosity),
-	}
-	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
-		out = append(out, alias("api/"+model+"-"+effort, model, effort, DefaultVerbosity))
+	known, _ := capability(model)
+	out := []ModelAlias{}
+	for _, prefix := range []string{"", "api/", "anthropic/"} {
+		// Keep bare Sonnet4.6 owned by Antigravity; prefixed IDs are Claude Code.
+		if model == "claude-sonnet-4-6" && prefix == "" {
+			continue
+		}
+		upstream := model
+		if model == "claude-sonnet-4-6" {
+			upstream = "api/" + model
+		}
+		out = append(out, alias(prefix+model, upstream, "", DefaultVerbosity))
+		for _, effort := range known.Efforts {
+			out = append(out, alias(prefix+model+"-"+effort, upstream, effort, DefaultVerbosity))
+		}
+		if known.Fast {
+			fast := alias(prefix+model+"-fast", upstream, "", DefaultVerbosity)
+			fast.Speed = "fast"
+			out = append(out, fast)
+			for _, effort := range known.Efforts {
+				fast = alias(prefix+model+"-fast-"+effort, upstream, effort, DefaultVerbosity)
+				fast.Speed = "fast"
+				out = append(out, fast)
+			}
+		}
 	}
 	return out
 }
@@ -126,6 +151,8 @@ func buildModelAliases() []ModelAlias {
 		alias("gpt-5.6-sol-max", DefaultModel, "max", gpt56DefaultVerbosity),
 	}
 	out = append(out, codexFastEffortLadder(DefaultModel)...)
+	out = append(out, codexEffortLadder("gpt-6.1-sol")...)
+	out = append(out, codexFastEffortLadder("gpt-6.1-sol")...)
 	out = append(out, astraEffortLadders()...)
 	out = append(out, codexEffortLadder("gpt-6-sol")...)
 	out = append(out, codexFastEffortLadder("gpt-6-sol")...)
@@ -163,25 +190,26 @@ func buildModelAliases() []ModelAlias {
 		alias("haiku", "haiku", "", DefaultVerbosity),
 		alias("fable", "fable", "", DefaultVerbosity),
 	)
-	// Claude Code CLI pinned models. Cursor sends any model whose name starts
-	// with "claude-" to its Anthropic key slot instead of the OpenAI base URL
-	// override, so Cursor must use the api/ (or anthropic/) names.
-	out = append(out, claudeEffortLadder("claude-opus-5-5")...)
-	out = append(out, claudeEffortLadder("claude-fable-5-1")...)
-	out = append(out, claudeEffortLadder("claude-sonnet-5")...)
-	out = append(out, claudeEffortLadder("claude-opus-4-8")...)
-	out = append(out, claudeEffortLadder("claude-fable-5")...)
+	// Claude Code's per-model effort and speed matrix; no guessed cross-product.
+	for _, known := range modelCapabilities {
+		if known.Claude {
+			out = append(out, claudeEffortLadder(known.Model)...)
+		}
+	}
 	out = append(out,
-		alias("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", "", DefaultVerbosity),
-		alias("api/claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", "", DefaultVerbosity),
 		alias("api/claude-haiku-4-5", "claude-haiku-4-5-20251001", "", DefaultVerbosity),
 		alias("anthropic/claude-haiku-4-5", "claude-haiku-4-5-20251001", "", DefaultVerbosity),
+		alias("api/claude-opus-4-5", "claude-opus-4-5-20251101", "", DefaultVerbosity),
+		alias("api/claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "", DefaultVerbosity),
 	)
 
 	// Legacy GPT-5.5 — upstream pinned so DefaultModel cutover does not remap them.
 	out = append(out,
 		alias(LegacyGPT55, LegacyGPT55, DefaultReasoningEffort, DefaultVerbosity),
 		alias("gpt-5.5-low", LegacyGPT55, "low", DefaultVerbosity),
+		alias("gpt-5.5-medium", LegacyGPT55, "medium", DefaultVerbosity),
+		alias("gpt-5.5-xhigh", LegacyGPT55, "xhigh", DefaultVerbosity),
+		serviceTierAlias("gpt-5.5-fast-xhigh", LegacyGPT55, "xhigh", DefaultVerbosity, "priority"),
 		alias("gpt-5.5-high", LegacyGPT55, "high", DefaultVerbosity),
 		serviceTierAlias("gpt-5.5-fast", LegacyGPT55, "low", "low", "priority"),
 		serviceTierAlias("gpt-5.5-fast-low", LegacyGPT55, "low", DefaultVerbosity, "priority"),
@@ -211,6 +239,65 @@ func buildModelAliases() []ModelAlias {
 			ContextHardMaxBytes: 96 * 1024,
 		},
 	)
+	for _, name := range []string{"claude-haiku-4-5", "claude-opus-4-5", "claude-sonnet-4-5"} {
+		known, _ := capability(name)
+		for _, current := range claudeEffortLadder(known.Model) {
+			replacement := current
+			replacement.ID = strings.Replace(current.ID, known.Model, name, 1)
+			exists := false
+			for _, prior := range out {
+				if prior.ID == replacement.ID {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				out = append(out, replacement)
+			}
+		}
+	}
+	for _, short := range []string{"opus", "sonnet", "fable", "haiku"} {
+		known, _ := capability(short)
+		for _, current := range claudeEffortLadder(known.Model) {
+			if current.ID == known.Model || strings.HasPrefix(current.ID, "api/") || strings.HasPrefix(current.ID, "anthropic/") {
+				continue
+			}
+			current.ID = strings.Replace(current.ID, known.Model, short, 1)
+			out = append(out, current)
+		}
+	}
+	// Explicit normal aliases preserve the base effort; fast remains independent.
+	initial := append([]ModelAlias(nil), out...)
+	seen := map[string]bool{}
+	for _, current := range out {
+		seen[current.ID] = true
+	}
+	for _, current := range initial {
+		known, reviewed := capability(current.UpstreamModel)
+		if !reviewed || current.ServiceTier != "" || current.Speed == "fast" || current.ID == "claude-sonnet-4-6" {
+			continue
+		}
+		base := current.ID
+		suffix := ""
+		for _, effort := range known.Efforts {
+			if strings.HasSuffix(base, "-"+effort) {
+				base = strings.TrimSuffix(base, "-"+effort)
+				suffix = "-" + effort
+				break
+			}
+		}
+		normal := current
+		normal.ID = base + "-normal" + suffix
+		normal.Speed = "normal"
+		if current.UpstreamModel == "opus" || current.UpstreamModel == "sonnet" || current.UpstreamModel == "haiku" || current.UpstreamModel == "fable" {
+			normal.UpstreamModel = known.Model
+		}
+		if !seen[normal.ID] {
+			seen[normal.ID] = true
+			out = append(out, normal)
+		}
+	}
+
 	return out
 }
 
@@ -244,10 +331,14 @@ func ResolveModelAlias(model string) ModelAlias {
 			return a
 		}
 	}
+	effort := DefaultReasoningEffort
+	if strings.Contains(model, "claude-") {
+		effort = ""
+	}
 	return ModelAlias{
 		ID:              model,
 		UpstreamModel:   model,
-		ReasoningEffort: DefaultReasoningEffort,
+		ReasoningEffort: effort,
 		Verbosity:       DefaultVerbosity,
 	}
 }

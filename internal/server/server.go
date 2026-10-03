@@ -465,7 +465,10 @@ func chatCompletions(opts options) fiber.Handler {
 		if model == "" {
 			model = openai.DefaultModel
 		}
-		modelAlias := openai.ResolveModelAlias(model)
+		modelAlias, selectionErr := openai.ResolveModelSelection(model, req.ReasoningEffort, req.Speed)
+		if selectionErr != nil {
+			return writeError(c, fiber.StatusBadRequest, "invalid_request_error", selectionErr.Error())
+		}
 		provider = codex.ProviderForModel(modelAlias.UpstreamModel)
 		serviceTier = modelAlias.ServiceTier
 		if !opts.contextConfig.ProviderEnabled(provider) {
@@ -534,6 +537,7 @@ func chatCompletions(opts options) fiber.Handler {
 			ReasoningEffort:   defaultString(req.ReasoningEffort, modelAlias.ReasoningEffort),
 			Verbosity:         defaultString(req.Verbosity, modelAlias.Verbosity),
 			ServiceTier:       modelAlias.ServiceTier,
+			Speed:             modelAlias.Speed,
 			Faithful:          faithful,
 			Prewarm:           prewarm,
 			RequestID:         requestID,

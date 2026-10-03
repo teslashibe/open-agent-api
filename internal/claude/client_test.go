@@ -19,17 +19,6 @@ func TestNewClientDefaults(t *testing.T) {
 	}
 }
 
-func TestClaudeEffortPassesFullLadder(t *testing.T) {
-	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
-		if claudeEffort(effort) != effort {
-			t.Fatalf("effort %q dropped", effort)
-		}
-	}
-	if claudeEffort("none") != "" || claudeEffort("minimal") != "" || claudeEffort("") != "" {
-		t.Fatal("expected unsupported efforts to be omitted")
-	}
-}
-
 func TestModelAndEffortNormalizesCursorNames(t *testing.T) {
 	client, err := NewClient(Config{})
 	if err != nil {

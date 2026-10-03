@@ -92,7 +92,10 @@ func New(cfg Config) (*Client, error) {
 // Complete sends prompt as a single user message to the model alias, as the
 // gateway does for a tool-free chat completion.
 func (c *Client) Complete(ctx context.Context, model, prompt string) (Result, error) {
-	alias := openai.ResolveModelAlias(model)
+	alias, err := openai.ResolveModelSelection(model, "", "")
+	if err != nil {
+		return Result{}, err
+	}
 	content, err := json.Marshal(prompt)
 	if err != nil {
 		return Result{}, err
