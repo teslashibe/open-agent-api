@@ -75,10 +75,14 @@ func OpenLoadHistory(path string, accounts []string, now func() time.Time) (*Loa
 		return nil, fmt.Errorf("open load history: %w", err)
 	}
 	if err == nil {
-		defer file.Close()
 		var saved loadHistoryFile
-		if err := json.NewDecoder(file).Decode(&saved); err != nil {
+		decodeErr := json.NewDecoder(file).Decode(&saved)
+		closeErr := file.Close()
+		if err := decodeErr; err != nil {
 			return nil, fmt.Errorf("decode load history: %w", err)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close load history: %w", closeErr)
 		}
 		if saved.Version != 1 {
 			return nil, fmt.Errorf("unsupported load history version %d", saved.Version)
@@ -86,6 +90,8 @@ func OpenLoadHistory(path string, accounts []string, now func() time.Time) (*Loa
 		history.events = saved.Events
 	}
 	history.pruneLocked(now())
+	// Windows cannot replace this pathname while its read handle is open.
+	// Close the decoded checkpoint before atomically flushing the new state.
 	if err := history.flushLocked(); err != nil {
 		return nil, err
 	}

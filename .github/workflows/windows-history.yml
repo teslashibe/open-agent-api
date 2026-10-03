@@ -1,0 +1,32 @@
+name: native Windows history persistence
+
+on:
+  pull_request:
+    paths:
+      - 'internal/codex/load_history*'
+      - '.github/workflows/windows-history.yml'
+      - 'go.*'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/codex/load_history*'
+      - '.github/workflows/windows-history.yml'
+      - 'go.*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  history:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Real filesystem persistence and concurrent records, no provider calls.
+      # This gate covers history portability, not all Windows provider support.
+      - run: go test -race ./internal/codex -run '^TestLoadHistory(ReopenRetainsUsageAcrossRepeatedRestarts|ConcurrentRecordsSurviveRestart|PrunesOlderThanSevenDays)$' -count=1
