@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -183,7 +185,7 @@ func TestSourceRefreshFailureSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("Get() error = nil")
 	}
-	if !strings.Contains(err.Error(), "refresh_token_revoked") {
+	if !strings.Contains(err.Error(), "reason invalid_grant") || strings.Contains(err.Error(), "refresh_token_revoked") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -196,5 +198,44 @@ func writeJSON(t *testing.T, path string, v any) {
 	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSourceRejectionRemainsPrivateWithoutChangingCredentials(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		t.Run(fmt.Sprint("force=", force), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "auth.json")
+			writeJSON(t, path, map[string]any{"tokens": map[string]any{"access_token": "synthetic-private-access", "refresh_token": "synthetic-private-refresh", "account_id": "synthetic-private-account", "expires_at": time.Now().Add(-time.Hour).Unix()}})
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hits := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits++
+				w.WriteHeader(401)
+				fmt.Fprint(w, `{"error":{"code":"invalid_refresh_token","message":"synthetic-private-access synthetic-private-refresh synthetic-private-account"},"error_description":"synthetic-private-description"}`)
+			}))
+			defer server.Close()
+			source := NewSource(path)
+			source.httpClient = server.Client()
+			source.tokenURL = server.URL
+			if force {
+				source.cache = Credentials{AccessToken: "synthetic-private-cached", AccountID: "synthetic-private-account"}
+			}
+			var got Credentials
+			if force {
+				got, err = source.ForceRefresh(context.Background())
+			} else {
+				got, err = source.Get(context.Background())
+			}
+			if got != (Credentials{}) || err == nil || err.Error() != "codex token refresh failed: status 401 reason invalid_refresh_token" {
+				t.Fatal("unsafe rejection contract")
+			}
+			after, readErr := os.ReadFile(path)
+			if readErr != nil || !bytes.Equal(before, after) || hits != 1 || source.cache != (Credentials{}) {
+				t.Fatal("rejection changed credentials, cached rejected token or repeated refresh")
+			}
+		})
 	}
 }

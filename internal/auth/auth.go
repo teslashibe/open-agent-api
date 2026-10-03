@@ -23,7 +23,8 @@ const (
 	chatgptOAuthTokenURL = "https://auth.openai.com/oauth/token"
 
 	// Refresh a little early so in-flight requests don't race expiry.
-	tokenExpirySlack = 60 * time.Second
+	tokenExpirySlack      = 60 * time.Second
+	tokenResponseMaxBytes = 1 << 20
 )
 
 // Credentials are the fields required to dial the Codex websocket.
@@ -215,31 +216,31 @@ func (s *Source) refresh(ctx context.Context, creds Credentials) (Credentials, e
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, tokenResponseMaxBytes+1))
 	if err != nil {
-		return Credentials{}, fmt.Errorf("read codex token refresh response: %w", err)
+		return Credentials{}, fmt.Errorf("codex token refresh failed: status %d reason unreadable_response", resp.StatusCode)
+	}
+
+	if len(bodyBytes) > tokenResponseMaxBytes {
+		return Credentials{}, fmt.Errorf("codex token refresh failed: status %d reason oversized_response", resp.StatusCode)
 	}
 
 	var body struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		IDToken      string `json:"id_token"`
-		ExpiresIn    int64  `json:"expires_in"`
-		Error        string `json:"error"`
-		ErrorDesc    string `json:"error_description"`
+		AccessToken  string          `json:"access_token"`
+		RefreshToken string          `json:"refresh_token"`
+		IDToken      string          `json:"id_token"`
+		ExpiresIn    int64           `json:"expires_in"`
+		Error        json.RawMessage `json:"error"`
 	}
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
-		return Credentials{}, fmt.Errorf("decode codex token refresh response: %w", err)
+		return Credentials{}, fmt.Errorf("codex token refresh failed: status %d reason invalid_response", resp.StatusCode)
 	}
-	if resp.StatusCode != http.StatusOK || body.AccessToken == "" {
-		message := body.ErrorDesc
-		if message == "" {
-			message = body.Error
-		}
-		if message == "" {
-			message = fmt.Sprintf("status %d", resp.StatusCode)
-		}
-		return Credentials{}, fmt.Errorf("codex token refresh failed: %s", message)
+	hasError := len(body.Error) > 0 && string(body.Error) != "null"
+	if resp.StatusCode == http.StatusOK && body.AccessToken == "" && !hasError {
+		return Credentials{}, errors.New("codex token refresh failed: status 200 reason missing_access_token")
+	}
+	if resp.StatusCode != http.StatusOK || hasError {
+		return Credentials{}, fmt.Errorf("codex token refresh failed: status %d reason %s", resp.StatusCode, refreshErrorReason(body.Error))
 	}
 
 	refreshed := creds
@@ -253,6 +254,35 @@ func (s *Source) refresh(ctx context.Context, creds Credentials) (Credentials, e
 		refreshed.Expiry = exp
 	}
 	return refreshed, nil
+}
+
+// refreshErrorReason accepts both OAuth string errors and structured provider
+// errors. Never return descriptions or unknown codes: provider text may contain
+// account details or credentials and this error propagates into application logs.
+func refreshErrorReason(raw json.RawMessage) string {
+	var code string
+	if json.Unmarshal(raw, &code) != nil {
+		var object struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &object) != nil {
+			return "unknown_error"
+		}
+		code = object.Code
+		if code == "" {
+			code = object.Type
+		}
+	}
+	switch code {
+	case "invalid_grant", "invalid_client", "invalid_request", "unauthorized_client",
+		"unsupported_grant_type", "invalid_scope", "access_denied", "server_error",
+		"temporarily_unavailable", "refresh_token_reused", "refresh_token_expired",
+		"refresh_token_invalidated", "invalid_refresh_token":
+		return code
+	default:
+		return "unknown_error"
+	}
 }
 
 // persist writes refreshed tokens back into auth.json, preserving unknown
