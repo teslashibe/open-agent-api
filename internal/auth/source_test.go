@@ -73,13 +73,13 @@ func TestSourceGetRefreshesExpiredAccessToken(t *testing.T) {
 		t.Fatalf("token endpoint hits = %d, want 1", hits)
 	}
 
-	// Second call should use cache (no extra refresh).
+	// Second call reads the persisted usable token without another refresh.
 	creds2, err := src.Get(context.Background())
 	if err != nil {
 		t.Fatalf("second Get() error = %v", err)
 	}
 	if creds2.AccessToken != "fresh-access" || hits != 1 {
-		t.Fatalf("cache miss: creds=%#v hits=%d", creds2, hits)
+		t.Fatalf("persisted credential reuse failed: hits=%d", hits)
 	}
 
 	persisted, err := os.ReadFile(path)

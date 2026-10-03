@@ -1,14 +1,16 @@
-name: native Windows history persistence
+name: native Windows persistence
 
 on:
   pull_request:
     paths:
+      - 'internal/auth/**'
       - 'internal/codex/load_history*'
       - '.github/workflows/windows-history.yml'
       - 'go.*'
   push:
     branches: [main]
     paths:
+      - 'internal/auth/**'
       - 'internal/codex/load_history*'
       - '.github/workflows/windows-history.yml'
       - 'go.*'
@@ -30,3 +32,5 @@ jobs:
       # Real filesystem persistence and concurrent records, no provider calls.
       # This gate covers history portability, not all Windows provider support.
       - run: go test -race ./internal/codex -run '^TestLoadHistory(ReopenRetainsUsageAcrossRepeatedRestarts|ConcurrentRecordsSurviveRestart|PrunesOlderThanSevenDays)$' -count=1
+      # Temporary synthetic profiles and loopback refresh servers only.
+      - run: go test -race ./internal/auth -count=1

@@ -120,29 +120,32 @@ type Source struct {
 	tokenURL   string
 	clientID   string
 
-	mu    sync.Mutex
-	cache Credentials
+	mu          sync.Mutex
+	cache       Credentials // Last credentials returned, never used instead of reading disk.
+	replaceFile func(string, string) error
 }
 
 func NewSource(path string) *Source {
 	return &Source{
-		path:       path,
-		httpClient: http.DefaultClient,
-		now:        time.Now,
-		tokenURL:   chatgptOAuthTokenURL,
-		clientID:   chatgptOAuthClientID,
+		path:        absoluteAuthPath(path),
+		httpClient:  http.DefaultClient,
+		now:         time.Now,
+		tokenURL:    chatgptOAuthTokenURL,
+		clientID:    chatgptOAuthClientID,
+		replaceFile: os.Rename,
 	}
 }
 
 // Get returns usable Codex credentials, refreshing when the access token is
-// near expiry. Single-flight via the mutex.
+// near expiry. Sources for the same profile serialize refresh and persistence
+// within this process. Every call reads disk so removal and replacement take effect.
 func (s *Source) Get(ctx context.Context) (Credentials, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.cache.AccessToken != "" && s.cache.AccountID != "" && !s.cache.expired(s.now()) {
-		return s.cache, nil
-	}
+	s.cache = Credentials{}
+	unlock := lockAuthProfile(s.path)
+	defer unlock()
 
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -165,16 +168,24 @@ func (s *Source) Get(ctx context.Context) (Credentials, error) {
 	if err != nil {
 		return Credentials{}, err
 	}
+	if err := s.persist(refreshed, data); err != nil {
+		return Credentials{}, err
+	}
 	s.cache = refreshed
-	s.persist(refreshed, data)
 	return refreshed, nil
 }
 
-// ForceRefresh clears the cache and always hits the token endpoint. Used after
-// an upstream websocket 401/403 when the access token still looks unexpired.
+// ForceRefresh renews the rejected credentials after a websocket 401/403.
+// If another Source already persisted different usable credentials, reuse them
+// instead of rotating the same profile again.
 func (s *Source) ForceRefresh(ctx context.Context) (Credentials, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	previous := s.cache
+	s.cache = Credentials{}
+	unlock := lockAuthProfile(s.path)
+	defer unlock()
 
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -184,6 +195,11 @@ func (s *Source) ForceRefresh(ctx context.Context) (Credentials, error) {
 	if err != nil {
 		return Credentials{}, fmt.Errorf("parse codex auth: %w", err)
 	}
+	if previous.AccessToken != "" && creds != previous && !creds.expired(s.now()) {
+		s.cache = creds
+		return creds, nil
+	}
+
 	if creds.RefreshToken == "" {
 		return Credentials{}, errors.New("codex refresh_token missing; run codex login")
 	}
@@ -192,8 +208,10 @@ func (s *Source) ForceRefresh(ctx context.Context) (Credentials, error) {
 		s.cache = Credentials{}
 		return Credentials{}, err
 	}
+	if err := s.persist(refreshed, data); err != nil {
+		return Credentials{}, err
+	}
 	s.cache = refreshed
-	s.persist(refreshed, data)
 	return refreshed, nil
 }
 
@@ -286,11 +304,11 @@ func refreshErrorReason(raw json.RawMessage) string {
 }
 
 // persist writes refreshed tokens back into auth.json, preserving unknown
-// fields. Failures are non-fatal: the in-memory cache still carries the token.
-func (s *Source) persist(creds Credentials, original []byte) {
+// fields. Credentials are returned only after the replacement succeeds.
+func (s *Source) persist(creds Credentials, original []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(original, &raw); err != nil {
-		return
+		return errors.New("persist codex auth: invalid original JSON")
 	}
 
 	var tok map[string]json.RawMessage
@@ -307,19 +325,19 @@ func (s *Source) persist(creds Credentials, original []byte) {
 	}
 	tokensRaw, err := json.Marshal(tok)
 	if err != nil {
-		return
+		return errors.New("persist codex auth: encode tokens failed")
 	}
 	raw["tokens"] = tokensRaw
 	raw["last_refresh"], _ = json.Marshal(s.now().UTC().Format(time.RFC3339Nano))
 
 	updated, err := json.Marshal(raw)
 	if err != nil {
-		return
+		return errors.New("persist codex auth: encode auth failed")
 	}
 	// Keep the file pretty enough for operators; ignore indent errors.
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, updated, "", "  "); err == nil {
 		updated = append(pretty.Bytes(), '\n')
 	}
-	_ = os.WriteFile(s.path, updated, 0o600)
+	return replaceAuthFile(s.path, original, updated, s.replaceFile)
 }
