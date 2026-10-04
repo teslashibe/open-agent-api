@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'internal/auth/**'
+      - 'pkg/codex/**'
       - 'internal/codex/load_history*'
       - '.github/workflows/windows-history.yml'
       - 'go.*'
@@ -11,6 +12,7 @@ on:
     branches: [main]
     paths:
       - 'internal/auth/**'
+      - 'pkg/codex/**'
       - 'internal/codex/load_history*'
       - '.github/workflows/windows-history.yml'
       - 'go.*'
@@ -34,3 +36,4 @@ jobs:
       - run: go test -race ./internal/codex -run '^TestLoadHistory(ReopenRetainsUsageAcrossRepeatedRestarts|ConcurrentRecordsSurviveRestart|PrunesOlderThanSevenDays)$' -count=1
       # Temporary synthetic profiles and loopback refresh servers only.
       - run: go test -race ./internal/auth -count=1
+      - run: go test -race ./pkg/codex -run '^TestPublicAuthentication' -count=1
