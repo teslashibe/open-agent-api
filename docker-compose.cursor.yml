@@ -5,11 +5,14 @@ services:
     environment:
       CODEX_AGENT_QUEUE_ENABLED: "${CODEX_AGENT_QUEUE_ENABLED:-true}"
       CODEX_AGENT_QUEUE_PRIORITY_ENABLED: "${CODEX_AGENT_QUEUE_PRIORITY_ENABLED:-true}"
-      CODEX_AGENT_MAX_ACTIVE: "${CODEX_AGENT_MAX_ACTIVE:-20}"
+      # Structured inference shares this queue while it is enabled, so this is
+      # also the structured global cap; 80 matches the measured upstream peak
+      # for two accounts at 40 in flight each.
+      CODEX_AGENT_MAX_ACTIVE: "${CODEX_AGENT_MAX_ACTIVE:-80}"
       CODEX_AGENT_MAX_ACTIVE_PER_KEY: "${CODEX_AGENT_MAX_ACTIVE_PER_KEY:-20}"
-      # Load-tested 2026-10-12 with Luna bulk extraction: one ChatGPT account
-      # scales linearly to ~28 in flight and flattens near 40, so 20 left
-      # upstream capacity idle. See "Bulk Luna throughput" in AGENTS.md.
+      # Load-tested 2026-10-12 with Luna bulk extraction: two accounts peak at
+      # 40 in flight each; beyond that upstream throttles and throughput falls.
+      # See "Bulk Luna throughput" in AGENTS.md.
       CODEX_CLIENT_MAX_INFLIGHT: "${CODEX_CLIENT_MAX_INFLIGHT:-40}"
       CODEX_AGENT_QUEUE_LIMIT: "${CODEX_AGENT_QUEUE_LIMIT:-192}"
       CODEX_AGENT_QUEUE_TIMEOUT: "${CODEX_AGENT_QUEUE_TIMEOUT:-60m}"
