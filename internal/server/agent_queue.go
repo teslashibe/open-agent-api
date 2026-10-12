@@ -198,6 +198,10 @@ func (q *agentQueue) releaseWithDistributedLock(ctx context.Context, requestID s
 	}, nil
 }
 
+// acquireDistributedLock takes one of maxPerKey cross-process slots for key,
+// so processes sharing lockDir together admit at most maxPerKey requests per
+// key. Slot 0 keeps the legacy "<hash>.lock" name: binaries from before slots
+// existed lock only that file, so mixed-version processes still contend on it.
 func (q *agentQueue) acquireDistributedLock(ctx context.Context, requestID string, start time.Time, key agentQueueKey) (func(), error) {
 	if q.lockDir == "" {
 		return func() {}, nil
@@ -205,7 +209,10 @@ func (q *agentQueue) acquireDistributedLock(ctx context.Context, requestID strin
 	if err := os.MkdirAll(q.lockDir, 0o700); err != nil {
 		return nil, fmt.Errorf("agent queue lock dir: %w", err)
 	}
-	path := filepath.Join(q.lockDir, key.Hash+".lock")
+	slots := q.maxPerKey
+	if slots < 1 {
+		slots = 1
+	}
 	remaining := q.timeout
 	if q.now != nil && q.timeout > 0 {
 		if elapsed := q.now().Sub(start); elapsed > 0 {
@@ -217,24 +224,28 @@ func (q *agentQueue) acquireDistributedLock(ctx context.Context, requestID strin
 	}
 	lockStart := time.Now()
 	for {
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(file, "request_id=%s\nkey_mode=%s\nkey_hash=%s\n", requestID, key.Mode, key.Hash)
+		for slot := 0; slot < slots; slot++ {
+			path := agentQueueLockPath(q.lockDir, key.Hash, slot)
+			file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("agent queue lock acquire: %w", err)
+			}
+			_, _ = fmt.Fprintf(file, "request_id=%s\nkey_mode=%s\nkey_hash=%s\nslot=%d\n", requestID, key.Mode, key.Hash, slot)
 			_ = file.Close()
-			q.logf("agent_queue_lock_acquire request_id=%s key_mode=%s key_hash=%s lock_wait_ms=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds())
+			q.logf("agent_queue_lock_acquire request_id=%s key_mode=%s key_hash=%s slot=%d lock_wait_ms=%d\n", requestID, key.Mode, key.Hash, slot, q.now().Sub(start).Milliseconds())
 			var once sync.Once
 			return func() {
 				once.Do(func() {
 					if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-						q.logf("agent_queue_lock_release_error request_id=%s key_mode=%s key_hash=%s err=%s\n", requestID, key.Mode, key.Hash, err)
+						q.logf("agent_queue_lock_release_error request_id=%s key_mode=%s key_hash=%s slot=%d err=%s\n", requestID, key.Mode, key.Hash, slot, err)
 						return
 					}
-					q.logf("agent_queue_lock_release request_id=%s key_mode=%s key_hash=%s\n", requestID, key.Mode, key.Hash)
+					q.logf("agent_queue_lock_release request_id=%s key_mode=%s key_hash=%s slot=%d\n", requestID, key.Mode, key.Hash, slot)
 				})
 			}, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, fmt.Errorf("agent queue lock acquire: %w", err)
 		}
 		if remaining > 0 && time.Since(lockStart) >= remaining {
 			q.logf("agent_queue_lock_timeout request_id=%s key_mode=%s key_hash=%s wait_ms=%d\n", requestID, key.Mode, key.Hash, q.now().Sub(start).Milliseconds())
@@ -246,6 +257,13 @@ func (q *agentQueue) acquireDistributedLock(ctx context.Context, requestID strin
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
+
+func agentQueueLockPath(dir string, hash string, slot int) string {
+	if slot == 0 {
+		return filepath.Join(dir, hash+".lock")
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s.%d.lock", hash, slot))
 }
 
 func (q *agentQueue) releaseFunc(requestID string, start time.Time, key agentQueueKey, class turnClass, priority int) func() {

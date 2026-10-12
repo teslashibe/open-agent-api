@@ -74,19 +74,36 @@ Full tables: [`internal/openai/models.go`](internal/openai/models.go) and [websi
 
 Load-tested 2026-10-12 on the local Cursor/Report Studio gateway with two pooled ChatGPT accounts, using a real tagging workload (40 customer-feedback records per request, about 2.5k output tokens).
 
+Peak: 6,300 to 6,850 records/min at 80 requests in flight (40 per account), with p50 latency of about 13 s per 40-record batch. At 100, 120 and 160 in flight, upstream throttled and throughput fell to 4,000 to 5,600 records/min while latency tripled. The gateway caps therefore sit at the peak, and extra client concurrency waits in the queue instead of reaching upstream.
+
+| In flight | Records/min | p50 latency |
+| --- | --- | --- |
+| 40 | 3,233 | 13 s |
+| 60 | 5,142 | 13 s |
+| 80 | 6,295 / 6,853 (two runs) | 13 s |
+| 100 | 3,991 | 27 s |
+| 120 | 5,594 | 20 s |
+| 160 | 4,341 | 47 s |
+
 Recommended request shape for bulk extraction:
 
-- `POST /v1/structured/inference` with `model: "gpt-5.6-luna-fast"` and `reasoning_effort: "low"`. A 40-record batch takes about 15 s, against about 40 s for `gpt-5.6-luna-fast-low` on `/v1/chat/completions` and about 70 s for `gpt-5.6-luna-medium` on chat. The strict schema returned zero parse failures across 360 batches; on chat, 5 to 10% of Luna replies carried a stray trailing `]}`.
-- About 40 to 48 concurrent requests across two accounts. Throughput was 2,390 records/min at 40 in flight and 2,591 at 80, while p50 latency doubled, so the ceiling is upstream.
-- One distinct `Authorization` value per client lane. Read the next section before running concurrent structured clients.
-
-### Known limit: structured requests serialize per caller
-
-`structuredCaller` (`internal/server/structured.go`) keys admission on the tenant header, else a hash of `Authorization`, else `structured:global`. `acquireDistributedLock` (`internal/server/agent_queue.go`) takes one `O_EXCL` lock file per key hash, so each key runs one request at a time whatever `STRUCTURED_MAX_ACTIVE_PER_KEY` says. A client that sends no `Authorization` header, or a single bearer for every lane, gets one request at a time. With inbound auth off (`GATEWAY_BEARER_SECRET` empty), any per-lane bearer such as `Bearer lane-<random>` works around it. With auth on, set `GATEWAY_TENANT_HEADER` and send a distinct tenant value per lane. The proper fix is to make the lock count up to the per-key limit.
+- `POST /v1/structured/inference` with `model: "gpt-5.6-luna-fast"` and `reasoning_effort: "low"`. On `/v1/chat/completions`, `gpt-5.6-luna-fast-low` took about 40 s for the same batch and `gpt-5.6-luna-medium` about 70 s. Chat throughput peaked near 2,900 records/min. The strict schema had zero parse failures across about 1,700 batches (0.4% hit transient upstream 502s, which a retry clears); on chat, 5 to 10% of Luna replies carried a stray trailing `]}`.
+- 80 concurrent requests across two accounts. Scale this with the number of pooled accounts.
 
 ### Gateway settings
 
-`docker-compose.cursor.yml` defaults to `CODEX_CLIENT_MAX_INFLIGHT=40` and `STRUCTURED_MAX_ACTIVE` / `STRUCTURED_MAX_ACTIVE_PER_KEY=80`. With 20 per account, two accounts capped out at 40 requests in flight, which left upstream capacity idle. Plain `/v1/chat/completions` without tools bypasses the agent queue, so `CODEX_CLIENT_MAX_INFLIGHT × accounts` is its only gateway limit. The pool waits for a free slot when saturated; it doesn't reject.
+`docker-compose.cursor.yml` defaults:
+
+| Variable | Value | Why |
+| --- | --- | --- |
+| `CODEX_CLIENT_MAX_INFLIGHT` | 40 | per-account peak |
+| `CODEX_AGENT_MAX_ACTIVE` | 80 | global cap for agent turns and, while `CODEX_AGENT_QUEUE_ENABLED=true`, for structured inference too |
+| `CODEX_AGENT_MAX_ACTIVE_PER_KEY` | 20 | per Cursor conversation, and per structured caller while the agent queue is on |
+| `STRUCTURED_MAX_ACTIVE` / `_PER_KEY` | 80 | used only when the agent queue is disabled |
+
+Structured inference shares the Codex agent queue whenever `CODEX_AGENT_QUEUE_ENABLED` is true, so `STRUCTURED_MAX_ACTIVE` has no effect in that mode. Plain `/v1/chat/completions` without tools bypasses the agent queue, and `CODEX_CLIENT_MAX_INFLIGHT × accounts` is its only gateway limit. The pool waits for a free slot when saturated; it doesn't reject.
+
+Admission is keyed per caller: the tenant header if `GATEWAY_TENANT_HEADER` is set, else a hash of `Authorization`, else `structured:global`. The cross-process lock in `acquireDistributedLock` holds up to `maxPerKey` slot files per key (`<hash>.lock`, `<hash>.1.lock`, and so on), so one caller gets `CODEX_AGENT_MAX_ACTIVE_PER_KEY` concurrent requests. Gateways older than this change locked a single file per key and ran each caller one request at a time. To exceed the per-key limit from one client, give each lane its own `Authorization` value (any value works while `GATEWAY_BEARER_SECRET` is empty) or its own tenant header value.
 
 The account pool is a local override layered last, and it stays out of Git because it names accounts:
 
@@ -110,7 +127,7 @@ services:
 
 Pool only accounts dedicated to the gateway. If an account is also logged in for local development, the gateway's copy of its tokens and the developer's copy refresh independently and can revoke each other. When that happens, the upstream usage poll reports `auth_error` even though the access token hasn't expired.
 
-To check capacity, `GET /metrics` exposes `codex_chat_api_client_inflight`, `codex_chat_api_client_pool_queue_depth` and `codex_chat_api_upstream_rate_limit{field="used_percent"}`. That last one is the weekly window, in whole percents. The full load test, about 43k records, used 2% of each account's week.
+To check capacity, `GET /metrics` exposes `codex_chat_api_client_inflight`, `codex_chat_api_client_pool_queue_depth` and `codex_chat_api_upstream_rate_limit{field="used_percent"}`. That last one is the weekly window, in whole percents. The full load test, about 95k records, used 4% of each account's week.
 
 ## Important files
 
