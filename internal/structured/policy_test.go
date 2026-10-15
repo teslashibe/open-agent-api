@@ -2,6 +2,7 @@ package structured
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/teslashibe/open-agent-api/internal/codex"
@@ -126,5 +127,84 @@ func TestRequestNormalizeTrimsCallerStrings(t *testing.T) {
 	req.Normalize()
 	if req.RequestID != "req" || req.IdempotencyKey != "idem" || req.Operation != "op" || req.Model != "m" || req.SchemaVersion != "v1" {
 		t.Fatalf("normalized = %#v", req)
+	}
+}
+
+// gpt-6.1-sol is the model S'more's Reddit Signals asks structured inference
+// for (profile proposals, request-group names and content briefs). Every alias in
+// its chat ladder is admitted with the alias defaults the chat surface uses.
+func TestDefaultPolicyAdmitsTheGPT61SolLadder(t *testing.T) {
+	policy := NewPolicy(DefaultModels(), nil)
+
+	want := map[string]struct{ effort, tier string }{
+		"gpt-6.1-sol":             {"low", ""},
+		"gpt-6.1-sol-low":         {"low", ""},
+		"gpt-6.1-sol-medium":      {"medium", ""},
+		"gpt-6.1-sol-high":        {"high", ""},
+		"gpt-6.1-sol-xhigh":       {"xhigh", ""},
+		"gpt-6.1-sol-max":         {"max", ""},
+		"gpt-6.1-sol-fast":        {"low", "priority"},
+		"gpt-6.1-sol-fast-low":    {"low", "priority"},
+		"gpt-6.1-sol-fast-medium": {"medium", "priority"},
+		"gpt-6.1-sol-fast-high":   {"high", "priority"},
+		"gpt-6.1-sol-fast-xhigh":  {"xhigh", "priority"},
+		"gpt-6.1-sol-fast-max":    {"max", "priority"},
+	}
+	for id, expected := range want {
+		resolved, err := policy.Resolve(id)
+		if err != nil {
+			t.Fatalf("Resolve(%q) error = %v", id, err)
+		}
+		if resolved.ID != id || resolved.Upstream != "gpt-6.1-sol" || resolved.Provider != codex.ProviderCodex {
+			t.Fatalf("Resolve(%q) = %#v, want upstream gpt-6.1-sol on codex", id, resolved)
+		}
+		if resolved.ReasoningEffort != expected.effort || resolved.ServiceTier != expected.tier {
+			t.Fatalf("Resolve(%q) effort/tier = %q/%q, want %q/%q",
+				id, resolved.ReasoningEffort, resolved.ServiceTier, expected.effort, expected.tier)
+		}
+		chat := openai.ResolveModelAlias(id)
+		if resolved.ReasoningEffort != chat.ReasoningEffort || resolved.Verbosity != chat.Verbosity || resolved.ServiceTier != chat.ServiceTier {
+			t.Fatalf("Resolve(%q) = %#v, drifted from the chat alias %#v", id, resolved, chat)
+		}
+	}
+}
+
+// Every chat alias in the gpt-6.1-sol effort ladders must be on the structured
+// allowlist, so a new effort level added to the chat ladder cannot silently
+// answer unsupported_model on /v1/structured/inference. The explicit
+// "-normal" speed aliases are left out, as they are for every other family on
+// the allowlist: they duplicate the base ladder.
+func TestDefaultPolicyCoversEveryGPT61SolChatAlias(t *testing.T) {
+	policy := NewPolicy(DefaultModels(), nil)
+
+	seen := 0
+	for _, alias := range openai.ModelAliases() {
+		if alias.UpstreamModel != "gpt-6.1-sol" || alias.Speed == "normal" {
+			continue
+		}
+		seen++
+		if !policy.Allowed(alias.ID) {
+			t.Errorf("chat alias %q resolves to gpt-6.1-sol but is not on the structured allowlist", alias.ID)
+		}
+	}
+	if seen != 12 {
+		t.Fatalf("found %d gpt-6.1-sol chat aliases, want 12 (bare, five efforts, fast, five fast efforts)", seen)
+	}
+}
+
+// Adding gpt-6.1-sol changes the policy version, so idempotent replays stored
+// under the old allowlist are not served after the deploy.
+func TestGPT61SolChangesThePolicyVersion(t *testing.T) {
+	without := []string{}
+	for _, id := range DefaultModels() {
+		if !strings.HasPrefix(id, "gpt-6.1-sol") {
+			without = append(without, id)
+		}
+	}
+	if len(without) != len(DefaultModels())-12 {
+		t.Fatalf("filtered %d models, want %d", len(DefaultModels())-len(without), 12)
+	}
+	if NewPolicy(without, nil).Version() == NewPolicy(DefaultModels(), nil).Version() {
+		t.Fatal("adding the gpt-6.1-sol ladder did not change the policy version")
 	}
 }
