@@ -178,7 +178,7 @@ Enable structured inference only on one replica with `maxSurge: 0` (or `strategy
 
 Structured traffic has its own queue budget (`STRUCTURED_MAX_ACTIVE`, `STRUCTURED_MAX_ACTIVE_PER_KEY`, `STRUCTURED_QUEUE_LIMIT`, `STRUCTURED_QUEUE_TIMEOUT`) so it can never starve Cursor/agent traffic. The rest of the knobs: `STRUCTURED_MAX_DEADLINE`, `STRUCTURED_IDEMPOTENCY_TTL`, `STRUCTURED_REPLICAS`, and `STRUCTURED_MODELS` (each also a `--structured-*` flag). Extraction requests carry no tools, skip the captured Codex CLI profile and scaffold, and never prewarm a connection.
 
-The allowlist is Codex-only by default (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` and their effort variants); override it with `STRUCTURED_MODELS`. Gemini and Claude Code aliases return `unsupported_model` because they do not honour strict `json_schema` output.
+The allowlist is Codex-only by default: `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` and effort or fast variants of them (`internal/structured/policy.go` lists each alias; `gpt-6.1-sol` has its full `-effort`, `-fast` and `-fast-effort` ladder). Override it with `STRUCTURED_MODELS`. Gemini and Claude Code aliases return `unsupported_model` because they do not honour strict `json_schema` output.
 
 ### Metrics
 

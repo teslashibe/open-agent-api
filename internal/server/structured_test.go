@@ -230,6 +230,44 @@ func TestStructuredInferenceUsesExtractionMode(t *testing.T) {
 	}
 }
 
+// S'more's Reddit Signals calls structured inference with gpt-6.1-sol aliases
+// (default gpt-6.1-sol-fast-high). The request reaches the upstream as
+// gpt-6.1-sol with the alias effort and the priority tier for -fast aliases.
+func TestStructuredInferenceRoutesGPT61SolAliases(t *testing.T) {
+	cases := []struct {
+		model, effort, tier string
+	}{
+		{"gpt-6.1-sol", "low", ""},
+		{"gpt-6.1-sol-high", "high", ""},
+		{"gpt-6.1-sol-fast-high", "high", "priority"},
+		{"gpt-6.1-sol-fast-max", "max", "priority"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var seen codex.Request
+			service := fakeCodexService{
+				complete: func(_ context.Context, req codex.Request) (codex.Completion, error) {
+					seen = req
+					return codex.Completion{Text: structuredTestOutput, Model: req.Model, ID: "resp-61"}, nil
+				},
+			}
+			app := New(structuredTestConfig(), WithCodexService(service), WithLogOutput(nil))
+
+			request := structuredBody()
+			request.Model = tc.model
+			decodeStructuredSuccess(t, postStructured(t, app, request))
+
+			if seen.Model != "gpt-6.1-sol" || seen.ReasoningEffort != tc.effort || seen.ServiceTier != tc.tier {
+				t.Fatalf("upstream model/effort/tier = %q/%q/%q, want gpt-6.1-sol/%q/%q",
+					seen.Model, seen.ReasoningEffort, seen.ServiceTier, tc.effort, tc.tier)
+			}
+			if !seen.Extraction || len(seen.ResponseFormat) == 0 {
+				t.Fatalf("gpt-6.1-sol request was not a strict extraction turn: %#v", seen)
+			}
+		})
+	}
+}
+
 func TestStructuredInferenceClampsDeadline(t *testing.T) {
 	var deadline time.Time
 	service := fakeCodexService{
