@@ -131,7 +131,7 @@ func TestRequestNormalizeTrimsCallerStrings(t *testing.T) {
 }
 
 // gpt-6.1-sol is the model S'more's Reddit Signals asks structured inference
-// for (profile proposals, request-group names and post ideas). Every alias in
+// for (profile proposals, request-group names and content briefs). Every alias in
 // its chat ladder is admitted with the alias defaults the chat surface uses.
 func TestDefaultPolicyAdmitsTheGPT61SolLadder(t *testing.T) {
 	policy := NewPolicy(DefaultModels(), nil)
