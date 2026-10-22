@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS build
+FROM golang:1.26.10-alpine AS build
 
 WORKDIR /src
 
@@ -18,14 +18,18 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 	-ldflags "-X github.com/teslashibe/open-agent-api/internal/buildinfo.Version=${BUILD_VERSION} -X github.com/teslashibe/open-agent-api/internal/buildinfo.Commit=${BUILD_COMMIT} -X github.com/teslashibe/open-agent-api/internal/buildinfo.BuildDate=${BUILD_DATE}" \
 	-o /out/open-agent-api ./cmd/open-agent-api
 
-FROM alpine:3.20
+FROM node:22.23.4-alpine
 
 # Claude Code CLI for the claude provider. Pinned: the provider replays
 # history through the CLI's session transcript format, which is not a public
 # contract, so bump deliberately and re-run the claude live checks.
 ARG CLAUDE_CODE_VERSION=2.1.286
-RUN apk add --no-cache ca-certificates tzdata nodejs npm \
-	&& npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+RUN apk upgrade --no-cache \
+	&& apk add --no-cache ca-certificates tzdata \
+	&& npm install -g npm@12.2.1 \
+	&& npm install -g --ignore-scripts @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+	&& node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs \
+	&& claude --version \
 	&& mkdir -p /var/lib/open-agent-api/telemetry /tmp/open-agent-api-claude \
 	&& chown -R 1000:1000 /var/lib/open-agent-api /tmp/open-agent-api-claude
 

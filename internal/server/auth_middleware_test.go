@@ -86,7 +86,7 @@ func TestBearerAuthMissingHeaderRejected(t *testing.T) {
 	cfg.GatewayBearerSecret = "gateway-secret"
 	app := New(cfg, WithLogOutput(io.Discard), fixedServerOptions())
 
-	req, err := http.NewRequest(http.MethodGet, "/v1/models", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/v1/models", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestHealthReachableWithoutBearer(t *testing.T) {
 	cfg.GatewayBearerSecret = "gateway-secret"
 	app := New(cfg, WithLogOutput(io.Discard), fixedServerOptions())
 
-	req, err := http.NewRequest(http.MethodGet, "/health", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/health", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
