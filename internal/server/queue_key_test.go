@@ -182,7 +182,7 @@ func resolveQueueKeyWithTenantForTest(t *testing.T, mode string, tenantHeader st
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	req, err := http.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
+	req, err := http.NewRequest(http.MethodPost, "http://localhost/", bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
 	}

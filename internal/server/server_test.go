@@ -49,7 +49,7 @@ func agentQueueTestConfig() config.Config {
 func TestHealth(t *testing.T) {
 	app := New(config.Defaults())
 
-	req, err := http.NewRequest(http.MethodGet, "/health", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/health", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestHealth(t *testing.T) {
 func TestResponseCompression(t *testing.T) {
 	app := New(config.Defaults())
 
-	req, err := http.NewRequest(http.MethodGet, "/v1/models", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/v1/models", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestResponseCompression(t *testing.T) {
 
 func getStatus(t *testing.T, app *fiber.App, path string) int {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, path, nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost"+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func getStatus(t *testing.T, app *fiber.App, path string) int {
 
 func postStatus(t *testing.T, app *fiber.App, path string) int {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, path, nil)
+	req, err := http.NewRequest(http.MethodPost, "http://localhost"+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestDrainRejectedFromNonLoopback(t *testing.T) {
 func TestModels(t *testing.T) {
 	app := New(config.Defaults(), WithLogOutput(io.Discard))
 
-	req, err := http.NewRequest(http.MethodGet, "/v1/models", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/v1/models", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestCodexAccountsListsConfiguredNamesBehindBearer(t *testing.T) {
 	if got := getStatus(t, app, "/v1/accounts"); got != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status = %d", got)
 	}
-	req, err := http.NewRequest(http.MethodGet, "/v1/accounts", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/v1/accounts", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestAccountUsagePageDoesNotExposeCredentials(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.GatewayBearerSecret = "gateway-secret"
 	app := New(cfg, WithLogOutput(io.Discard))
-	req, _ := http.NewRequest(http.MethodGet, "/usage", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost/usage", nil)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
@@ -340,7 +340,7 @@ func TestAccountUsageIncludesPersistedPoolHistory(t *testing.T) {
 	if status := getStatus(t, app, "/v1/accounts/usage"); status != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status = %d", status)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "/v1/accounts/usage", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost/v1/accounts/usage", nil)
 	req.Header.Set("Authorization", "Bearer gateway-secret")
 	resp, err := app.Test(req)
 	if err != nil {
@@ -369,7 +369,7 @@ func TestAccountUsageRequiresBearerAndDoesNotLeakCredentials(t *testing.T) {
 	if unauthorized != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status = %d", unauthorized)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "/v1/accounts/usage", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost/v1/accounts/usage", nil)
 	req.Header.Set("Authorization", "Bearer gateway-secret")
 	resp, err := app.Test(req)
 	if err != nil {
@@ -450,7 +450,7 @@ func TestRedeemResetCreditMethodAuthValidationAndSafeResponse(t *testing.T) {
 			if tt.name == "unknown label" {
 				target = "/v1/accounts/secret-account/reset-credits/redeem"
 			}
-			req, _ := http.NewRequest(tt.method, target, strings.NewReader(tt.body))
+			req, _ := http.NewRequest(tt.method, "http://localhost"+target, strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
 			if tt.auth {
 				req.Header.Set("Authorization", "Bearer gateway-secret")
@@ -1066,7 +1066,7 @@ func TestChatCompletionsAcceptsArbitraryAuthorization(t *testing.T) {
 	var logs bytes.Buffer
 	app := New(config.Defaults(), WithCodexService(service), WithLogOutput(&logs), fixedServerOptions())
 
-	req, err := http.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"messages":[{"role":"user","content":"hi"}]}`))
+	req, err := http.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions", bytes.NewBufferString(`{"messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2201,7 +2201,7 @@ func TestRequestLogsAreRedacted(t *testing.T) {
 
 	req, err := http.NewRequest(
 		http.MethodPost,
-		"/v1/chat/completions",
+		"http://localhost/v1/chat/completions",
 		bytes.NewBufferString(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"`+prompt+`"}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}`),
 	)
 	if err != nil {
@@ -2258,7 +2258,7 @@ func TestRequestIdentityLogsAreRedacted(t *testing.T) {
 
 	req, err := http.NewRequest(
 		http.MethodPost,
-		"/v1/chat/completions",
+		"http://localhost/v1/chat/completions",
 		bytes.NewBufferString(`{"model":"gpt-test","stream":false,"user":"user@example.test","session_id":"body-session","metadata":{"workspace_id":"workspace-123","nested":{"secret":"`+secret+`"}},"messages":[{"role":"user","content":"`+prompt+`"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"`+toolArgs+`"}}]}],"tools":[{"type":"function","function":{"name":"lookup","description":"secret schema","parameters":{"type":"object"}}}]}`),
 	)
 	if err != nil {
@@ -2316,7 +2316,7 @@ func TestRequestLogs404s(t *testing.T) {
 	var logs bytes.Buffer
 	app := New(config.Defaults(), WithLogOutput(&logs))
 
-	req, err := http.NewRequest(http.MethodGet, "/v1/responses", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/v1/responses", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2575,7 +2575,7 @@ func doJSON(t *testing.T, app interface {
 	Test(*http.Request, ...int) (*http.Response, error)
 }, body string, headers ...map[string]string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req, err := http.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions", bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2608,7 +2608,7 @@ func postJSONAsync(t *testing.T, app interface {
 	t.Helper()
 	done := make(chan *http.Response, 1)
 	go func() {
-		req, err := http.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+		req, err := http.NewRequest(http.MethodPost, "http://localhost/v1/chat/completions", bytes.NewBufferString(body))
 		if err != nil {
 			t.Errorf("NewRequest() error = %v", err)
 			done <- &http.Response{StatusCode: 0, Body: io.NopCloser(strings.NewReader(""))}

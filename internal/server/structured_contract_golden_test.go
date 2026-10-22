@@ -81,7 +81,7 @@ func TestContract200GoldenRequestAndSuccess(t *testing.T) {
 		}}),
 		WithLogOutput(nil),
 	)
-	httpRequest, err := http.NewRequest(http.MethodPost, StructuredPath, bytes.NewReader(raw))
+	httpRequest, err := http.NewRequest(http.MethodPost, "http://localhost"+StructuredPath, bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}

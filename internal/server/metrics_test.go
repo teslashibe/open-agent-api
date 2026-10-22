@@ -82,7 +82,7 @@ func TestMetricsEndpointUsesGatewayBearerWhenConfigured(t *testing.T) {
 	cfg.GatewayBearerSecret = "gateway-secret"
 	app := New(cfg, WithMetrics(metricspkg.New(true)), WithLogOutput(io.Discard), fixedServerOptions())
 
-	req, err := http.NewRequest(http.MethodGet, "/metrics", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/metrics", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestMetricsEndpointDisabledReturnsNotFound(t *testing.T) {
 	cfg.MetricsEnabled = false
 	app := New(cfg, WithMetrics(metricspkg.New(false)), WithLogOutput(io.Discard), fixedServerOptions())
 
-	req, err := http.NewRequest(http.MethodGet, "/metrics", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/metrics", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestChatTelemetryRecordsFastTierAndStreamingUsage(t *testing.T) {
 
 func scrapeServerMetrics(t *testing.T, app *fiber.App, headers map[string]string) string {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, "/metrics", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/metrics", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

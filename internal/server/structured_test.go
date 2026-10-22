@@ -97,7 +97,7 @@ func postStructured(t *testing.T, app *fiber.App, body any, headers ...map[strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequest(http.MethodPost, StructuredPath, bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, "http://localhost"+StructuredPath, bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -776,7 +776,7 @@ func TestStructuredInferenceUpstreamRateLimitCarriesRetryAfter(t *testing.T) {
 func TestStructuredInferenceRejectsMalformedJSONBody(t *testing.T) {
 	app := New(structuredTestConfig(), WithCodexService(staticStructuredService(structuredTestOutput)), WithLogOutput(nil))
 
-	req, err := http.NewRequest(http.MethodPost, StructuredPath, bytes.NewBufferString(`{"request_id":`))
+	req, err := http.NewRequest(http.MethodPost, "http://localhost"+StructuredPath, bytes.NewBufferString(`{"request_id":`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1344,7 +1344,7 @@ func TestExistingEndpointsAreUnchangedByStructuredInference(t *testing.T) {
 		out := map[string]string{}
 
 		for _, path := range []string{"/health", "/health/live", "/health/ready", "/v1/models"} {
-			req, err := http.NewRequest(http.MethodGet, path, nil)
+			req, err := http.NewRequest(http.MethodGet, "http://localhost"+path, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1364,7 +1364,7 @@ func TestExistingEndpointsAreUnchangedByStructuredInference(t *testing.T) {
 		out["/v1/chat/completions"] = strconv.Itoa(resp.StatusCode) + " " + readAllString(t, resp)
 
 		// An unauthenticated /v1 request keeps the OpenAI error shape.
-		unauth, err := http.NewRequest(http.MethodGet, "/v1/models", nil)
+		unauth, err := http.NewRequest(http.MethodGet, "http://localhost/v1/models", nil)
 		if err != nil {
 			t.Fatal(err)
 		}

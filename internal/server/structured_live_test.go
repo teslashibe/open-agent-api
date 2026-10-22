@@ -121,7 +121,7 @@ func TestStructuredInferenceLiveUpstream(t *testing.T) {
 	cfg.StructuredMaxDeadline = 2 * time.Minute
 	app := New(cfg, WithCodexService(client), WithLogOutput(&logs))
 
-	req, err := http.NewRequest(http.MethodPost, StructuredPath, strings.NewReader(structuredLiveBody))
+	req, err := http.NewRequest(http.MethodPost, "http://localhost"+StructuredPath, strings.NewReader(structuredLiveBody))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ func TestModelsFiltersDisabledProviders(t *testing.T) {
 	cfg.GatewayProviders = []string{"codex", "gemini"}
 	app := New(cfg, WithLogOutput(io.Discard))
 
-	req, err := http.NewRequest(http.MethodGet, "/v1/models", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/v1/models", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestAstraUnavailableWhenCodexDisabled(t *testing.T) {
 	}
 	app := New(cfg, WithCodexService(service), WithLogOutput(io.Discard), fixedServerOptions())
 
-	modelsReq, err := http.NewRequest(http.MethodGet, "/v1/models", nil)
+	modelsReq, err := http.NewRequest(http.MethodGet, "http://localhost/v1/models", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
