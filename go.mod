@@ -1,6 +1,6 @@
 module github.com/teslashibe/open-agent-api
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.15
